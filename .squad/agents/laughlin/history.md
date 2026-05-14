@@ -39,3 +39,21 @@ Amber's smoke test validates the v0.1 scaffold on macOS. All tests pass, all tar
 **Action for Laughlin:** Rebase your WorkoutController implementation off `chore/macos-build-validation` OR await PR #2 merge to main (Joe filing manually). The fixes include watchOS target type correction (application.watchapp2 → application + WKApplication) and widget extension split per-platform — both relevant to your workout lifecycle scaffolding.
 
 **Reference:** decisions.md now includes Amber's full findings + the three fixes. See `.squad/orchestration-log/2026-05-14T20-48-00Z-amber.md` for operational summary.
+
+### 2026-05-14T21:00:00Z: Scribe — CI Workflows Landed on chore/ci-workflows
+
+**From:** Scribe (session orchestration)
+
+Richards completed CI architecture design + implementation. Three workflows now committed to `.github/workflows/`:
+
+1. **`ci-core-tests.yml`** — Linux runner. Tests `ARRunnerCore` with `swift test` on `swift:6.0-jammy` container.
+2. **`ci-build.yml`** — macOS runner. Builds all four app targets (Watch, Phone, WidgetsPhone, WidgetsWatch) via xcodebuild 4-way matrix.
+3. **`codeql.yml`** — GitHub CodeQL security analysis (PR + weekly).
+
+**Critical for Laughlin:** Your WorkoutController implementation lives in ARRunnerWatch (watch app target), sharing models + protocols through ARRunnerCore. Linux ci-core-tests job validates that ARRunnerCore stays platform-agnostic (Foundation + XCTest only, no HealthKit/WatchKit/WCSession imports into Core). Keep concrete HealthKit + WatchConnectivity code in ARRunnerWatch, not Core. The architecture enforcement is now mechanical.
+
+**Timeline:** PR #3 (chore/ci-workflows) queued behind PR #2 (macos-build-validation). Joe will open both manually. When merged, all subsequent feature branches auto-validate.
+
+**For your WorkoutController implementation:** Your PR must pass ci-core-tests (Linux), all ci-build matrix jobs (macOS 4 targets), and CodeQL. Plan ~15 minutes of CI time per PR after cache warm-up. Local validation matches CI 1:1 — see docs/dev/ci-workflows.md for repro steps.
+
+**Reference:** `.squad/orchestration-log/2026-05-14T21:00:00Z-richards.md` for full ADRs and design rationale.
