@@ -29,3 +29,13 @@
 - Chose a single watch app target without a separate WatchKit extension for the 2026-era scaffold, and embedded the foreground launch App Intent in the widget extension instead of creating a standalone `ARRunnerAppIntents` target.
 
 ### 2026-05-14: Team update from Joe — v0.1 foundation scaffold + BLE spike landed on feat/v01-foundation. Branch awaiting Joe's push & PR. Next: WorkoutController impl (Laughlin) + watchOS BLE wrapper impl (Weiss).
+
+### 2026-05-14T20:48:00Z: Scribe — macOS Build Validation Landed; Rebase Advisory
+
+**From:** Scribe (session orchestration)
+
+Amber's smoke test validates the v0.1 scaffold on macOS. All tests pass, all targets build, zero concurrency warnings. Three surgical fixes applied and merged into `chore/macos-build-validation` (commit ecb8179, pushed).
+
+**Action for Laughlin:** Rebase your WorkoutController implementation off `chore/macos-build-validation` OR await PR #2 merge to main (Joe filing manually). The fixes include watchOS target type correction (application.watchapp2 → application + WKApplication) and widget extension split per-platform — both relevant to your workout lifecycle scaffolding.
+
+**Reference:** decisions.md now includes Amber's full findings + the three fixes. See `.squad/orchestration-log/2026-05-14T20-48-00Z-amber.md` for operational summary.
