@@ -1,9 +1,9 @@
 # Skill: Swift CI — Linux + macOS Runner Split
 
 **Captured by:** Richards
-**Date:** 2026-05-14T16:51:53-04:00 (initial); updated 2026-05-14T17:21:00-04:00
+**Date:** 2026-05-14T16:51:53-04:00 (initial); updated 2026-05-14T17:21:00-04:00; updated 2026-05-14T17:33:30-04:00 (Amber)
 **Context where it emerged:** AR-Runner CI workflow design (`chore/ci-workflows`)
-**Confidence:** medium (pattern applied + watchOS-runtime gotcha confirmed in CI)
+**Confidence:** medium (pattern applied + watchOS-runtime pitfall corrected in CI)
 
 ## When to use this pattern
 
@@ -79,8 +79,8 @@ jobs:
 
 ## watchOS gotcha: SDK ≠ simulator runtime on `macos-15`
 
-The GitHub `macos-15` image ships Xcode 16 with the watchOS 11 **SDK** but **not**
-the watchOS 11 **simulator runtime**. Symptoms are asymmetric and confusing:
+The GitHub `macos-15` image ships multiple Xcodes. The SDK list and the
+simulator-runtime list are NOT the same. Symptoms are asymmetric and confusing:
 
 - **App scheme** (`type: application`, `platform: watchOS`) targeting
   `-destination 'generic/platform=watchOS Simulator'` fails destination
@@ -92,28 +92,63 @@ the watchOS 11 **simulator runtime**. Symptoms are asymmetric and confusing:
   as a transitive dependency. The extension scheme's destination resolver is
   more lenient (SDK-only build is enough; no runtime probe).
 
-The destination string is correct in both cases. The fix is to install the
-runtime on watchOS matrix cells:
+Same class of failure can hit iOS: the iOS widget-extension cell on
+`macos-15` + `Xcode_16.app` (16.0) flips to "iOS 18.0 is not installed" with
+only the real-device placeholder listed as ineligible, even though the
+destination string `generic/platform=iOS Simulator` is correct.
+
+### Wrong fix: `xcodebuild -downloadPlatform`
 
 ```yaml
+# DOES NOT WORK ON GITHUB-HOSTED RUNNERS
 - name: Install watchOS simulator runtime
   if: contains(matrix.destination, 'watchOS')
   run: sudo xcodebuild -downloadPlatform watchOS
 ```
 
-Adds ~3–5 min per watchOS cell. Cheaper alternatives — pinning `Xcode_16.x.app`
-that bundles the runtime, or `maxim-lobanov/setup-xcode@v1` — are runner-image
-dependent and brittle. The `-downloadPlatform` step is portable and survives
-runner image churn.
+Fails with `Finding content...Unable to connect to simulator.` and exit code
+**70** — Apple's "command requires Apple ID auth or interactive sudo" error.
+`xcodebuild -downloadPlatform` cannot run unattended on CI; it needs an
+authenticated session against Apple's developer servers.
+
+### Right fix: pin a Xcode whose runtimes are pre-baked
+
+Use `maxim-lobanov/setup-xcode@v1` to pin a specific Xcode version that the
+runner image already ships with the simulator runtimes you need. The runner
+image manifest (e.g.
+`https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md`)
+lists which Xcode bundles which simulator runtime. As of the macos-15 image
+on 2026-05, **Xcode 16.4** is the default and ships iOS 18.5 + watchOS 11.5
+runtimes pre-installed — both satisfy iOS 18 / watchOS 11 minimums.
+
+```yaml
+- name: Select Xcode
+  uses: maxim-lobanov/setup-xcode@v1
+  with:
+    xcode-version: '16.4'   # ships iOS 18.5 + watchOS 11.5 simulator runtimes
+```
+
+No `-downloadPlatform` step needed; cold-build cost drops by the 3–5 min the
+download step used to take.
 
 **Same pattern applies to** any platform where Apple ships the SDK separately
-from the simulator runtime (visionOS commonly, tvOS occasionally on minor
-Xcode bumps). Gate the install step on the destination string.
+from the simulator runtime (visionOS commonly; tvOS occasionally on minor
+Xcode bumps). When pinning, always cross-check the runner image manifest's
+"Installed SDKs" *and* "Installed Simulators" sections — an SDK without its
+matching simulator runtime is the trap.
 
 **Do not "fix" this by changing the destination to `platform=watchOS` (real
 device)** — that builds for arm64 device but loses simulator coverage and
 breaks any future `xcodebuild test` use. Keep the destination as
-`generic/platform=watchOS Simulator`; install the runtime instead.
+`generic/platform=watchOS Simulator`; pin the right Xcode instead.
+
+### Lesson on CI runner image churn
+
+Runner images update continuously. A workflow that hard-codes
+`/Applications/Xcode_16.app/Contents/Developer` via `xcode-select` is pinning
+to whatever 16.x happens to live at that symlink today, and the simulator
+runtimes that ship with that Xcode can change between image revisions. Pin
+explicitly with `setup-xcode@v1 + xcode-version`, not by symlink path.
 
 ## Concurrency / cost notes
 

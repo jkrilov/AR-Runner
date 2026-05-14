@@ -30,7 +30,9 @@ All three honor `concurrency:` groups keyed on `${{ github.workflow }}-${{ githu
 
 ## ci-build.yml — macOS app & widget builds
 
-**What it does:** installs `xcodegen` via Homebrew, runs `xcodegen generate`, then runs `xcodebuild build` for each scheme in a matrix.
+**What it does:** pins Xcode 16.4 via `maxim-lobanov/setup-xcode@v1`, installs `xcodegen` via Homebrew, runs `xcodegen generate`, then runs `xcodebuild build` for each scheme in a matrix.
+
+**Why pin Xcode 16.4:** The `macos-15` runner image ships multiple Xcode versions. We pin 16.4 because it is the runner image's *default* Xcode and ships with the **iOS 18.5 and watchOS 11.5 simulator runtimes pre-installed** — both satisfy our D2 minimums (iOS 18 / watchOS 11). The older `Xcode_16.app` (16.0) nominally bundles the 18.0 / 11.0 runtimes per the runner image manifest, but in practice the watchOS 11.0 simulator runtime is missing on the live image and `xcodebuild -downloadPlatform watchOS` cannot run unattended on CI (exits 70 — Apple ID auth required). Pinning a Xcode whose simulator runtimes are pre-baked into the image is the portable, unattended fix.
 
 | Scheme | Destination |
 | --- | --- |
