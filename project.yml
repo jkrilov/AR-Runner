@@ -1,0 +1,123 @@
+name: AR-Runner
+options:
+  minimumXcodeGenVersion: 2.44.0
+  bundleIdPrefix: com.arrunner
+  createIntermediateGroups: true
+  developmentLanguage: en
+  xcodeVersion: '16.0'
+  projectFormat: xcode16_0
+  deploymentTarget:
+    iOS: '18.0'
+    watchOS: '11.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    SWIFT_STRICT_CONCURRENCY: complete
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+    CODE_SIGN_STYLE: Automatic
+fileGroups:
+  - README.md
+  - docs
+  - project.yml
+
+targets:
+  ARRunnerWatch:
+    type: application.watchapp2
+    platform: watchOS
+    deploymentTarget: '11.0'
+    sources:
+      - path: ARRunnerWatch
+        optional: true
+    dependencies:
+      - target: ARRunnerWidgets
+        embed: true
+        destinationFilters:
+          - watchOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.watch
+        PRODUCT_NAME: ARRunnerWatch
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Config/ARRunnerWatch-Info.plist
+      properties:
+        CFBundleDisplayName: AR-Runner
+        NSHealthShareUsageDescription: AR-Runner reads workout metrics so your watch can drive the HUD and summary experience.
+        NSHealthUpdateUsageDescription: AR-Runner saves completed workouts and summaries to Health.
+        NSBluetoothAlwaysUsageDescription: AR-Runner connects your Apple Watch directly to ActiveLook glasses during workouts.
+        UIBackgroundModes:
+          - workout-processing
+          - bluetooth-central
+        WKCompanionAppBundleIdentifier: com.arrunner.phone
+        WKSupportsRunningWithoutiPhone: true
+    entitlements:
+      path: Config/ARRunnerWatch.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.arrunner.shared
+        com.apple.developer.healthkit: true
+
+  ARRunnerPhone:
+    type: application
+    platform: iOS
+    deploymentTarget: '18.0'
+    sources:
+      - path: ARRunnerPhone
+        optional: true
+    dependencies:
+      - target: ARRunnerWidgets
+        embed: true
+        destinationFilters:
+          - iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.phone
+        PRODUCT_NAME: ARRunnerPhone
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+    info:
+      path: Config/ARRunnerPhone-Info.plist
+      properties:
+        CFBundleDisplayName: AR-Runner
+        NSHealthShareUsageDescription: AR-Runner reads workouts and live metrics to mirror your run on iPhone.
+        NSHealthUpdateUsageDescription: AR-Runner stores run summaries and AR metadata alongside HealthKit workouts.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+    entitlements:
+      path: Config/ARRunnerPhone.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.arrunner.shared
+        com.apple.developer.healthkit: true
+
+  ARRunnerWidgets:
+    type: app-extension
+    platform: auto
+    supportedDestinations:
+      - iOS
+      - watchOS
+    deploymentTarget:
+      iOS: '18.0'
+      watchOS: '11.0'
+    sources:
+      - path: ARRunnerWidgets
+        optional: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.widgets
+        PRODUCT_NAME: ARRunnerWidgets
+        SKIP_INSTALL: YES
+    info:
+      path: Config/ARRunnerWidgets-Info.plist
+      properties:
+        CFBundleDisplayName: AR-Runner Widgets
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ARRunnerWidgetsBundle
+    entitlements:
+      path: Config/ARRunnerWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.arrunner.shared
