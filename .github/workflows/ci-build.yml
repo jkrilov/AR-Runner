@@ -74,6 +74,15 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # macos-15 + Xcode 16 ships with the watchOS 11 SDK but NOT the watchOS 11
+      # simulator runtime. The widget-extension scheme tolerates the gap (it never
+      # needs a destination resolved beyond the SDK), but the app scheme's
+      # destination resolver rejects `generic/platform=watchOS Simulator` with
+      # "watchOS 11.0 is not installed". Install on-demand for watchOS cells only.
+      - name: Install watchOS simulator runtime
+        if: contains(matrix.destination, 'watchOS')
+        run: sudo xcodebuild -downloadPlatform watchOS
+
       - name: xcodebuild ${{ matrix.scheme }}
         run: |
           set -o pipefail
