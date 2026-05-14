@@ -449,3 +449,79 @@ When importing Apple samples or third-party SDK examples (especially ActiveLook)
 - All meaningful changes require team consensus
 - Document architectural decisions here
 - Keep history focused on work, decisions focused on direction
+# Amber — CI: Apple-platform runtime install on GitHub-hosted macOS runners
+
+**Date:** 2026-05-14T17:33:30-04:00
+**Author:** Amber (QA & Fitness Domain)
+**Branch:** `chore/ci-workflows`
+**PR:** #3
+**Status:** Applied — workflow change in `.github/workflows/ci-build.yml`; doc + skill updates landed in same commit.
+
+## Context
+
+PR #3 (CI workflows) had three failing checks after Richards's runtime-install attempt (commit `079cb73`): `ARRunnerWatch`, `ARRunnerWidgetsWatch`, and `ARRunnerWidgetsPhone`. Only `ARRunnerPhone` and the Linux `ci-core-tests` were green.
+
+Two distinct symptoms; **one underlying cause**:
+
+1. **Both watchOS cells** failed at the new `Install watchOS simulator runtime` step:
+   ```
+   Finding content...Unable to connect to simulator.
+   ##[error]Process completed with exit code 70.
+   ```
+   `xcodebuild -downloadPlatform watchOS` cannot run unattended on GitHub-hosted runners — exit 70 is Apple's "this command needs an interactive Apple ID auth session" error.
+
+2. **`ARRunnerWidgetsPhone`** (which had been passing) failed destination resolution:
+   ```
+   xcodebuild: error: Unable to find a destination matching the provided destination specifier:
+     { generic:1, platform:iOS Simulator }
+   Ineligible destinations for the "ARRunnerWidgetsPhone" scheme:
+     { platform:iOS, ..., name:Any iOS Device, error:iOS 18.0 is not installed }
+   ```
+   The destination string in the workflow was `generic/platform=iOS Simulator` — correct, unchanged from the prior passing run. The actual cause was the **iOS 18.0 simulator runtime missing on the macos-15 image** under the pinned `Xcode_16.app` (16.0). `ARRunnerPhone` happens to pass under the app-scheme destination resolver while the widget-extension scheme is stricter (mirror of the watchOS asymmetry Richards already documented).
+
+> Note for the record: the original task brief told me `name:Any iOS Device` was a smoking gun that Richards had edited the destination to `generic/platform=iOS` (real device). It wasn't. `Ineligible destinations:` is xcodebuild's enumeration of destinations it considered and rejected; when no simulator runtime is installed, the only candidate that survives enumeration is the device placeholder. The destination string was correct; the runtime was missing. Reading the full xcodebuild error block (not just the `name:` field) is what caught this.
+
+## Decision
+
+**Pin Xcode 16.4 via `maxim-lobanov/setup-xcode@v1` and remove the `xcodebuild -downloadPlatform` step entirely.**
+
+```yaml
+- name: Select Xcode
+  uses: maxim-lobanov/setup-xcode@v1
+  with:
+    xcode-version: '16.4'
+```
+
+Rationale:
+
+- Per the [`actions/runner-images` macos-15 manifest](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md), Xcode 16.4 is the **default** Xcode on the current macos-15 image and ships with **iOS 18.5 + watchOS 11.5 simulator runtimes pre-installed** — both ≥ our D2 minimums (iOS 18 / watchOS 11).
+- xcodebuild builds against the newest installed SDK ≥ deployment target, so iOS 18.5 / watchOS 11.5 SDKs are fine for our iOS 18 / watchOS 11 minimums.
+- No download step needed → no auth problem, no exit-70 failure mode, ~3–5 min wall-clock saved per watchOS cell.
+- Skips an entire failure surface: when the runner image rotates and the `Xcode_16.app` symlink shifts under us, the explicit `xcode-version: '16.4'` pin keeps behavior stable as long as 16.4 stays on the image.
+
+## Lessons
+
+1. **`xcodebuild -downloadPlatform` does not work unattended on CI.** It needs Apple ID auth and exits 70 on GitHub-hosted runners. Anyone who reaches for it in CI will hit this wall. Use a Xcode-pin or `xcrun simctl runtime add`-with-cached-DMG instead.
+
+2. **Pinning Xcode by symlink path (`/Applications/Xcode_16.app`) is brittle.** That symlink can shift across runner image revisions, and the simulator runtimes that ship with a given Xcode can change between point releases. Pin explicitly via `setup-xcode@v1` + `xcode-version`.
+
+3. **Cross-check both "Installed SDKs" and "Installed Simulators" in the runner image manifest.** An SDK without a matching simulator runtime is a destination-resolution trap. The manifest is the source of truth — check it before pinning.
+
+4. **`Ineligible destinations:` is an enumeration, not a destination-spec diagnosis.** The `name:Any iOS Device` line in the error block is not evidence the destination string was wrong; it's evidence no simulator runtimes are installed for the target platform.
+
+## Trade-offs named
+
+- **Lock-in to Xcode 16.4 / iOS 18.5 / watchOS 11.5 image revision.** When GitHub eventually deprecates 16.4 from the macos-15 image (or moves to macos-26 default), CI breaks loudly. The fix at that point is a one-line bump. Documented in the workflow comment.
+- **One additional first-party action dependency** (`maxim-lobanov/setup-xcode@v1`). Widely used, MIT-licensed, no secrets required. Acceptable.
+- **Runtime-install workflows that genuinely need a runtime not pre-baked into any image** would still need Option B (cached `.dmg` + `xcrun simctl runtime add`) or Option C (`mxcl/xcodes-action@v1`). For AR-Runner today, neither is needed.
+
+## Files changed
+
+- `.github/workflows/ci-build.yml` — replaced `xcode-select` step with `maxim-lobanov/setup-xcode@v1` pinned to 16.4; removed `Install watchOS simulator runtime` step.
+- `docs/dev/ci-workflows.md` — added "Why pin Xcode 16.4" paragraph to the `ci-build.yml` section.
+- `.squad/skills/swift-linux-macos-runner-split/SKILL.md` — extended the watchOS-runtime gotcha section with the `-downloadPlatform` failure mode and the right fix.
+
+## Lockout note (for Scribe)
+
+Richards owns the original CI implementation and the StrictConcurrency fix. His most recent fix (the `-downloadPlatform` step) introduced these regressions; Joe routed the revision to me for fresh perspective. Strict reviewer-rejection lockout doesn't formally apply (CI is automated, not a reviewer verdict), but the routing reflects the same intent. My local validation (Xcode 26.5 / Swift 6.3.2) is the source of truth for the destination strings; CI runner-image manifest is the source of truth for what runtimes ship pre-installed.
+---
