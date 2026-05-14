@@ -24,6 +24,17 @@
 
 <!-- Append learnings below -->
 
+### watchOS Simulator Runtime Missing on macos-15 — 2026-05-14T17:21:00-04:00
+
+- **Trigger:** PR #3 ARRunnerWatch xcodebuild failed with `xcodebuild: error: Unable to find a destination matching ... { generic:1, platform:watchOS Simulator } ... Ineligible: { platform:watchOS, ... Any watchOS Device, error:watchOS 11.0 is not installed }`. ARRunnerWidgetsWatch passed on the **same runner with the same destination spec**, even building ARRunnerWatch transitively as a dependency.
+- **Root cause:** `macos-15` + `Xcode_16.app` ships the watchOS 11 **SDK** but not the **simulator runtime**. App schemes (`type: application`) probe for an installed simulator runtime when resolving `generic/platform=watchOS Simulator`; widget extension schemes (`type: app-extension`) don't, so the gap was invisible from the widgets cell.
+- **What I ruled out first:** destination spec was already `generic/platform=watchOS Simulator` (correct, matches Amber's local cmd). Joe's local Mac has the runtime installed so the gap doesn't reproduce there. project.yml was untouched — the bug was strictly in the runner image's bundled runtimes.
+- **Fix (commit `079cb73`):** Added a conditional install step in `ci-build.yml` gated on `contains(matrix.destination, 'watchOS')` running `sudo xcodebuild -downloadPlatform watchOS`. Adds ~3–5 min per watch cell. Iphone cells skip it. Destination spec unchanged.
+- **Why not the other options:** Option 1 (spec fix) didn't apply — spec was already right. Option 3 (pin Xcode via `maxim-lobanov/setup-xcode`) is runner-image-dependent and brittle; `-downloadPlatform` is portable across runner image churn.
+- **Generalization for next time I author Apple-platform CI matrices:** Whenever a matrix cell targets a non-default Apple platform (watchOS, visionOS, tvOS), don't trust that the runner image has the runtime — only the SDK. Pre-install via `xcodebuild -downloadPlatform <platform>` gated on the destination. Gate by destination string, not scheme name, so the predicate stays robust as schemes get added. Skill `.squad/skills/swift-linux-macos-runner-split/SKILL.md` updated with this gotcha and confidence bumped to **medium** (applied twice now).
+- **For Laughlin / Weiss:** if you ever add `-destination 'generic/platform=visionOS Simulator'` or similar, mirror the install step. Don't try to "save 5 minutes" by skipping it — the asymmetric failure mode (extension passes, app fails) wastes hours diagnosing.
+- **No decision drop:** this is implementation polish, not architectural rule. Skill capture + history is the right home.
+
 ### Swift 6 StrictConcurrency Redundant-Flag CI Break — 2026-05-14T17:08:00-04:00
 
 - **Trigger:** PR #3 (chore/ci-workflows) failed all 5 build checks with `error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6`.

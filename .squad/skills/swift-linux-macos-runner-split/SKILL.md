@@ -1,8 +1,9 @@
 # Skill: Swift CI — Linux + macOS Runner Split
 
 **Captured by:** Richards
-**Date:** 2026-05-14T16:51:53-04:00
+**Date:** 2026-05-14T16:51:53-04:00 (initial); updated 2026-05-14T17:21:00-04:00
 **Context where it emerged:** AR-Runner CI workflow design (`chore/ci-workflows`)
+**Confidence:** medium (pattern applied + watchOS-runtime gotcha confirmed in CI)
 
 ## When to use this pattern
 
@@ -75,6 +76,44 @@ jobs:
 4. **`@preconcurrency import` of vendor SDKs must stay in app shells, not in Core.** If the Core needs to *reference* a vendor SDK, define a protocol in Core, conform to it in the app target. Linux core-tests then keep working even when the vendor SDK is Apple-only.
 
 5. **Caching is per-runner-OS.** Linux SwiftPM caches live at `~/.cache/org.swift.swiftpm` + `<pkg>/.build`; macOS Xcode-resolved SPM lives at `~/Library/Caches/org.swift.swiftpm` + `DerivedData/**/SourcePackages`. Don't try to share keys across OSes.
+
+## watchOS gotcha: SDK ≠ simulator runtime on `macos-15`
+
+The GitHub `macos-15` image ships Xcode 16 with the watchOS 11 **SDK** but **not**
+the watchOS 11 **simulator runtime**. Symptoms are asymmetric and confusing:
+
+- **App scheme** (`type: application`, `platform: watchOS`) targeting
+  `-destination 'generic/platform=watchOS Simulator'` fails destination
+  resolution: `xcodebuild: error: ... watchOS 11.0 is not installed`. The
+  scheme's destination matcher rejects the generic simulator spec because no
+  installed simulator runtime backs it.
+- **Widget extension scheme** (`type: app-extension`, `platform: watchOS`) on
+  the **same destination spec** **succeeds** — and even builds the watchOS app
+  as a transitive dependency. The extension scheme's destination resolver is
+  more lenient (SDK-only build is enough; no runtime probe).
+
+The destination string is correct in both cases. The fix is to install the
+runtime on watchOS matrix cells:
+
+```yaml
+- name: Install watchOS simulator runtime
+  if: contains(matrix.destination, 'watchOS')
+  run: sudo xcodebuild -downloadPlatform watchOS
+```
+
+Adds ~3–5 min per watchOS cell. Cheaper alternatives — pinning `Xcode_16.x.app`
+that bundles the runtime, or `maxim-lobanov/setup-xcode@v1` — are runner-image
+dependent and brittle. The `-downloadPlatform` step is portable and survives
+runner image churn.
+
+**Same pattern applies to** any platform where Apple ships the SDK separately
+from the simulator runtime (visionOS commonly, tvOS occasionally on minor
+Xcode bumps). Gate the install step on the destination string.
+
+**Do not "fix" this by changing the destination to `platform=watchOS` (real
+device)** — that builds for arm64 device but loses simulator coverage and
+breaks any future `xcodebuild test` use. Keep the destination as
+`generic/platform=watchOS Simulator`; install the runtime instead.
 
 ## Concurrency / cost notes
 
