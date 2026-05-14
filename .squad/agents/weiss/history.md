@@ -108,3 +108,21 @@ Amber's smoke test validates the v0.1 scaffold on macOS. All tests pass, all tar
 **Action for Weiss:** Rebase your BLE wrapper implementation off `chore/macos-build-validation` OR await PR #2 merge to main (Joe filing manually). The fixes include xcodegen artifact handling and widget extension split per-platform — both relevant to your integration surface.
 
 **Reference:** decisions.md now includes Amber's full findings + the three fixes. See `.squad/orchestration-log/2026-05-14T20-48-00Z-amber.md` for operational summary.
+
+### 2026-05-14T21:00:00Z: Scribe — CI Workflows Landed on chore/ci-workflows
+
+**From:** Scribe (session orchestration)
+
+Richards completed CI architecture design + implementation. Three workflows now committed to `.github/workflows/`:
+
+1. **`ci-core-tests.yml`** — Linux runner. Tests `ARRunnerCore` with `swift test` on `swift:6.0-jammy` container.
+2. **`ci-build.yml`** — macOS runner. Builds all four app targets (Watch, Phone, WidgetsPhone, WidgetsWatch) via xcodebuild 4-way matrix.
+3. **`codeql.yml`** — GitHub CodeQL security analysis (PR + weekly).
+
+**Critical for Weiss:** Linux spike is GREEN. ARRunnerCore imports only Foundation + XCTest — no Apple frameworks. Your BLE wrapper implementation stays in the watch app target (ARRunnerWatch), not in Core. Use `@preconcurrency import` when pulling the ActiveLook SDK into watch/phone targets per D8. Core stays platform-agnostic; the Linux ci-core-tests job enforces this mechanically.
+
+**Timeline:** PR #3 (chore/ci-workflows) queued behind PR #2 (macos-build-validation). Joe will open both manually. When merged, all subsequent feature branches auto-validate.
+
+**For your BLE implementation:** Your PR must pass ci-core-tests (Linux), all ci-build matrix jobs (macOS 4 targets), and CodeQL. Plan ~15 minutes of CI time per PR after cache warm-up. Local validation matches CI 1:1 — see docs/dev/ci-workflows.md for repro steps.
+
+**Reference:** `.squad/orchestration-log/2026-05-14T21:00:00Z-richards.md` for full ADRs and design rationale.

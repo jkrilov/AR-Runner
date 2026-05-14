@@ -24,3 +24,21 @@ First Mac build of the v0.1 scaffold after Windows authoring. Toolchain: xcodege
 - **Test coverage is shallow but correct.** Each of the six suites is a single `testCodableRoundTrip`. That's fine for scaffold; tests live alongside the work that adds real behavior. When metrics calc / split detection / pace smoothing land, I'll grow these into property-based or scenario suites.
 - **Repro is in `docs/dev/macos-build-validation.md`.** Anyone else moving from Windows runs the same five commands and sees green.
 
+### 2026-05-14T21:00:00Z: Scribe — CI Workflows Landed on chore/ci-workflows
+
+**From:** Scribe (session orchestration)
+
+Richards completed CI architecture design + implementation. Three workflows now committed to `.github/workflows/`:
+
+1. **`ci-core-tests.yml`** — Linux runner. Tests `ARRunnerCore` with `swift test` on `swift:6.0-jammy` container.
+2. **`ci-build.yml`** — macOS runner. Builds all four app targets (Watch, Phone, WidgetsPhone, WidgetsWatch) via xcodebuild 4-way matrix.
+3. **`codeql.yml`** — GitHub CodeQL security analysis (PR + weekly).
+
+**Critical for Amber:** The Linux ci-core-tests job now enforces ARRunnerCore platform-agnosticism mechanically. Future PRs (from Weiss, Laughlin, and all subsequent contributors) must keep concrete Apple-framework code out of Core. Your three scaffold fixes enabled this — the Linux spike only works because those bugs are now resolved. This is architectural enforcement paying dividends immediately.
+
+**Architecture assurance:** Weiss's BLE wrapper (ActiveLook SDK) must live in ARRunnerWatch, not ARRunnerCore. Laughlin's HealthKit + WatchConnectivity code must live in ARRunnerWatch, not ARRunnerCore. The Linux ci-core-tests job blocks any slip-ups. This is the payoff from D8 (Swift 6 strict concurrency) + ADR-007 (protocol boundaries).
+
+**Timeline:** PR #3 (chore/ci-workflows) queued behind PR #2 (macos-build-validation). Joe will open both manually. When merged, all subsequent feature branches auto-validate.
+
+**Reference:** `.squad/orchestration-log/2026-05-14T21:00:00Z-richards.md` for full ADRs and design rationale. `.squad/decisions.md` now contains the full CI architecture decision with all trade-offs captured.
+
