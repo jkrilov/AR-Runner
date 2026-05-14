@@ -21,6 +21,10 @@ fileGroups:
   - docs
   - project.yml
 
+packages:
+  ARRunnerCore:
+    path: ARRunnerCore
+
 targets:
   ARRunnerWatch:
     type: application.watchapp2
@@ -34,6 +38,7 @@ targets:
         embed: true
         destinationFilters:
           - watchOS
+      - package: ARRunnerCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.watch
@@ -70,6 +75,7 @@ targets:
         embed: true
         destinationFilters:
           - iOS
+      - package: ARRunnerCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.phone
@@ -104,6 +110,8 @@ targets:
     sources:
       - path: ARRunnerWidgets
         optional: true
+    dependencies:
+      - package: ARRunnerCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.widgets
