@@ -24,6 +24,19 @@
 
 <!-- Append learnings below -->
 
+### Swift 6 StrictConcurrency Redundant-Flag CI Break — 2026-05-14T17:08:00-04:00
+
+- **Trigger:** PR #3 (chore/ci-workflows) failed all 5 build checks with `error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6`.
+- **Root cause:** Scaffold had `.enableUpcomingFeature("StrictConcurrency")` in `ARRunnerCore/Package.swift` (and `SWIFT_STRICT_CONCURRENCY: complete` in `project.yml`) — both redundant under Swift 6 language mode.
+- **Why it slipped:** Joe's local toolchain is Swift 6.3.2 which silently tolerates the redundant flag. CI runners use the Xcode 16 / Swift 6.0 stable toolchain which treats it as a hard error. **Local-vs-CI toolchain skew is the gotcha to remember.** Treat CI as the authoritative compiler for anything time-sensitive.
+- **Fix:** Stripped both declarations. Swift 6 language mode (`swift-tools-version: 6.0` + `.swiftLanguageMode(.v6)` per target + `SWIFT_VERSION: 6.0` at project base) is now the single source of truth. D8 is unchanged — strict concurrency is still mandatory, just enforced implicitly. Commit `350eae0`.
+- **Verification:** `swift build` clean (~1s). `xcodebuild -scheme ARRunnerWatch -destination 'generic/platform=watchOS Simulator'` → `** BUILD SUCCEEDED **`. Pushed to chore/ci-workflows; PR will auto-rerun.
+- **Upcoming-feature default landscape (Swift 6):** Already on by default — don't manually enable: `StrictConcurrency`, `BareSlashRegexLiterals`, `ConciseMagicFile`, `ImportObjcForwardDeclarations`, `DisableOutwardActorInference`, `IsolatedDefaultValues`, `ForwardTrailingClosures`. Still optional and OK to enable explicitly: `ExistentialAny`, `InternalImportsByDefault` (verify before stripping).
+- **For Laughlin (watchOS scaffolding):** When copying boilerplate from Apple sample code or WWDC sessions, strip any `.enableUpcomingFeature(...)` lines on import — most samples target Swift 5.x and they'll be either redundant or CI-breakers under our Swift 6.0 CI. If you genuinely need a feature that ISN'T default-on in Swift 6, talk to me first.
+- **For Weiss (ActiveLook SDK / BLE):** Same as above — ActiveLook examples are written against older toolchains. Also: if you ever vendor in a third-party Package.swift, check its `swift-tools-version` header and `swiftSettings` for the same pattern before committing.
+- **For future scaffold edits (everyone):** Before pushing any change to `Package.swift` build settings or `project.yml` Swift settings, run `swift build` AND a watchOS-target `xcodebuild` locally. The two compilers don't always agree, and CI runs both. Pre-flight skill captured at `.squad/skills/swift-6-strict-concurrency-default/SKILL.md`.
+- **Decision drop:** `.squad/decisions/inbox/richards-strict-concurrency-cleanup.md` — Scribe will fold into ledger.
+
 ### System Architecture Plan — 2026-05-14T15:03:23-04:00
 
 - **Deliverable:** `docs/planning/architecture.md` (v0.1) — full system architecture for AR-Runner
