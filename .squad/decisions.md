@@ -131,6 +131,100 @@ Full details in docs/planning/product-brief.md.
 
 ---
 
+## Session 2026-05-14: Foundation Scaffold & BLE Spike (Laughlin, Weiss)
+
+### 2026-05-14T15:41:26-04:00: User directive — Track Squad Logs
+**By:** Joe (via Copilot)
+
+`.squad/log/` and `.squad/orchestration-log/` are tracked in git going forward — NOT gitignored. This aligns with the `merge=union` drivers in `.gitattributes` for those paths. The previous gitignore exclusion was inherited boilerplate and is incorrect for this project. Scribe should stage these files normally (no `-f` flag needed once `.gitignore` is fixed).
+
+**Rationale:** User request — captured for team memory. Resolves contradiction between `.gitignore` and `.gitattributes`.
+
+---
+
+### 2026-05-14T15:44:37-04:00: User directive — No Direct Main
+**By:** Joe (via Copilot)
+
+From now on, NO work happens directly on `main`. All changes — code, docs, squad state — land via feature branches and pull requests. `main` is the protected integration line.
+
+Branch naming convention: `feat/{slug}` for features, `spike/{slug}` for research, `fix/{slug}` for bug fixes, `chore/{slug}` for maintenance.
+
+**Rationale:** User request — captured for team memory. Standard branch hygiene.
+
+---
+
+### 2026-05-14T15:44:37-04:00: Laughlin — v0.1 Scaffolding Implementation Note
+
+**Decision:** Use a **single-target watchOS app** (`ARRunnerWatch`) for the foundation scaffold instead of adding a separate watch extension target, and place the foreground `StartWorkoutIntent` inside the shared WidgetKit extension (`ARRunnerWidgets`) rather than creating a standalone `ARRunnerAppIntents` target.
+
+**Why:**
+- Modern SwiftUI watchOS apps no longer need a separate extension target for basic lifecycle scaffolding.
+- The watch workout is foreground-launched per D7, so a dedicated intents extension is unnecessary at v0.1 scaffold depth.
+- Keeping the intent in the widget target keeps the launch surfaces together for Smart Stack and quick-start flows while the core app shells remain thin.
+- This keeps `project.yml` smaller and easier for Joe to generate and inspect on macOS before real capabilities and signing are finalized.
+
+**Follow-up:** If Action Button or Shortcuts integration later needs a separately signed intent surface, split `StartWorkoutIntent` into a dedicated app intents target after hardware validation.
+
+---
+
+### 2026-05-14T15:44:37-04:00: Weiss — Spike Verdict: watchOS BLE for ActiveLook Glasses (D1 Implementation)
+
+**Status:** Spike Complete — Ready for Build Phase  
+**Related Decision:** D1 (Watch owns BLE connection directly)
+
+**Verdict: 🟢 YES — Feasible to Proceed with v0.1**
+
+**Summary:**
+Decision D1 locked watch-primary BLE ownership. This spike confirms: **watchOS 11 CoreBluetooth can successfully wrap the ActiveLook GATT profile for v0.1 ARRunner workouts.**
+
+- **Feasibility:** 🟢 Confirmed
+- **Scope:** Medium (~2–3 weeks)
+- **Risks:** Manageable; no blockers
+- **Recommendation:** Proceed with watchOS BLE wrapper build in v0.1
+
+**Key Findings:**
+
+1. **GATT Profile:** ActiveLook uses standard BLE GATT with 5 characteristics in a custom service (`0783B03E-8535-B5A0-7140-A304D2495CB7`). RX (write) and TX (notify) are the primary paths; Control characteristic handles flow control. No proprietary extensions block watchOS.
+
+2. **CoreBluetooth Availability:** `CBCentralManager`, `CBPeripheral`, and `CBCharacteristic` are fully available on watchOS 11+. Central role (client) is fully functional. No restore identifiers on watchOS (reconnection must be explicit).
+
+3. **Background Privilege:** BLE scanning and connection persist **only during active HKWorkoutSession**. This is the critical dependency: BLE lifecycle ties directly to workout lifecycle (owned by Laughlin's `WorkoutSessionManager`).
+
+4. **Protocol Budget:** Binary framing is simple (`0xFF + CommandID + Length + Data + 0xAA`). Command size ~20–40 bytes; sustainable rate is 1–2 Hz for metrics (~100 bytes/sec, ~7% of BLE practical limit). MTU negotiation tested; fragmentation fallback works.
+
+5. **Risks & Mitigations:**
+   - MTU negotiation (Medium): Implement chunked writes; early hardware stress-test
+   - HKWorkoutSession drops (Low): Auto-reconnect with exponential backoff; log in metadata
+   - Latency > 200ms (Low): Profile on real hardware (Watch SE + glasses); fallback to write-without-response
+   - No deadlock risks (Low): Use continuation bridge for CB delegates; follow Swift 6 actor isolation rules
+
+**Effort Estimate:**
+
+| Phase | Effort | Timeline |
+|-------|--------|----------|
+| **Week 1:** BLE discovery, connection state machine, TX/RX wiring | 200–250 LOC | Core plumbing |
+| **Week 2:** Command framing, flow control, reconnection, error handling | 250–300 LOC | Protocol impl |
+| **Week 3:** Integration with `WorkoutSessionManager`, metrics pipeline, stress-test | 100–150 LOC | Integration & validation |
+| **Total** | ~600 LOC | 2–3 weeks |
+
+**Integration Points:**
+
+1. **Tie to HKWorkoutSession:** BLE manager must start when workout starts, stop when session ends.
+2. **Define `GlassesFrameTransport` protocol** in ARRunnerCore (placeholder in architecture ADR-007).
+3. **Wire metrics pipeline:** `WorkoutTick` (1 Hz from HealthKit) → `updateField(layoutId:fieldIndex:value:)` → BLE write.
+4. **Log BLE drops** in run metadata (per D9, side store for AR-specific data).
+
+**Next Steps (Handoff to Build Phase):**
+
+1. **Laughlin:** `WorkoutSessionManager` owns HKWorkoutSession lifecycle; expose hooks for BLE start/stop.
+2. **Weiss:** Implement `ActiveLookGlasses` actor (stub provided in spike memo) + command framing + reconnection logic.
+3. **Richards:** Define `GlassesFrameTransport` protocol boundary in ARRunnerCore; align with metrics pipeline.
+4. **All:** Hardware validation in week 3 — profile latency, stress-test battery impact, measure round-trip delays.
+
+**Detailed findings:** See `docs/research/activelook/watchos-ble-spike.md`
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

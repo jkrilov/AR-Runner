@@ -20,3 +20,12 @@
 - **Next:** Await Joe's decision point responses (§ 6, decisions.md/inbox). Coordinate with Weiss on BLE. Then start Swift scaffolding.
 
 ### 2026-05-14: Team update from Joe — 9 architecture decisions locked (see decisions.md D1-D9). Next phase: Xcode scaffolding (Laughlin) + ActiveLook watchOS BLE spike (Weiss).
+
+### 2026-05-14 — v0.1 workspace scaffolding landed
+- Added `project.yml` with a modern single-target watchOS app (`ARRunnerWatch`), an iOS companion app (`ARRunnerPhone`), and one multi-destination WidgetKit extension (`ARRunnerWidgets`).
+- Scaffolded `ARRunnerCore/Package.swift` plus shared files under `ARRunnerCore/Sources/ARRunnerCore/` for sport-agnostic models, versioned WatchConnectivity messages, and the AR side-store contract.
+- Stubbed watch target files in `ARRunnerWatch/Views/`, `ARRunnerWatch/Workout/`, `ARRunnerWatch/Glasses/`, and `ARRunnerWatch/Sync/` with Swift 6-safe actors and `@MainActor` UI entry points.
+- Stubbed phone shell files in `ARRunnerPhone/Views/` and `ARRunnerPhone/Sync/`, plus widget launch surfaces in `ARRunnerWidgets/StartWorkoutWidget.swift` and `ARRunnerWidgets/StartWorkoutIntent.swift`.
+- Chose a single watch app target without a separate WatchKit extension for the 2026-era scaffold, and embedded the foreground launch App Intent in the widget extension instead of creating a standalone `ARRunnerAppIntents` target.
+
+### 2026-05-14: Team update from Joe — v0.1 foundation scaffold + BLE spike landed on feat/v01-foundation. Branch awaiting Joe's push & PR. Next: WorkoutController impl (Laughlin) + watchOS BLE wrapper impl (Weiss).
