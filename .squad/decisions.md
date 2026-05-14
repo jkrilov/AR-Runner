@@ -406,6 +406,44 @@ This branch (`chore/ci-workflows`) sits on top of `chore/macos-build-validation`
 
 ---
 
+---
+
+## 2026-05-14T17:08:00-04:00: StrictConcurrency Upcoming-Feature Flag Cleanup (Richards)
+
+**Status:** Implementation Complete — D8 Reinforced  
+**PR:** #3 (chore/ci-workflows)  
+**Commits:** 350eae0, 39bfa07
+
+### Context
+
+PR #3 failed all 5 CI checks with:
+> error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6
+
+Two redundant declarations were found:
+1. `ARRunnerCore/Package.swift` — `.enableUpcomingFeature("StrictConcurrency")`
+2. `project.yml` — `SWIFT_STRICT_CONCURRENCY: complete`
+
+Both are unnecessary under Swift 6 language mode. Swift 6.0 CI treats the flag as an error; Swift 6.3.2 locally tolerated it silently — the classic toolchain-version gap.
+
+### Decision
+
+Removed both redundant declarations. Swift 6 language mode (`swift-tools-version: 6.0` + `.swiftLanguageMode(.v6)` + `SWIFT_VERSION: 6.0`) is the single source of truth.
+
+**D8 unchanged.** Strict concurrency remains mandatory — it's just implicit now, not explicit.
+
+### Standing rule for team
+
+- **Do NOT** add `.enableUpcomingFeature("StrictConcurrency")`, `SWIFT_UPCOMING_FEATURE_STRICT_CONCURRENCY`, or `SWIFT_STRICT_CONCURRENCY` flags.
+- **DO** ensure new packages declare `swift-tools-version: 6.0` (or higher) + `.swiftLanguageMode(.v6)`.
+- **DO** ensure new Xcode targets inherit `SWIFT_VERSION: '6.0'` from project.yml.
+- CI is the authoritative compiler; local toolchains run ahead — deprecated flags may silently pass locally but hard-fail CI.
+
+### For Laughlin & Weiss
+
+When importing Apple samples or third-party SDK examples (especially ActiveLook), strip `.enableUpcomingFeature("StrictConcurrency")` lines on import — it's a CI-breaker under Swift 6.0 even though local builds may pass.
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

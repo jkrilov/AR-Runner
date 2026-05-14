@@ -42,3 +42,17 @@ Richards completed CI architecture design + implementation. Three workflows now 
 
 **Reference:** `.squad/orchestration-log/2026-05-14T21:00:00Z-richards.md` for full ADRs and design rationale. `.squad/decisions.md` now contains the full CI architecture decision with all trade-offs captured.
 
+### 2026-05-14T21:12:00Z: Scribe — CI Swift 6.0 Toolchain Gotcha (Richards fix landed)
+
+**From:** Scribe (session orchestration)
+
+PR #3 (chore/ci-workflows) first real CI run caught hard error:
+> error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6
+
+**Root cause:** Scaffold included redundant `.enableUpcomingFeature("StrictConcurrency")` in `ARRunnerCore/Package.swift`. Local Swift 6.3.2 silently tolerates it; CI Swift 6.0 treats as hard error. This is the classic toolchain-version gap — your smoke test couldn't catch this because you tested locally against 6.3.2.
+
+**Fix applied (350eae0):** Removed the explicit flag. Swift 6 language mode (`swift-tools-version: 6.0` + `.swiftLanguageMode(.v6)`) is the single source of truth.
+
+**Key lesson for future smoke tests:** When validating across platforms, verify against the CI toolchain version (6.0), not just local. Deprecated flags, newly-removed APIs, and other version-specific changes will silently pass local build but hard-fail CI. Treat CI as the authoritative compiler.
+
+**Action:** Your local smoke-test process is still valuable — it caught the earlier three bugs. This one slipped through because the local toolchain was too permissive. Consider adding a "CI toolchain simulation" step for future validation sprints.

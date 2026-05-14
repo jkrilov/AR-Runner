@@ -57,3 +57,18 @@ Richards completed CI architecture design + implementation. Three workflows now 
 **For your WorkoutController implementation:** Your PR must pass ci-core-tests (Linux), all ci-build matrix jobs (macOS 4 targets), and CodeQL. Plan ~15 minutes of CI time per PR after cache warm-up. Local validation matches CI 1:1 — see docs/dev/ci-workflows.md for repro steps.
 
 **Reference:** `.squad/orchestration-log/2026-05-14T21:00:00Z-richards.md` for full ADRs and design rationale.
+
+### 2026-05-14T21:12:00Z: Scribe — CI Swift 6.0 Toolchain Gotcha (Richards fix landed)
+
+**From:** Scribe (session orchestration)
+
+PR #3 (chore/ci-workflows) first real CI run caught hard error:
+> error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6
+
+**Root cause:** Your original scaffold included explicit `.enableUpcomingFeature("StrictConcurrency")` in `ARRunnerCore/Package.swift`. This is redundant and breaks on Swift 6.0 CI (treats as hard error). Local Swift 6.3.2 silently tolerated it.
+
+**Fix applied (350eae0):** Removed the explicit flag. Swift 6 language mode (`swift-tools-version: 6.0` + `.swiftLanguageMode(.v6)`) is the single source of truth.
+
+**Lesson:** Local development toolchains run ahead of CI. Flags that work locally can hard-fail CI. When copying Apple/third-party examples (especially ActiveLook), **strip `.enableUpcomingFeature("StrictConcurrency")` lines on import** — it's a CI-breaker even if local builds pass.
+
+**Action:** No change needed to your WorkoutController—your code will inherit the fixed package settings. Just remember this toolchain gap for future WorkoutController PRs.
