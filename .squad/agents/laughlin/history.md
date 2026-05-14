@@ -72,3 +72,19 @@ PR #3 (chore/ci-workflows) first real CI run caught hard error:
 **Lesson:** Local development toolchains run ahead of CI. Flags that work locally can hard-fail CI. When copying Apple/third-party examples (especially ActiveLook), **strip `.enableUpcomingFeature("StrictConcurrency")` lines on import** — it's a CI-breaker even if local builds pass.
 
 **Action:** No change needed to your WorkoutController—your code will inherit the fixed package settings. Just remember this toolchain gap for future WorkoutController PRs.
+
+### 2026-05-14T21:26:21Z: Scribe — watchOS Simulator Runtime Missing on macOS CI
+
+**From:** Scribe (session orchestration)
+
+Richards's second fix (commit 079cb73, chore/ci-workflows) resolved ARRunnerWatch build failures. **Root cause:** macOS-latest CI runners ship Xcode 16 with watchOS 11 SDK but **not** the simulator runtime.
+
+**Why:** iOS (and other commonly-tested platform) simulator runtimes are bundled in the Xcode package. watchOS simulator runtime is downloaded separately via `xcodebuild -downloadPlatform watchOS`.
+
+**Key insight for your WorkoutController:** App schemes (ARRunnerWatch) trigger destination resolution during build, which probes for the simulator runtime and fails if missing. **Non-app schemes don't trigger this probe** — that's why the widget target (non-app) passed while the watch target failed on the same runner.
+
+**Fix applied:** Conditional download step gated on matrix cell. Only watchOS matrix cells run `sudo xcodebuild -downloadPlatform watchOS`; iOS stays fast.
+
+**For your implementation:** Your WorkoutController runs in ARRunnerWatch (app target). When you test on CI, expect this runtime download step to run automatically. On your local macOS machine, you likely have the watchOS simulator runtime already cached — this is why it worked locally but failed CI first time.
+
+**Reference:** `.squad/orchestration-log/2026-05-14T21:26:21Z-richards.md` for full details.
