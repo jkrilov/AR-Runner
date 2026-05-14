@@ -225,6 +225,83 @@ Decision D1 locked watch-primary BLE ownership. This spike confirms: **watchOS 1
 
 ---
 
+## Session 2026-05-14: Foundation Smoke Test & Development Operations
+
+### 2026-05-14T16:28:08-04:00: Amber — macOS Build Validation (v0.1 scaffold)
+
+**Date:** 2026-05-14T16:28:08-04:00  
+**Author:** Amber (QA & Fitness Domain)  
+**Branch / PR:** `chore/macos-build-validation` (commit ecb8179, pushed)  
+**Verdict:** 🟢 **Green — scaffold ships clean on macOS after surgical fixes.**
+
+**Summary:** First macOS build of the v0.1 scaffold (authored on Windows). All four xcodebuild targets and the `swift test` suite are green. Three scaffold bugs caught and fixed before Weiss / Laughlin / metrics work stacks on top.
+
+**Test results:**
+- ARRunnerCore unit tests: 6/6 pass (`swift test`).
+- App builds: ARRunnerWatch, ARRunnerPhone, ARRunnerWidgetsPhone, ARRunnerWidgetsWatch — all 🟢 with `CODE_SIGNING_ALLOWED=NO`.
+- Swift 6 strict concurrency: zero warnings across scaffold. D8 is in good shape.
+
+**Fixes landed:**
+1. ARRunnerWatch: `application.watchapp2` (legacy) → `application` + `WKApplication: true`.
+2. ARRunnerWidgets: split single shared appex into per-platform `ARRunnerWidgetsPhone` + `ARRunnerWidgetsWatch`, sharing one `ARRunnerWidgets/` source directory (required by app-extension parent-prefix rule; preserves Laughlin's single-codebase intent).
+3. `StartWorkoutWidget.supportedFamilies`: gated `.systemSmall` behind `#if !os(watchOS)`.
+4. `.gitignore`: added `*.xcodeproj/`, `Config/`, `.build/`, `DerivedData/`, `.swiftpm/`, etc. (xcodegen-derived).
+5. `docs/dev/setup.md`: corrected workspace reference (no `.xcworkspace` produced; `.xcodeproj` only).
+
+**Follow-up items (not blockers):**
+- **Joe — signing/capabilities:** Wire `DEVELOPMENT_TEAM` and confirm HealthKit / Bluetooth / app-group entitlements before on-device run.
+- **Laughlin — AppIntents framework link:** Build warning goes away once parent target imports AppIntents or wires intent into launch flow.
+- **Weiss — BLE wrapper:** D8 surface is clean; recommend `@preconcurrency import` at ActiveLook iOS SDK boundary. No scaffold-level concerns.
+- **Watch Smart Stack:** currently `[.accessoryRectangular]` only on watchOS. Re-check against D7 launch surfaces when Laughlin wires Action Button / Smart Stack flow.
+
+**Artifacts:** 
+- Findings: `docs/dev/macos-build-validation.md`
+- Reusable pattern: `.squad/skills/xcodegen-shared-widget-per-platform/SKILL.md`
+- Related decisions: D2 (watchOS 11 / iOS 18), D7 (foreground intent launch), D8 (Swift 6 strict concurrency)
+
+---
+
+## Session 2026-05-14: Foundation & Development Operations (cont.)
+
+### 2026-05-14T16:09:31-04:00: User directive — dev workflow split
+
+**By:** Joe (via Copilot)
+
+**What:** AR-Runner development is split across two environments:
+- **Windows** — Squad coordination, agent-driven code generation, editing Swift source / project.yml / docs / Markdown, git operations, PR review on GitHub.
+- **Mac** — Running `xcodegen generate`, compiling Swift against Apple frameworks (HealthKit/WatchKit/WidgetKit/CoreBluetooth), running Simulator, BLE testing against real ActiveLook glasses, code signing, TestFlight, App Store.
+
+Cadence: spawn agents → review PR → switch to Mac → build/run/verify → repeat.
+
+**Why:** User request — practical operational pattern for the project. ARRunnerCore is theoretically Linux-compileable (pure Swift, no Apple frameworks), so future CI could `swift test` on Linux, but Mac is the current build authority.
+
+---
+
+### 2026-05-14T16:09:31-04:00: Tooling decision — XcodeGen for project generation
+
+**By:** Joe (via Copilot) — codified during v0.1 foundation scaffolding
+
+**What:** The Xcode workspace and project files are GENERATED from `project.yml` via XcodeGen (`brew install xcodegen` on Mac). The repo does NOT commit `.xcodeproj` or `.xcworkspace` bundles. Source of truth is `project.yml` + Swift sources + `Package.swift` files.
+
+To work locally:
+1. Clone repo
+2. On Mac, run `xcodegen generate` from repo root
+3. Open `AR-Runner.xcworkspace`
+
+**Why:** (1) Editable from non-Mac environments (Squad on Windows). (2) Eliminates `.xcodeproj` merge conflicts. (3) Reproducible: anyone running `xcodegen generate` gets identical project. (4) Reviewable: `project.yml` diffs make sense in PRs. Standard pattern for 2026-era Swift mixed-environment projects.
+
+---
+
+### 2026-05-14T16:32:00-04:00: User directive — Claude Opus 4.7 for code-writing agents
+
+**By:** Joe Krilov (via Copilot)
+
+**What:** Code-writing agents (Laughlin, Weiss, Amber, Richards) must use `claude-opus-4.7-1m-internal` as their default model. Persistent across sessions via `.squad/config.json` → `agentModelOverrides`. Scribe and Ralph remain on `claude-haiku-4.5` (mechanical ops). Killian remains on auto/haiku.
+
+**Why:** User request — captured for team memory. Opus 4.7 1M-context is the top tier currently available; Joe wants highest quality on actual code production.
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

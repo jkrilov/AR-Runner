@@ -17,13 +17,12 @@ From the repository root on macOS:
 xcodegen generate
 ```
 
-XcodeGen reads `project.yml` and generates the workspace and project files needed for Apple development.
-The generated workspace is `AR-Runner.xcworkspace`.
+XcodeGen reads `project.yml` and generates the Xcode project file (`AR-Runner.xcodeproj`) needed for Apple development. Both the project bundle and the per-target `Config/` plists and entitlements are derived from `project.yml` and are gitignored — regenerate them with `xcodegen generate` after pulling.
 
-## Open the workspace
+## Open the project
 
 ```bash
-open AR-Runner.xcworkspace
+open AR-Runner.xcodeproj
 ```
 
 ## Shared package layout
