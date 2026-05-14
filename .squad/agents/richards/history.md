@@ -86,3 +86,19 @@
 - **Punt list (TODO when CI is green):** lint tool selection (swiftlint vs swift-format), coverage upload, release/TestFlight workflow, Dependabot (no external SPM deps yet), branch protection on main (Joe must toggle in repo settings).
 - **Skill captured:** `.squad/skills/swift-linux-macos-runner-split/SKILL.md` — reusable Linux-Core + macOS-shell CI pattern for any Swift project with a pure-Swift shared SPM core.
 - **PR:** Joe to file manually at `https://github.com/jkrilov/AR-Runner/pull/new/chore/ci-workflows` (gh-auth account mismatch).
+
+### Xcode Version vs. Simulator Runtime Catalog — 2026-05-14T21:40:00Z (Amber revision + Scribe log)
+
+- **From Amber's fresh-eyes investigation (commit 38580ce):** Your `-downloadPlatform` fix in commit 079cb73 actually regressed CI from 1→3 failures. Root cause was **not** a destination-spec mismatch as initially assumed.
+- **The actual issue:** `macos-15` runner image under Xcode 16.0 has the iOS/watchOS **SDKs** but lacks the **simulator runtimes**. The symptom was different per scheme type:
+  - App schemes (ARRunnerWatch) probe for installed simulator runtime → fail with `watchOS 11.0 is not installed`.
+  - App-extension schemes (ARRunnerWidgetsWatch) don't probe the same way → pass silently, masking the gap.
+- **Why `-downloadPlatform` failed:** That command requires Apple ID auth, which GitHub-hosted runners reject with exit 70. Portability was the wrong tradeoff.
+- **The fix (Amber → commit 38580ce):** Pin Xcode 16.4 via `maxim-lobanov/setup-xcode@v1`. Per the [actions/runner-images macos-15 manifest](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md), Xcode 16.4 ships with iOS 18.5 + watchOS 11.5 simulator runtimes **pre-installed** — both ≥ our D2 minimums. No download step needed.
+- **Key memory for next time you touch CI:**
+  1. Always cross-check the [runner-images manifest](https://github.com/actions/runner-images) — check both "Installed SDKs" **and** "Installed Simulators" columns.
+  2. An Xcode symlink pin (`/Applications/Xcode_16.app`) is brittle; the symlink can shift when the image rotates. Use `maxim-lobanov/setup-xcode@v1` with explicit version instead.
+  3. Asymmetric scheme-type failures (app passes, extension fails, or vice versa) are often simulator-runtime gaps, not destination-spec bugs.
+  4. The `Ineligible destinations:` error block is an enumeration fallback, not a destination-spec diagnosis — read the full block, not just the `name:` field.
+- **Going forward:** When you need a runtime that isn't pre-baked on any image, Option B is cached DMG + `xcrun simctl runtime add`, or Option C is `mxcl/xcodes-action`. Avoid `-downloadPlatform` in unattended CI.
+- **Skill updates:** `.squad/skills/swift-linux-macos-runner-split/SKILL.md` now documents this gotcha + confidence bumped to **medium** (pattern recognized across two fix iterations).
