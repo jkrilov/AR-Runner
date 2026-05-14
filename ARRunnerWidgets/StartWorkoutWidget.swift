@@ -51,7 +51,15 @@ struct StartWorkoutWidget: Widget {
         }
         .configurationDisplayName("Start AR Run")
         .description("Launch AR-Runner into the workout flow from Smart Stack or the iPhone widget gallery.")
-        .supportedFamilies([.systemSmall, .accessoryRectangular])
+        .supportedFamilies(StartWorkoutWidget.supportedFamilies)
+    }
+
+    static var supportedFamilies: [WidgetFamily] {
+        #if os(watchOS)
+        [.accessoryRectangular]
+        #else
+        [.systemSmall, .accessoryRectangular]
+        #endif
     }
 }
 
