@@ -1,0 +1,46 @@
+{
+  "agents": {
+    "richards": {
+      "created_at": "2026-05-14T18:30:31.634Z",
+      "persistent_name": "Richards",
+      "universe": "The Running Man (1987)",
+      "status": "active"
+    },
+    "killian": {
+      "created_at": "2026-05-14T18:30:31.634Z",
+      "persistent_name": "Killian",
+      "universe": "The Running Man (1987)",
+      "status": "active"
+    },
+    "laughlin": {
+      "created_at": "2026-05-14T18:30:31.634Z",
+      "persistent_name": "Laughlin",
+      "universe": "The Running Man (1987)",
+      "status": "active"
+    },
+    "weiss": {
+      "created_at": "2026-05-14T18:30:31.634Z",
+      "persistent_name": "Weiss",
+      "universe": "The Running Man (1987)",
+      "status": "active"
+    },
+    "amber": {
+      "created_at": "2026-05-14T18:30:31.634Z",
+      "persistent_name": "Amber",
+      "universe": "The Running Man (1987)",
+      "status": "active"
+    },
+    "scribe": {
+      "created_at": "2026-05-14T18:30:31.634Z",
+      "persistent_name": "Scribe",
+      "universe": "The Running Man (1987)",
+      "status": "active"
+    },
+    "ralph": {
+      "created_at": "2026-05-14T18:30:31.634Z",
+      "persistent_name": "Ralph",
+      "universe": "The Running Man (1987)",
+      "status": "active"
+    }
+  }
+}

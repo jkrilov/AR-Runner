@@ -1,0 +1,23 @@
+{
+  "assignment_cast_snapshots": {
+    "repl-cast-2026-05-14T18:30:31.634Z": {
+      "created_at": "2026-05-14T18:30:31.634Z",
+      "agents": [
+        "richards",
+        "killian",
+        "laughlin",
+        "weiss",
+        "amber",
+        "scribe",
+        "ralph"
+      ],
+      "universe": "The Running Man (1987)"
+    }
+  },
+  "universe_usage_history": [
+    {
+      "universe": "The Running Man (1987)",
+      "used_at": "2026-05-14T18:30:31.634Z"
+    }
+  ]
+}
