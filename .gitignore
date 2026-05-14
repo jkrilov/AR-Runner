@@ -4,3 +4,13 @@
 .squad/.scratch/
 # Squad: SubSquad activation file (local to this machine)
 .squad-workstream
+
+# Xcode / xcodegen generated artifacts — derived from project.yml
+*.xcodeproj/
+*.xcworkspace/
+Config/
+.build/
+DerivedData/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
