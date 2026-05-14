@@ -1,0 +1,71 @@
+name: CodeQL — Swift
+
+# GitHub CodeQL security analysis for Swift sources.
+# Runs on PRs, pushes to main, and a weekly schedule (catches advisories
+# published after the code lands).
+#
+# CodeQL Swift requires a macOS runner and a real build — we re-run
+# xcodegen + xcodebuild for ARRunnerWatch as the build driver (the
+# largest single target that pulls in ARRunnerCore + ARRunnerWidgetsWatch).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Sunday 07:00 UTC — pick up newly-published Swift queries weekly
+    - cron: '0 7 * * 0'
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    name: CodeQL (swift)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: swift
+          # Use security-extended to surface a broader set of queries than
+          # the default suite. Performance cost is acceptable on the weekly
+          # cadence + per-PR.
+          queries: security-extended
+
+      - name: Build for CodeQL (ARRunnerWatch)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project AR-Runner.xcodeproj \
+            -scheme ARRunnerWatch \
+            -destination 'generic/platform=watchOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:swift
