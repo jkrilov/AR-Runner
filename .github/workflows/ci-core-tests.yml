@@ -1,0 +1,53 @@
+name: CI — Core Tests (Linux)
+
+# Runs ARRunnerCore SPM unit tests on the open-source Swift toolchain.
+# ARRunnerCore is pure Swift / Foundation — no Apple framework imports — so
+# this job runs on free Linux runner minutes. App-shell builds still require
+# macOS (see ci-build.yml).
+#
+# Trade-off documented in .squad/decisions/inbox/richards-ci-architecture.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-core-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  swift-test:
+    name: swift test (ARRunnerCore, Linux)
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.0-jammy
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ARRunnerCore
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Cache SwiftPM build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ARRunnerCore/.build
+            ~/.cache/org.swift.swiftpm
+          key: spm-linux-${{ hashFiles('ARRunnerCore/Package.swift', 'ARRunnerCore/Package.resolved') }}
+          restore-keys: |
+            spm-linux-
+
+      - name: swift build
+        run: swift build --build-tests
+
+      - name: swift test
+        run: swift test --skip-build
