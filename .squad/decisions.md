@@ -968,3 +968,37 @@ This branch (`chore/ci-workflows`) sits on top of `chore/macos-build-validation`
 - `.github/workflows/codeql.yml`
 - `docs/dev/ci-workflows.md`
 - `.squad/skills/swift-linux-macos-runner-split/SKILL.md` (reusable pattern)
+
+## 2026-05-15T14:01:55-04:00: Amber — Keep `FakeHealthKitSubstrate` and `MockGlassesFrame` alongside canonical stubs
+
+**Author:** Amber  
+**Context:** PR #6 reconciliation after #5 (`StubGlassesTransport`) and #7 (`InMemoryWorkoutHealthSubstrate`) merged into main.
+
+### Decision
+
+The test target keeps two QA mocks alongside the canonical happy-path stubs that landed in `ARRunnerCore` from PRs #5 and #7:
+
+| Concern | Canonical stub (in `ARRunnerCore`) | QA mock (in test target) |
+|---|---|---|
+| `GlassesFrameTransport` | `StubGlassesTransport` (Weiss, #5) | `MockGlassesFrame` (Amber) |
+| `WorkoutHealthSubstrate` | `InMemoryWorkoutHealthSubstrate` (Laughlin, #7) | `FakeHealthKitSubstrate` (Amber) |
+
+### Rationale
+
+The canonical stubs are deliberately simple — they're the "give me a working transport / substrate so my unit test compiles" surface, suitable for SwiftUI previews, basic lifecycle coverage, and ad-hoc happy-path checks. They don't carry the scenario-replay or failure-injection knobs QA needs.
+
+The QA mocks add explicitly:
+
+- **`MockGlassesFrame`** — `simulateDisconnect(reason:)` / `simulateReconnect(after:)` with paired `GlassesStatusEvent.dropped/.reconnected` emissions; one-shot failure injection on `connect` / `selectLayout` / `updateField`; `simulateBattery(_:)` for D9 metadata fixtures; recorded `selectedLayouts` and `receivedUpdates` for after-the-fact assertions.
+- **`FakeHealthKitSubstrate`** — pre-canned `HealthKitScenario` replays (`steadyRun` / `intervals` / `explicit` / `ended`) that fire automatically after `begin(...)`, so integration tests stay declarative rather than imperative metric-pushing; stable `workoutID` chosen at init for deterministic D9 side-store round-trips; `isScenarioComplete` poll for tests that need to await replay.
+
+### Boundaries
+
+- The canonical stubs stay the public-surface "default" doubles; downstream code that just needs *a* transport/substrate should reach for those.
+- The QA mocks are test-target-only (`@testable import ARRunnerCore`) and exist to exercise corner cases that the canonical stubs deliberately don't cover.
+- Both sets coexist; there is no plan to merge them. If any QA mock affordance becomes generally useful, lift just that affordance into the canonical stub via a follow-up PR rather than absorbing the whole mock.
+
+### Out-of-scope
+
+- Did NOT modify `GlassesFrameTransport`, `WorkoutHealthSubstrate`, `WorkoutController`, `StubGlassesTransport`, or `InMemoryWorkoutHealthSubstrate` — those types are now canonical on `main`.
+- Did NOT add new behaviours beyond reconciliation (the integration-test scope is unchanged: D4 happy path).
