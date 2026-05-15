@@ -8,6 +8,16 @@ import SwiftUI
 /// `@MainActor` view model that owns a `WorkoutController` and republishes its
 /// state + metrics for SwiftUI consumption. The controller itself is the
 /// authoritative actor — this layer only mirrors observable state.
+///
+/// **v0.2 additions:**
+/// - **Finish menu (decision #5):** `requestFinish()` pauses the workout and
+///   transitions to `.pendingFinish`. The view shows Save / Cancel / Resume.
+/// - **Hybrid energy (decision #4):** `EnergyAccumulator` produces a live kcal
+///   estimate for display. The official number comes from HealthKit on save
+///   and is published on the resulting `WorkoutSummary`.
+/// - **iPhone live mirror (#3):** a 1 Hz tick publisher pushes
+///   `WorkoutTickMessage` snapshots over `WatchConnectivityService`. Sends
+///   are best-effort; if the phone is unreachable the watch keeps running.
 @MainActor
 @Observable
 final class WorkoutViewModel {
@@ -16,8 +26,15 @@ final class WorkoutViewModel {
         case starting
         case running
         case paused
+        /// User tapped Finish — workout is paused awaiting Save/Cancel/Resume.
+        case pendingFinish
         case ending
         case ended(WorkoutSummary)
+        /// User chose Cancel from the Finish menu. The on-device summary is
+        /// discarded; the HKWorkout is still finalized (the substrate
+        /// protocol does not expose a discard path in v0.2 — users can
+        /// delete the workout from the Health app).
+        case cancelled
         case failed(String)
     }
 
@@ -26,34 +43,67 @@ final class WorkoutViewModel {
     private(set) var distanceMeters: Double?
     private(set) var elapsed: TimeInterval = 0
     private(set) var glassesConnected: Bool = false
+    /// Live local kcal estimate (decision #4 hybrid). Replaced by the
+    /// HealthKit-official figure inside `WorkoutSummary` on Save.
+    private(set) var estimatedActiveKilocalories: Double?
 
     private var controller: WorkoutController?
+    private var transport: (any GlassesFrameTransport)?
     private var stateTask: Task<Void, Never>?
     private var metricTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
+    private var tickTask: Task<Void, Never>?
     private var glassesStateTask: Task<Void, Never>?
     private var glassesStatusTask: Task<Void, Never>?
     private var startedAt: Date?
+    private var sport: SportType = .running
+    private var sessionID: UUID?
+    private var energy: EnergyAccumulator?
 
     private let substrateFactory: @Sendable () -> any WorkoutHealthSubstrate
+    private let transportFactory: (@Sendable () -> any GlassesFrameTransport)?
+    private let mirror: WorkoutMirrorPublisher?
+    private let bodyProfile: BodyProfile?
 
-    init(substrateFactory: @escaping @Sendable () -> any WorkoutHealthSubstrate) {
+    init(
+        substrateFactory: @escaping @Sendable () -> any WorkoutHealthSubstrate,
+        transportFactory: (@Sendable () -> any GlassesFrameTransport)? = nil,
+        mirror: WorkoutMirrorPublisher? = nil,
+        bodyProfile: BodyProfile? = nil
+    ) {
         self.substrateFactory = substrateFactory
+        self.transportFactory = transportFactory
+        self.mirror = mirror
+        self.bodyProfile = bodyProfile
     }
 
     func start(activity: SportType = .running) async {
-        guard launchState == .idle || (try? endedSummary()) != nil else { return }
+        guard isStartable() else { return }
         launchState = .starting
+        sport = activity
+        resetLiveCounters()
 
         let controller = WorkoutController(substrate: substrateFactory())
         self.controller = controller
         attachStreams(to: controller)
 
+        if let transportFactory {
+            let transport = transportFactory()
+            self.transport = transport
+            attachGlasses(transport: transport)
+            Task.detached { [transport] in
+                try? await transport.connect()
+            }
+        }
+
         do {
             let state = try await controller.start(activityType: activity)
             startedAt = state.startedAt
+            sessionID = state.sessionID
             launchState = .running
             startElapsedTicker()
+            startMirrorTicker()
+            await mirror?.sendLifecycle(.started(activity))
         } catch {
             launchState = .failed(String(describing: error))
         }
@@ -64,6 +114,7 @@ final class WorkoutViewModel {
         do {
             try await controller.pause()
             launchState = .paused
+            await mirror?.sendLifecycle(.paused)
         } catch {
             launchState = .failed(String(describing: error))
         }
@@ -74,22 +125,70 @@ final class WorkoutViewModel {
         do {
             try await controller.resume()
             launchState = .running
+            await mirror?.sendLifecycle(.resumed)
         } catch {
             launchState = .failed(String(describing: error))
         }
     }
 
-    func end() async {
+    /// User tapped Finish on the live workout view. Per decision #5 the
+    /// workout pauses immediately and the view presents Save / Cancel /
+    /// Resume; the controller is *not* ended yet.
+    func requestFinish() async {
+        guard let controller else { return }
+        if case .running = launchState {
+            try? await controller.pause()
+            await mirror?.sendLifecycle(.paused)
+        }
+        launchState = .pendingFinish
+    }
+
+    /// Save path: end the controller, write the HKWorkout, surface the
+    /// `WorkoutSummary`. Pushes a final lifecycle event over the mirror.
+    func confirmSave() async {
         guard let controller else { return }
         launchState = .ending
         do {
             let summary = try await controller.end()
             launchState = .ended(summary)
-            stopTasks()
+            await mirror?.sendLifecycle(.ended)
+            stopRuntimeTasks()
+            await teardownTransport()
         } catch {
             launchState = .failed(String(describing: error))
-            stopTasks()
+            stopRuntimeTasks()
+            await teardownTransport()
         }
+    }
+
+    /// Cancel path: end the underlying HK session (the protocol does not
+    /// support a discard in v0.2) and mark the local UI as cancelled so no
+    /// summary is shown.
+    func confirmCancel() async {
+        guard let controller else { return }
+        launchState = .ending
+        do {
+            _ = try await controller.end()
+        } catch {
+            launchState = .failed(String(describing: error))
+            stopRuntimeTasks()
+            await teardownTransport()
+            return
+        }
+        launchState = .cancelled
+        await mirror?.sendLifecycle(.ended)
+        stopRuntimeTasks()
+        await teardownTransport()
+    }
+
+    func resumeFromFinish() async {
+        await resume()
+    }
+
+    /// Legacy entry point preserved for any callers that still issue an
+    /// immediate end. v0.2 default flow is `requestFinish` → `confirmSave`.
+    func end() async {
+        await confirmSave()
     }
 
     func reportGlasses(_ signal: GlassesConnectivitySignal) async {
@@ -97,11 +196,6 @@ final class WorkoutViewModel {
         await controller.reportGlassesSignal(signal)
     }
 
-    /// Subscribe to Weiss's canonical `GlassesFrameTransport` and forward
-    /// every connection-state transition + drop event into the controller as
-    /// a `GlassesConnectivitySignal`. Per D4 the workout keeps running
-    /// regardless — this only updates the HUD-online indicator and bumps
-    /// the disconnect counter for the summary.
     func attachGlasses(transport: any GlassesFrameTransport) {
         glassesStateTask?.cancel()
         glassesStatusTask?.cancel()
@@ -122,9 +216,23 @@ final class WorkoutViewModel {
         }
     }
 
-    private func endedSummary() throws -> WorkoutSummary? {
-        if case .ended(let summary) = launchState { return summary }
-        return nil
+    private func isStartable() -> Bool {
+        switch launchState {
+        case .idle, .ended, .cancelled, .failed: return true
+        case .starting, .running, .paused, .pendingFinish, .ending: return false
+        }
+    }
+
+    private func resetLiveCounters() {
+        heartRate = nil
+        distanceMeters = nil
+        elapsed = 0
+        estimatedActiveKilocalories = nil
+        if let bodyProfile {
+            energy = EnergyAccumulator(estimator: EnergyEstimator(profile: bodyProfile))
+        } else {
+            energy = nil
+        }
     }
 
     private func attachStreams(to controller: WorkoutController) {
@@ -133,12 +241,12 @@ final class WorkoutViewModel {
 
         stateTask = Task { [weak self] in
             for await state in controller.states {
-                await self?.apply(state: state)
+                self?.apply(state: state)
             }
         }
         metricTask = Task { [weak self] in
             for await metric in controller.metrics {
-                await self?.apply(metric: metric)
+                self?.apply(metric: metric)
             }
         }
     }
@@ -146,8 +254,15 @@ final class WorkoutViewModel {
     private func apply(state: WorkoutState) {
         glassesConnected = state.glassesConnected
         switch state.phase {
-        case .running: launchState = .running
-        case .paused: launchState = .paused
+        case .running:
+            // Don't clobber the Finish-menu state — the user could be in
+            // `.pendingFinish` while the controller is paused, and a stray
+            // resume from elsewhere shouldn't drop them out of the menu.
+            if launchState == .running || launchState == .paused {
+                launchState = .running
+            }
+        case .paused:
+            if launchState == .running { launchState = .paused }
         case .failed:
             launchState = .failed(state.failureReason ?? "Unknown failure")
         default: break
@@ -156,8 +271,12 @@ final class WorkoutViewModel {
 
     private func apply(metric: WorkoutMetric) {
         switch metric.kind {
-        case .heartRate: heartRate = metric.value
-        case .distance: distanceMeters = metric.value
+        case .heartRate:
+            heartRate = metric.value
+            energy?.ingest(heartRate: metric.value, at: metric.timestamp)
+            estimatedActiveKilocalories = energy?.totalKilocalories
+        case .distance:
+            distanceMeters = metric.value
         default: break
         }
     }
@@ -166,22 +285,83 @@ final class WorkoutViewModel {
         elapsedTask?.cancel()
         elapsedTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.tickElapsed()
+                self?.tickElapsed()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
 
     private func tickElapsed() {
-        guard let startedAt, case .running = launchState else { return }
-        elapsed = Date().timeIntervalSince(startedAt)
+        guard let startedAt else { return }
+        if case .running = launchState {
+            elapsed = Date().timeIntervalSince(startedAt)
+        }
     }
 
-    private func stopTasks() {
+    /// Push a `WorkoutTickMessage` over WCSession at ~1 Hz. Best-effort —
+    /// the watch keeps recording whether or not the phone is reachable
+    /// (decisions #3 + #6).
+    private func startMirrorTicker() {
+        guard let mirror else { return }
+        tickTask?.cancel()
+        tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.publishMirrorTick(via: mirror)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    private func publishMirrorTick(via mirror: WorkoutMirrorPublisher) async {
+        guard let sessionID else { return }
+        let phase: WorkoutPhase
+        switch launchState {
+        case .running: phase = .running
+        case .paused, .pendingFinish: phase = .paused
+        case .ending, .ended, .cancelled: phase = .ended
+        case .failed: phase = .failed
+        case .idle, .starting: return
+        }
+        let pace: Double? = {
+            guard let distanceMeters, distanceMeters > 0, elapsed > 0 else { return nil }
+            return elapsed / (distanceMeters / 1000.0)
+        }()
+        let snapshot = WorkoutTickMessage(
+            sessionID: sessionID,
+            sport: sport,
+            phase: phase,
+            timestamp: Date(),
+            elapsedSeconds: elapsed,
+            heartRateBeatsPerMinute: heartRate,
+            distanceMeters: distanceMeters,
+            paceSecondsPerKilometer: pace,
+            estimatedActiveKilocalories: estimatedActiveKilocalories,
+            glassesConnected: glassesConnected
+        )
+        await mirror.send(snapshot: snapshot)
+    }
+
+    private func stopRuntimeTasks() {
         stateTask?.cancel(); stateTask = nil
         metricTask?.cancel(); metricTask = nil
         elapsedTask?.cancel(); elapsedTask = nil
+        tickTask?.cancel(); tickTask = nil
         glassesStateTask?.cancel(); glassesStateTask = nil
         glassesStatusTask?.cancel(); glassesStatusTask = nil
     }
+
+    private func teardownTransport() async {
+        guard let transport else { return }
+        try? await transport.disconnect()
+        self.transport = nil
+    }
+}
+
+/// Sendable surface the view-model uses to push live snapshots and lifecycle
+/// events at the iPhone mirror. Concrete impl wraps `WatchConnectivityService`
+/// so the view-model itself stays free of WCSession dependencies and stays
+/// testable on the simulator.
+protocol WorkoutMirrorPublisher: Sendable {
+    func send(snapshot: WorkoutTickMessage) async
+    func sendLifecycle(_ event: LifecycleEvent) async
 }

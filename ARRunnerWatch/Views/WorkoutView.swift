@@ -7,7 +7,8 @@ import SwiftUI
 @MainActor
 struct WorkoutView: View {
     @State private var viewModel = WorkoutViewModel(
-        substrateFactory: { HealthKitWorkoutSubstrate() }
+        substrateFactory: { HealthKitWorkoutSubstrate() },
+        mirror: ARRunnerWatchEnvironment.shared.mirror
     )
 
     var body: some View {
@@ -19,6 +20,17 @@ struct WorkoutView: View {
         }
         .padding()
         .navigationTitle("Run")
+        .confirmationDialog(
+            "Finish Run?",
+            isPresented: finishMenuBinding,
+            titleVisibility: .visible
+        ) {
+            Button("Save Run") { Task { await viewModel.confirmSave() } }
+            Button("Discard", role: .destructive) { Task { await viewModel.confirmCancel() } }
+            Button("Resume", role: .cancel) { Task { await viewModel.resumeFromFinish() } }
+        } message: {
+            Text("Saving writes the workout to Health. Discard removes it from this view (it remains in Health and can be deleted there).")
+        }
     }
 
     @ViewBuilder
@@ -38,12 +50,17 @@ struct WorkoutView: View {
             Text(formatElapsed(viewModel.elapsed))
                 .font(.title3.monospacedDigit())
         }
+        HStack {
+            Image(systemName: "flame.fill").foregroundStyle(.orange)
+            Text(viewModel.estimatedActiveKilocalories.map { String(format: "%.0f kcal", $0) } ?? "—")
+                .font(.title3.monospacedDigit())
+        }
     }
 
     @ViewBuilder
     private var controlsSection: some View {
         switch viewModel.launchState {
-        case .idle, .ended, .failed:
+        case .idle, .ended, .cancelled, .failed:
             Button("Start Run") {
                 Task { await viewModel.start() }
             }
@@ -53,15 +70,19 @@ struct WorkoutView: View {
         case .running:
             HStack {
                 Button("Pause") { Task { await viewModel.pause() } }
-                Button("End") { Task { await viewModel.end() } }
+                Button("Finish") { Task { await viewModel.requestFinish() } }
                     .tint(.red)
             }
         case .paused:
             HStack {
                 Button("Resume") { Task { await viewModel.resume() } }
-                Button("End") { Task { await viewModel.end() } }
+                Button("Finish") { Task { await viewModel.requestFinish() } }
                     .tint(.red)
             }
+        case .pendingFinish:
+            Text("Choose an action above")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -80,10 +101,31 @@ struct WorkoutView: View {
                 .foregroundStyle(.red)
         }
         if case .ended(let summary) = viewModel.launchState {
-            Text("Saved · HK ID \(summary.healthKitWorkoutID.uuidString.prefix(8))")
+            // Decision #4: HK-official kcal lives on the summary; live
+            // estimate (above) is replaced post-save.
+            let kcal = summary.totalActiveEnergyKilocalories.map { String(format: " · %.0f kcal", $0) } ?? ""
+            Text("Saved · HK \(summary.healthKitWorkoutID.uuidString.prefix(8))\(kcal)")
                 .font(.caption2)
                 .foregroundStyle(.green)
         }
+        if case .cancelled = viewModel.launchState {
+            Text("Run discarded")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var finishMenuBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.launchState == .pendingFinish },
+            set: { isPresented in
+                // Auto-dismiss without an explicit choice resumes the run, so
+                // a stray tap-out can't strand the workout in pendingFinish.
+                if !isPresented, viewModel.launchState == .pendingFinish {
+                    Task { await viewModel.resumeFromFinish() }
+                }
+            }
+        )
     }
 
     private func formatElapsed(_ seconds: TimeInterval) -> String {
