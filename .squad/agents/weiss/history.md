@@ -310,3 +310,28 @@ methods. So `deinit { reconnectTask?.cancel() }` is the right pattern for
 "cancel the in-flight reconnect loop when the adapter goes away" —
 specifically belt-and-suspenders alongside the `[weak self]` capture in
 the loop, which would also let it self-terminate on next iteration.
+
+- **2026-05-15 — Parallel-PR XCTSkipIf conflict resolution pattern.** When two
+  branches each flip non-overlapping `XCTSkipIf` gates in the same test file,
+  Git's auto-merge usually does the right thing (it sees them as line-disjoint
+  edits). The case to watch out for is **both-added** conflicts where two
+  branches independently created a *new* test file at the same path with the
+  same class name (here: Amber's anticipatory `RunningHUDPresetTests` from
+  PR #14 vs. my implementation-side `RunningHUDPresetTests` from PR #15).
+  Resolution recipe that worked: keep BOTH sets of test methods in one
+  class — the test method names didn't collide (Amber: `testPresetType…`,
+  `testDefaultIsSensible…`, etc.; mine: `testAllCases_HaveStable…`,
+  `testDefaultIsStandard`, etc.), so the union compiles cleanly. For each
+  of Amber's anticipatory tests I deleted the `try XCTSkipIf(true, ...)`
+  line, uncommented the `// CONTRACT-BODY:` block, and adapted symbol
+  names to the shipped API (`preset.activeLookLayoutSlotID` →
+  `preset.deviceLayoutID`; `preset.rawValue` for transport →
+  `preset.layoutID`; `preset.layoutDescriptor().slots` →
+  `preset.layout.slots`). Result: all 12 tests in the merged class pass,
+  Amber's contract intent is preserved, and my concrete-shape locks are
+  retained. Rule of thumb: when the anticipatory and implementation tests
+  cover the same surface from different angles, *union* is better than
+  *replace* — the anticipatory bullets capture intent ("default isn't
+  too sparse"; "presets aren't aliases"; "running-domain field semantics")
+  that the implementation tests don't, and removing them would lose the
+  contract-grade phrasing.
