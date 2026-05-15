@@ -126,3 +126,25 @@ Richards completed CI architecture design + implementation. Three workflows now 
 **For your BLE implementation:** Your PR must pass ci-core-tests (Linux), all ci-build matrix jobs (macOS 4 targets), and CodeQL. Plan ~15 minutes of CI time per PR after cache warm-up. Local validation matches CI 1:1 — see docs/dev/ci-workflows.md for repro steps.
 
 **Reference:** `.squad/orchestration-log/2026-05-14T21:00:00Z-richards.md` for full ADRs and design rationale.
+
+### 2026-05-15T14:33:20-04:00: v0.2 #1 — Real ActiveLook BLE adapter on watchOS (PR #9)
+
+**Branch:** `feat/v02-ble-activelook-weiss` (off main; the `-weiss` suffix is because another agent was already using the unsuffixed name for unrelated work — see "Worktree gotcha" below).
+
+**Outcome:** PR #9 merged-pending. Closes v0.2 workstream #1.
+
+**SDK situation re-confirmed:** ActiveLook iOS SDK v4.5.5 still does not ship a watchOS target. Manifest is iOS-only, singleton wraps `UIApplication`, image helpers use `UIImage`. Porting cost > rebuild cost when the BLE layer is already a thin CoreBluetooth wrapper. Documented in `docs/research/activelook/v02-spike-report.md`. Don't re-litigate unless ActiveLook publishes a watchOS target.
+
+**Bugs fixed in the v0.1 adapter:**
+1. **Battery service was never discovered.** Coordinator routed `0x2A19` notifications, but `discoverServices(...)` only asked for the ActiveLook command service. Battery handler was dead code. Now we discover both services and subscribe + initial-read the battery characteristic. `service.uuid == commandService` guard added so the connect-ready transition only fires off the command service callback.
+2. **`displayLayout(id:)` framed extra bytes.** The v0.1 helper appended a UTF-8 string + null terminator to the `0x62` payload. Per the ActiveLook spec, `0x62` carries only the layout-ID byte; initial slot content is a separate `widgetUpdate` (`0x3A`). Pinned by `testDisplayLayoutFrameCarriesOnlyTheLayoutID`.
+
+**Wiring:** new `GlassesTransportFactory` picks `StubGlassesTransport` (Simulator/DEBUG) vs `ActiveLookGlassesAdapter` (release). `WorkoutViewModel` takes an optional transport factory; `start()` opportunistically `.connect()`s and `attachGlasses(...)` for D4 disconnect signals. `end()` tears the link down. Transport bring-up never blocks the workout — D4-correct, v0.2 #6-correct.
+
+**Hardware tests:** `ActiveLookGlassesAdapterHardwareTests` lives in the watch app target gated on `AR_RUNNER_HARDWARE_TESTS`. Compiles to nothing in CI (Linux SPM + macOS xcodebuild matrix + CodeQL all stay green). Joe flips the flag locally to drive his Watch SE + glasses. Adding a formal watch test target to `project.yml` is the only follow-up needed to actually run the test.
+
+**Worktree gotcha (lesson learned):** I started in the shared `/Users/joekrilov/Repos/AR-Runner` checkout. Another agent (Laughlin's mirror workstream) was working concurrently on a branch called `feat/v02-ble-activelook` and its checkout reset the working tree out from under me, losing ~30 minutes of in-progress work. Recovery: `git worktree add ../AR-Runner-weiss-ble -b feat/v02-ble-activelook-weiss main`, redid every edit, committed, pushed. **Going forward — always create a worktree before touching files.** Richards's `parallel-agent-worktrees` proposal is real and load-bearing; this is the second confirmed incident.
+
+**Things deliberately not changed:** `GlassesFrameTransport` protocol surface (frozen for v0.2), reconnect backoff (v0.1 defaults are fine until hardware run), curated layout catalog (waiting on baked layout IDs from Config-Generator output). Phone-relay fallback **not** needed — the watch-native path is solid.
+
+**Validation:** `swift test` on Core (66 pass), `xcodebuild` on `ARRunnerWatch` watchOS Simulator (green), `xcodebuild` on `ARRunnerPhone` iOS Simulator (green). All with no code signing per CI conventions.
