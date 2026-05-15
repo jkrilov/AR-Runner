@@ -14,6 +14,7 @@ struct WorkoutView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            hudOfflineBanner
             metricsSection
             Divider()
             controlsSection
@@ -31,6 +32,20 @@ struct WorkoutView: View {
             Button("Resume", role: .cancel) { Task { await viewModel.resumeFromFinish() } }
         } message: {
             Text("Saving writes the workout to Health. Discard removes it from this view (it remains in Health and can be deleted there).")
+        }
+    }
+
+    /// D4 (decision #2) HUD-offline indicator. Compact, non-modal, sits
+    /// above the live metrics and disappears the instant the transport
+    /// reports `.reconnected`. Does NOT pause or otherwise gate the workout.
+    @ViewBuilder
+    private var hudOfflineBanner: some View {
+        if viewModel.hudOffline {
+            Label("HUD offline", systemImage: "eyeglasses.slash")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .accessibilityLabel("Glasses HUD offline. Workout still recording.")
+                .transition(.opacity)
         }
     }
 
