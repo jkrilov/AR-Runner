@@ -1,5 +1,8 @@
 # Skill: anticipatory-contract-tests
 
+**Captured by:** Amber
+**Confidence:** high (applied independently in v0.2 #4 D4 resilience tests, PR #8, and v0.2 #5 `RunningHUDPreset` contract tests, PR-pending — both shipped green/skipped on first try with the same `XCTSkipIf(true, "EXPECTED-FAILING-UNTIL: ...")` idiom)
+
 **One-line:** Write integration tests that *define* an unimplemented contract before the owner implements it, using `XCTSkipIf` markers so CI stays green while the contract is encoded in code.
 
 ## When to use
@@ -55,6 +58,8 @@ Used both in the test docstring and as the `XCTSkipIf` message. Greppable across
 ## Example
 
 See `ARRunnerCore/Tests/ARRunnerCoreTests/Integration/DisconnectResilienceTests.swift` (PR #8). Three expected-failing tests (`*_ExpectedFailing` suffix) cover three contract gaps; matching inbox entry at `.squad/decisions/inbox/amber-v02-resilience-contract-gaps.md`.
+
+Second application: `ARRunnerCore/Tests/ARRunnerCoreTests/Glasses/RunningHUDPresetTests.swift` (v0.2 #5). Five tests lock the `RunningHUDPreset` public contract (existence + cases, sensible default, distinct descriptors, ActiveLook frame compatibility, per-preset domain semantics) BEFORE Weiss's enum lands. Variant: when the type itself doesn't exist yet (not just a missing method on an existing type), keep the body as a `// CONTRACT-BODY:` commented-out sketch under the `XCTSkipIf(true, ...)` so the file compiles. Reviewer un-skips and uncomments in one diff when the implementation merges.
 
 ## Linux vs. macOS scheduler races (post-PR #8 lesson)
 
