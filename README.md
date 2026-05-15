@@ -1,6 +1,15 @@
 # AR-Runner
 
-AR-Runner is a native Apple Watch and iPhone running companion for ActiveLook AR glasses.
+![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
+![Status](https://img.shields.io/badge/status-pre--v0.1%20scaffolding-yellow.svg)
+
+> ⚠️ **Project Status: Pre-v0.1, scaffolding only.** This repository is the
+> architectural scaffold for AR-Runner. There is no installable build yet —
+> the watch, phone, and widget targets are stubs, and the BLE wrapper plus
+> HealthKit integration are still ahead. Issues for discussion are welcome;
+> outside PRs are paused until v0.1 lands (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
+AR-Runner is a native Apple Watch and iPhone running companion for [ActiveLook](https://www.activelook.net) AR glasses.
 The v0.1 foundation centers the workout on the watch, mirrors live state to the phone, and pushes HUD-friendly metrics to the glasses over BLE.
 
 ## What is in this repo
@@ -39,3 +48,14 @@ The v0.1 foundation centers the workout on the watch, mirrors live state to the 
 This repository is scaffolded with XcodeGen.
 Generate the Apple project files on a Mac, not in this Windows workspace.
 The generated workspace is `AR-Runner.xcworkspace`.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).
+
+---
+
+> **About `.squad/`** — AR-Runner is built using [Squad](https://github.com/bradygaster/squad)
+> for AI agent orchestration. The `.squad/` directory contains the team's working memory
+> (per-agent histories, decisions ledger, orchestration logs). Browse if curious about how
+> this project came together.

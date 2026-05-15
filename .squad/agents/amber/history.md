@@ -24,3 +24,10 @@ First Mac build of the v0.1 scaffold after Windows authoring. Toolchain: xcodege
 - **Test coverage is shallow but correct.** Each of the six suites is a single `testCodableRoundTrip`. That's fine for scaffold; tests live alongside the work that adds real behavior. When metrics calc / split detection / pace smoothing land, I'll grow these into property-based or scenario suites.
 - **Repro is in `docs/dev/macos-build-validation.md`.** Anyone else moving from Windows runs the same five commands and sees green.
 
+
+## 2026-05-15 — PR #4 nit follow-up (cross-reviewer)
+Addressed Killian's 3 🟡 nits on PR #4 (chore/public-repo-prep) as the fresh-eyes implementer per reviewer-separation spirit:
+1. README.md — hyperlinked first ActiveLook mention to https://www.activelook.net.
+2. CONTRIBUTING.md — added Releases-page pointer so outside readers know how to detect v0.1.
+3. CODE_OF_CONDUCT.md — new minimal file pointing to Contributor Covenant v2.1.
+Sanity-checked `swift build` in ARRunnerCore (clean). One commit; Joe to merge.
