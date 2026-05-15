@@ -127,3 +127,32 @@ Richards's second fix (commit 079cb73, chore/ci-workflows) resolved ARRunnerWatc
 **Menu-on-finish pattern:**
 - The Finish menu is a `confirmationDialog` driven by `launchState == .pendingFinish`. Dialog actions invoke async view-model methods via `Task { await … }`. The Resume button has `role: .cancel` so dragging down on the watch does the right thing.
 - Two-phase commit: Finish → pause + show menu (controller still alive) → Save / Discard ends controller. Resume just calls `controller.resume()`. This means the user can Finish, change their mind, Resume, and continue the same `WorkoutController` — no new HK session, no lost samples.
+
+### 2026-05-15T16:49:00-04:00 — v0.2 #4 — Watch-side D4 UX (haptic + HUD-offline)
+
+**Branch / PR:** `feat/v02-d4-watch-ux` → PR #13.
+
+**Outcome:** Both CI legs green (Linux SPM 66 pass / 3 skip; macOS watchOS app build succeeded). Surgical: 2 watch files + 1 test message update, no canonical surface touched.
+
+**watchOS haptic patterns:**
+- `WKInterfaceDevice.current().play(.notification)` is the right "subtle but noticed" call for HUD-drop alerts. `.failure` is too alarming for a non-failure event (the workout keeps running fine without HUD); `.directionUp/Down` exist on watchOS 7+ but are intended for navigation cues, not status.
+- Wrap the `WKInterfaceDevice` call behind a `@Sendable () -> Void` closure with an `#if canImport(WatchKit) && os(watchOS)` default. Lets the view-model stay testable on Linux (via stub closure) AND keeps the production call zero-overhead. Initializer takes an optional `hapticPlayer` so tests inject a counter; production code uses the default.
+
+**Glasses-status observation pattern:**
+- The transport exposes TWO complementary streams: `connectionStates()` (full lifecycle: scanning/connecting/connected/reconnecting/...) and `statusEvents()` (side-channel: `.dropped(reason:at:)`, `.reconnected(gap:at:)`, battery, RSSI). For UX hooks (haptic, banner) read `statusEvents()` — drop reasons are richer and `.reconnected` is unambiguous. For controller-side state mirroring, keep using `connectionStates()` → `GlassesConnectivitySignal.from(_:)` (already wired in v0.2 #2).
+- A single MainActor handler `handle(statusEvent:)` switches on cases. Keeping the switch exhaustive makes future side-channel events (battery low, signal weak) easy to add without touching the subscriber loop.
+
+**Debouncing approach:**
+- `private var lastHapticAt: Date?` + a 10s constant. Check elapsed in MainActor method; suppress if too recent.
+- **Reset on `.reconnected`** so a new outage after recovery alerts immediately. Without reset, a fast disconnect → reconnect → disconnect cycle would silently swallow the second alert.
+- Inject `now: @Sendable () -> Date` so deterministic tests can control the clock.
+- **Phase gate:** only fire when `launchState == .running`. Drops while `.idle`, `.paused`, `.pendingFinish`, `.ending`, `.ended`, `.cancelled`, or `.failed` are still surfaced visually but never haptic. Decision #5's pause-on-Finish flow stays haptic-quiet — the user is making a UI choice, not running.
+
+**SwiftUI banner pattern:**
+- Conditional `@ViewBuilder` (`if viewModel.hudOffline { Label(...) }`) inside the root `VStack`. `.transition(.opacity)` keeps it from popping. Orange `.foregroundStyle` reads as "warning, not error" — matches the D4 "keep recording" intent. SF Symbol `eyeglasses.slash` is the right glyph (not `wifi.slash` — that's network-coded).
+
+**Test-gate decision:**
+- The `test_HapticAlertHook_OnDisconnect_ExpectedFailing` skip pinned a `controller.alerts AsyncStream` contract. v0.2 #4 chose to ship haptics directly off `transport.statusEvents()` instead of adding a Core-level alerts stream — the canonical surface stays narrower. The 1:1 outage-to-haptic contract is already covered by `test_Disconnect_EmitsDroppedExactlyOnce`. Updated the skip message to document the deferral so the next reader doesn't spend time hunting a missing implementation.
+
+**Coordination with Weiss:**
+- He's working `RunningHUDPreset` + BLE auto-reconnect in parallel. No file overlap (his work is `ARRunnerCore/Glasses/` adapters; mine is `ARRunnerWatch/`). Worktrees made this trivial — he flips the two BLE-owned skip gates when his loop lands.
