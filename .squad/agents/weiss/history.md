@@ -335,3 +335,16 @@ the loop, which would also let it self-terminate on next iteration.
   too sparse"; "presets aren't aliases"; "running-domain field semantics")
   that the implementation tests don't, and removing them would lose the
   contract-grade phrasing.
+
+### 2026-05-15: Switch-Exhaustiveness Trap When Adding Enum Cases Mid-Branch
+
+**Incident:** PR #15 added `GlassesStatusEvent.reconnectAbandoned(attempts:)` to the Core enum. Linux `swift test` was green. After rebasing onto main (which had merged Laughlin's PR #13 introducing a `switch event` consumer in `ARRunnerWatch/Workout/WorkoutViewModel.swift`), CI failed with `error: switch must be exhaustive` on the macOS Watch app target. The Linux package only compiles Core; it never sees the Watch UI consumers.
+
+**Root cause:** New enum cases on a Core type are silent breakage for any downstream `switch` that doesn't use `@unknown default`. Cross-PR rebases can introduce such consumers without the original branch noticing — the compiler only complains when both PRs land in the same target build.
+
+**Fix:** Added `case .reconnectAbandoned:` to the Watch view-model switch — mirrors `.dropped` UX (sets `hudOffline = true`, fires the debounced disconnect haptic). No reconnect attempted; BLE layer has exhausted its budget.
+
+**Process recommendation (capture for future PRs):**
+- Whenever a PR adds/removes a case on a public Core enum, run a **local `xcodebuild -scheme ARRunnerWatch -destination 'generic/platform=watchOS Simulator' build`** before pushing — at least once after the final rebase. Linux `swift test` is necessary but not sufficient.
+- Same applies to `ARRunnerPhone` and `ARRunnerWidgetsWatch` schemes if they consume the type. A 60–90s local watch build catches what CI takes ~10 min to surface.
+- If the platform-specific build is unavailable locally, flag the PR description with "⚠️ adds enum case — needs Watch-target CI green before merge" so reviewers don't approve on Linux-only signal.

@@ -251,6 +251,9 @@ final class WorkoutViewModel {
     /// * `.reconnected` → clear the HUD-offline hint and reset the haptic
     ///   debounce so a fresh outage alerts immediately. The connection-state
     ///   stream separately re-flips `glassesConnected` via the controller.
+    /// * `.reconnectAbandoned` → BLE layer gave up after exhausting its
+    ///   reconnect budget. Mirror `.dropped` UX (HUD-offline hint + debounced
+    ///   haptic); no further reconnect will be attempted this workout.
     /// Other status events (battery, RSSI, reconnect-attempt failures) are
     ///   side-channel telemetry only — no UX side effects in v0.2.
     private func handle(statusEvent event: GlassesStatusEvent) async {
@@ -262,6 +265,12 @@ final class WorkoutViewModel {
         case .reconnected:
             hudOffline = false
             lastHapticAt = nil
+        case .reconnectAbandoned:
+            // BLE layer exhausted its reconnect budget — HUD is down for the
+            // remainder of this workout. Mirror `.dropped` UX (offline hint +
+            // debounced haptic); no further reconnect will be attempted.
+            hudOffline = true
+            fireDisconnectHapticIfEligible()
         case .batteryLevel, .signalQuality, .reconnectAttemptFailed:
             break
         }
