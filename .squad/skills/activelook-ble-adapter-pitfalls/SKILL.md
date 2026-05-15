@@ -148,3 +148,81 @@ upstream, reach for `AsyncChannel` or `AsyncBroadcastSequence` from
 **Heuristic:** "macOS passes, Linux fails at the waitUntil deadline" is
 almost always a hidden race, not a slow-CI timeout. Bumping the timeout
 hides the bug; fixing the fan-out kills it.
+
+## Auto-reconnect loop — pitfalls and contract (v0.2 #4)
+
+The full D4 auto-reconnect contract is more than just "exponential backoff":
+
+1. **Cap the loop.** Without a max-attempts cap, a powered-off pair of
+   glasses keeps the radio busy for the entire workout. Cap at ~30 attempts
+   with the default backoff (≈230 s of attempts before terminal failure).
+2. **Emit a terminal event.** Add `.reconnectAbandoned(attempts:)` to the
+   status-event enum so observers can distinguish "give up" from "still
+   trying" and run-metadata can log it. Per D4 the workout still continues —
+   the terminal event is informational, not a workout abort.
+3. **Re-apply layout on reconnect.** The glasses **forget** the active
+   layout on link drop. Pre-seed `activeLayoutDeviceID` (from
+   `RunningHUDPreset.default` or whatever the user picked) and unconditionally
+   re-write it in `handleCharacteristicsDiscovered` after the connect
+   transition. One code path covers both "first connect" and "post-drop
+   reconnect."
+4. **Cancel on actor `deinit`.** `Task.cancel()` is nonisolated, so
+   `deinit { reconnectTask?.cancel() }` is legal in Swift 6. Belt-and-
+   suspenders alongside the `[weak self]` capture in the loop body.
+5. **Cancel on user-initiated `disconnect()`.** Set a
+   `userDisconnectRequested = true` flag and check it inside the loop —
+   cancelling the Task alone is not enough because the loop may already
+   have started a `beginConnect()` that won't unwind on cancellation.
+
+## `RunningHUDPreset` — preset → BLE bytes contract (v0.2 #5)
+
+The watch app applies `RunningHUDPreset.default` on connect; there is no
+picker UI in v0.2 (Joe locked scope to backend only). When extending:
+
+- **`layoutDescriptor() -> [UInt8]?`** is the public contract. Callers don't
+  reach into `ActiveLookCommand` — they get pre-encoded `0x62 displayLayout`
+  bytes ready to write to the RX characteristic.
+- **`Optional` is intentional.** Returning `nil` flags presets that aren't
+  in `CuratedLayoutCatalog`. Treat as a configuration error; do NOT silently
+  ship `0x00` to the glasses.
+- **Stable `rawValue`s.** They will become persisted preferences when the
+  picker ships. Locked by `testAllCases_HaveStableRawValuesForPersistence` —
+  rename only with a migration story.
+- **Wiring lives in the adapter, not the view model.** Pre-seed
+  `activeLayoutDeviceID` from the preset in `init`; the existing post-
+  reconnect re-apply path then handles initial connect AND every reconnect
+  with one code path. View-model-side selection would skip the post-
+  reconnect re-apply unless you also re-wired a re-select on `.reconnected`
+  events.
+
+## Mock-augmentation pattern: opt-in flags beat default-behavior changes
+
+When you need to add real-adapter-style behavior to a shared mock (e.g.
+`MockGlassesFrame` adding auto-reconnect), prefer **opt-in init flags**
+over flipping the default behavior:
+
+```swift
+public init(
+    failures: MockGlassesFailureConfig = MockGlassesFailureConfig(),
+    autoReconnect: Bool = false,       // ← opt-in
+    autoReconnectDelay: TimeInterval = 0.05,
+    autoReapplyLayout: Bool = false,   // ← opt-in
+    clock: @escaping @Sendable () -> Date = { Date() }
+)
+```
+
+Flipping defaults breaks anchor tests that drive `simulateDisconnect` +
+`simulateReconnect` manually. Opt-in flags isolate the blast radius to the
+test that needs the new behavior.
+
+## Adding cases to public `Sendable` enums in Core
+
+Before adding a case (e.g. `GlassesStatusEvent.reconnectAbandoned`),
+grep for `switch event` + `case .` patterns. If every callsite has a
+`default:` clause or uses `if case` pattern matching, the addition is
+source-compatible. Otherwise it's a breaking change and you need either
+a migration or a new sibling enum.
+
+In practice, code paths in `WorkoutViewModel`, `StubGlassesTransportTests`,
+and the resilience-test event collector all use `if case` or `switch
+{ case .x; default }`, so additive enum changes have been safe so far.

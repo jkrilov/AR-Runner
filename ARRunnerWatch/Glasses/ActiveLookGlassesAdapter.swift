@@ -52,14 +52,33 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
 
     private let backoff: ExponentialBackoff
     private let scanTimeout: TimeInterval
+    private let maxReconnectAttempts: Int
+    private let defaultPreset: RunningHUDPreset?
     private let logger = Logger(subsystem: "com.arrunner.watch", category: "ActiveLookGlasses")
 
     public init(
         backoff: ExponentialBackoff = ExponentialBackoff(),
-        scanTimeout: TimeInterval = 15.0
+        scanTimeout: TimeInterval = 15.0,
+        maxReconnectAttempts: Int = 30,
+        defaultPreset: RunningHUDPreset? = .default
     ) {
         self.backoff = backoff
         self.scanTimeout = scanTimeout
+        self.maxReconnectAttempts = maxReconnectAttempts
+        self.defaultPreset = defaultPreset
+        // Pre-seed the active layout so the first connect (and every
+        // subsequent reconnect) auto-applies the v0.2 #5 default preset
+        // without callers having to call `selectLayout(...)` themselves.
+        if let preset = defaultPreset, let id = preset.deviceLayoutID {
+            self.activeLayoutDeviceID = id
+        }
+    }
+
+    deinit {
+        // Cancel any in-flight reconnect loop so it doesn't keep a strong
+        // reference to peripherals after the actor is gone. `Task.cancel()`
+        // is nonisolated so it is legal from `deinit`.
+        reconnectTask?.cancel()
     }
 
     // MARK: - Private state
@@ -310,6 +329,13 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     private func runReconnectLoop() async {
         var attempt = 0
         while !Task.isCancelled, !userDisconnectRequested {
+            if attempt >= maxReconnectAttempts {
+                // D4: terminal — stop spamming the radio. Workout keeps going;
+                // caller may invoke `connect()` again to retry from scratch.
+                emit(.reconnectAbandoned(attempts: attempt))
+                transition(to: .failed)
+                return
+            }
             do {
                 let delay = backoff.delay(forAttempt: attempt)
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))

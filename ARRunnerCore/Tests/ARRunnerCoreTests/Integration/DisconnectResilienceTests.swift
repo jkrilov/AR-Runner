@@ -483,22 +483,17 @@ extension DisconnectResilienceTests {
     // If a test still fails after removing the skip, the implementation does
     // not satisfy the contract this file pins down.
 
-    // EXPECTED-FAILING-UNTIL: v0.2 #4 implementation (Weiss).
-    // Contract: a transport-level disconnect (no manual `simulateReconnect`)
-    // must trigger an auto-reconnect attempt that lands within the configured
-    // backoff window. Today, `MockGlassesFrame` parks at `.reconnecting`
-    // forever and there is no `GlassesFrameTransport` API to enable
-    // auto-reconnect. Weiss owns wiring `ReconnectPolicy` /
-    // `ExponentialBackoff` into the transport surface (likely an
-    // `enableAutoReconnect(policy:)` method or constructor option).
-    func test_AutoReconnectAfterTransportDrop_ExpectedFailing() async throws {
-        try XCTSkipIf(
-            true,
-            "EXPECTED-FAILING-UNTIL: v0.2 #4 implementation — GlassesFrameTransport has no auto-reconnect surface. Owner: Weiss."
-        )
-
+    // CONTRACT GREEN (v0.2 #4 — Weiss): a transport-level disconnect (no
+    // manual `simulateReconnect`) must trigger an auto-reconnect attempt
+    // that lands within the configured backoff window. The transport-level
+    // contract is: opt into auto-reconnect at construction time
+    // (`MockGlassesFrame(autoReconnect: true, ...)`); the real
+    // `ActiveLookGlassesAdapter` does this unconditionally on every CB
+    // disconnect callback (see `scheduleReconnect()` /`runReconnectLoop()`
+    // in `ARRunnerWatch/Glasses/ActiveLookGlassesAdapter.swift`).
+    func test_AutoReconnectAfterTransportDrop() async throws {
         let substrate = FakeHealthKitSubstrate(scenario: .ended)
-        let glasses = MockGlassesFrame()
+        let glasses = MockGlassesFrame(autoReconnect: true, autoReconnectDelay: 0.05)
         let controller = WorkoutController(substrate: substrate)
         let bridge = await bridgeGlasses(glasses, into: controller)
         defer { bridge.cancel() }
@@ -519,20 +514,13 @@ extension DisconnectResilienceTests {
         _ = try await controller.end()
     }
 
-    // EXPECTED-FAILING-UNTIL: v0.2 #4 implementation (Weiss).
-    // Contract: after a reconnect, the previously-active layout must be
-    // re-applied automatically — callers should not have to remember the
-    // active layout ID and re-`selectLayout` on every reconnect. The
-    // transport (or a thin wrapper) should track `currentLayoutID` and
-    // replay it post-reconnect.
-    func test_Reconnect_AutoReappliesPreviousLayout_ExpectedFailing() async throws {
-        try XCTSkipIf(
-            true,
-            "EXPECTED-FAILING-UNTIL: v0.2 #4 implementation — transport does not auto-re-apply the active layout after reconnect. Owner: Weiss."
-        )
-
+    // CONTRACT GREEN (v0.2 #4 — Weiss): after a reconnect, the previously-
+    // active layout must be re-applied automatically. The real adapter does
+    // this off `activeLayoutDeviceID` in `handleCharacteristicsDiscovered`;
+    // the mock mirrors it via `autoReapplyLayout: true`.
+    func test_Reconnect_AutoReappliesPreviousLayout() async throws {
         let substrate = FakeHealthKitSubstrate(scenario: .ended)
-        let glasses = MockGlassesFrame()
+        let glasses = MockGlassesFrame(autoReapplyLayout: true)
 
         try await glasses.connect()
         try await glasses.selectLayout(id: "balanced-run")
@@ -547,7 +535,7 @@ extension DisconnectResilienceTests {
                        "Auto-re-apply: one initial select + one post-reconnect replay")
         XCTAssertEqual(layouts.last, "balanced-run")
 
-        _ = substrate // silence unused-var warning when the skip is removed
+        _ = substrate // keep symmetry with sibling tests
     }
 
     // EXPECTED-FAILING-UNTIL: v0.2 #4 implementation (Laughlin).

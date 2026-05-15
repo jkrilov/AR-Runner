@@ -57,11 +57,30 @@ public actor MockGlassesFrame: GlassesFrameTransport {
     private var statusContinuations: [UUID: AsyncStream<GlassesStatusEvent>.Continuation] = [:]
     private let clock: @Sendable () -> Date
 
+    /// Auto-reconnect configuration. When `autoReconnect` is true, a
+    /// `simulateDisconnect(...)` schedules an internal Task that restores
+    /// `.connected` after `autoReconnectDelay`, mirroring what the real
+    /// `ActiveLookGlassesAdapter` does on a CoreBluetooth link drop.
+    /// When `autoReapplyLayout` is true, that internal reconnect also
+    /// re-issues the most-recently-selected layout — matching the adapter's
+    /// post-reconnect "restore active layout" behavior, since the glasses
+    /// forget the active layout when the link drops.
+    private let autoReconnect: Bool
+    private let autoReconnectDelay: TimeInterval
+    private let autoReapplyLayout: Bool
+    private var pendingReconnectTask: Task<Void, Never>?
+
     public init(
         failures: MockGlassesFailureConfig = MockGlassesFailureConfig(),
+        autoReconnect: Bool = false,
+        autoReconnectDelay: TimeInterval = 0.05,
+        autoReapplyLayout: Bool = false,
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.failures = failures
+        self.autoReconnect = autoReconnect
+        self.autoReconnectDelay = autoReconnectDelay
+        self.autoReapplyLayout = autoReapplyLayout
         self.clock = clock
     }
 
@@ -97,6 +116,8 @@ public actor MockGlassesFrame: GlassesFrameTransport {
 
     public func disconnect() async throws {
         disconnectCallCount += 1
+        pendingReconnectTask?.cancel()
+        pendingReconnectTask = nil
         guard connectionState != .disconnected else { return }
         emit(.dropped(reason: .userInitiated, at: clock()))
         transition(to: .disconnected)
@@ -129,16 +150,53 @@ public actor MockGlassesFrame: GlassesFrameTransport {
     /// Inject a disconnect mid-run. Per D4 the workout MUST keep running; the
     /// orchestrator just records the drop. Emits a `dropped` status event so
     /// observers can attribute the gap.
+    ///
+    /// If the mock was constructed with `autoReconnect: true`, this also
+    /// schedules an internal Task that drives a `reconnecting → connected`
+    /// cycle after `autoReconnectDelay` (mirroring the real
+    /// `ActiveLookGlassesAdapter` reconnect loop). Tests that want to drive
+    /// the cycle by hand should leave `autoReconnect: false` and call
+    /// `simulateReconnect(...)` explicitly.
     public func simulateDisconnect(reason: GlassesDisconnectReason = .linkLoss) {
         guard connectionState == .connected else { return }
         emit(.dropped(reason: reason, at: clock()))
         transition(to: .reconnecting)
+        if autoReconnect {
+            scheduleAutoReconnect()
+        }
     }
 
     /// Drive a `reconnecting → connected` cycle with a measured offline gap.
     public func simulateReconnect(after gap: TimeInterval = 0) {
         emit(.reconnected(gap: gap, at: clock()))
         transition(to: .connected)
+        if autoReapplyLayout, let last = selectedLayouts.last {
+            // Mirror the adapter's post-reconnect "restore active layout"
+            // behavior — glasses forget the active layout on link drop.
+            selectedLayouts.append(last)
+        }
+    }
+
+    private func scheduleAutoReconnect() {
+        pendingReconnectTask?.cancel()
+        let delay = autoReconnectDelay
+        pendingReconnectTask = Task { [weak self] in
+            let nanos = UInt64(max(0, delay) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanos)
+            if Task.isCancelled { return }
+            await self?.completeAutoReconnect(gap: delay)
+        }
+    }
+
+    private func completeAutoReconnect(gap: TimeInterval) {
+        // Guard against the link being torn down (or already restored) while
+        // the reconnect Task was sleeping.
+        guard connectionState == .reconnecting else {
+            pendingReconnectTask = nil
+            return
+        }
+        pendingReconnectTask = nil
+        simulateReconnect(after: gap)
     }
 
     /// Push a one-off battery notification (useful for D9 metadata).
