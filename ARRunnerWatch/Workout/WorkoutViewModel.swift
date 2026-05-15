@@ -31,6 +31,8 @@ final class WorkoutViewModel {
     private var stateTask: Task<Void, Never>?
     private var metricTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
+    private var glassesStateTask: Task<Void, Never>?
+    private var glassesStatusTask: Task<Void, Never>?
     private var startedAt: Date?
 
     private let substrateFactory: @Sendable () -> any WorkoutHealthSubstrate
@@ -95,6 +97,31 @@ final class WorkoutViewModel {
         await controller.reportGlassesSignal(signal)
     }
 
+    /// Subscribe to Weiss's canonical `GlassesFrameTransport` and forward
+    /// every connection-state transition + drop event into the controller as
+    /// a `GlassesConnectivitySignal`. Per D4 the workout keeps running
+    /// regardless — this only updates the HUD-online indicator and bumps
+    /// the disconnect counter for the summary.
+    func attachGlasses(transport: any GlassesFrameTransport) {
+        glassesStateTask?.cancel()
+        glassesStatusTask?.cancel()
+
+        glassesStateTask = Task { [weak self] in
+            let stream = await transport.connectionStates()
+            for await state in stream {
+                await self?.reportGlasses(.from(state))
+            }
+        }
+        glassesStatusTask = Task { [weak self] in
+            let stream = await transport.statusEvents()
+            for await event in stream {
+                if case .dropped(let reason, _) = event {
+                    await self?.reportGlasses(.from(droppedReason: reason))
+                }
+            }
+        }
+    }
+
     private func endedSummary() throws -> WorkoutSummary? {
         if case .ended(let summary) = launchState { return summary }
         return nil
@@ -154,5 +181,7 @@ final class WorkoutViewModel {
         stateTask?.cancel(); stateTask = nil
         metricTask?.cancel(); metricTask = nil
         elapsedTask?.cancel(); elapsedTask = nil
+        glassesStateTask?.cancel(); glassesStateTask = nil
+        glassesStatusTask?.cancel(); glassesStatusTask = nil
     }
 }
