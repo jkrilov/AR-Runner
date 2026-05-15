@@ -968,3 +968,234 @@ This branch (`chore/ci-workflows`) sits on top of `chore/macos-build-validation`
 - `.github/workflows/codeql.yml`
 - `docs/dev/ci-workflows.md`
 - `.squad/skills/swift-linux-macos-runner-split/SKILL.md` (reusable pattern)
+
+## 2026-05-15T14:01:55-04:00: Amber — Keep `FakeHealthKitSubstrate` and `MockGlassesFrame` alongside canonical stubs
+
+**Author:** Amber  
+**Context:** PR #6 reconciliation after #5 (`StubGlassesTransport`) and #7 (`InMemoryWorkoutHealthSubstrate`) merged into main.
+
+### Decision
+
+The test target keeps two QA mocks alongside the canonical happy-path stubs that landed in `ARRunnerCore` from PRs #5 and #7:
+
+| Concern | Canonical stub (in `ARRunnerCore`) | QA mock (in test target) |
+|---|---|---|
+| `GlassesFrameTransport` | `StubGlassesTransport` (Weiss, #5) | `MockGlassesFrame` (Amber) |
+| `WorkoutHealthSubstrate` | `InMemoryWorkoutHealthSubstrate` (Laughlin, #7) | `FakeHealthKitSubstrate` (Amber) |
+
+### Rationale
+
+The canonical stubs are deliberately simple — they're the "give me a working transport / substrate so my unit test compiles" surface, suitable for SwiftUI previews, basic lifecycle coverage, and ad-hoc happy-path checks. They don't carry the scenario-replay or failure-injection knobs QA needs.
+
+The QA mocks add explicitly:
+
+- **`MockGlassesFrame`** — `simulateDisconnect(reason:)` / `simulateReconnect(after:)` with paired `GlassesStatusEvent.dropped/.reconnected` emissions; one-shot failure injection on `connect` / `selectLayout` / `updateField`; `simulateBattery(_:)` for D9 metadata fixtures; recorded `selectedLayouts` and `receivedUpdates` for after-the-fact assertions.
+- **`FakeHealthKitSubstrate`** — pre-canned `HealthKitScenario` replays (`steadyRun` / `intervals` / `explicit` / `ended`) that fire automatically after `begin(...)`, so integration tests stay declarative rather than imperative metric-pushing; stable `workoutID` chosen at init for deterministic D9 side-store round-trips; `isScenarioComplete` poll for tests that need to await replay.
+
+### Boundaries
+
+- The canonical stubs stay the public-surface "default" doubles; downstream code that just needs *a* transport/substrate should reach for those.
+- The QA mocks are test-target-only (`@testable import ARRunnerCore`) and exist to exercise corner cases that the canonical stubs deliberately don't cover.
+- Both sets coexist; there is no plan to merge them. If any QA mock affordance becomes generally useful, lift just that affordance into the canonical stub via a follow-up PR rather than absorbing the whole mock.
+
+### Out-of-scope
+
+- Did NOT modify `GlassesFrameTransport`, `WorkoutHealthSubstrate`, `WorkoutController`, `StubGlassesTransport`, or `InMemoryWorkoutHealthSubstrate` — those types are now canonical on `main`.
+- Did NOT add new behaviours beyond reconciliation (the integration-test scope is unchanged: D4 happy path).
+
+## 2026-05-15T18:29:17Z: User directive — Opus 4.7 1M Context for code-writing agents
+
+**By:** Joe Krilov (via Copilot)
+**What:** Sub-agents whose primary job is writing code (Weiss, Laughlin, Amber) should use `claude-opus-4.7-1m-internal` (Claude Opus 4.7, 1M context, Internal only).
+**Why:** User request — captured for team memory. Saved as persistent agent overrides in `.squad/config.json` so the override survives across sessions.
+
+**Scope:**
+- ✅ Weiss (AR Integration — writes BLE / ActiveLook Swift code)
+- ✅ Laughlin (watchOS Dev — writes WorkoutController / HealthKit code)
+- ✅ Amber (QA & Fitness Domain — writes integration tests, mocks)
+- ✅ Richards (Lead — code review and architectural code work)
+- ❌ Killian (Product Strategist — no code, stays on haiku)
+- ❌ Scribe (mechanical ops — never bumped, stays on haiku per squad rule)
+
+**Note:** Layer 0 of the model selection hierarchy. Coordinator reads `.squad/config.json` on session start; per-agent overrides win over auto-selection.
+
+---
+
+## 2026-05-15T18:26:26Z: Killian — v0.2 Scope Proposal
+
+**Author:** Killian (Product Strategist)  
+**Date:** 2026-05-15T14:26:26-04:00  
+**Status:** Proposed  
+**Requested by:** Joe Krilov  
+
+### v0.2 Theme
+
+**"First runnable end-to-end workout: watch launch → live HUD frame → post-run HealthKit save."**
+
+v0.2 closes the loop from v0.1's foundation. We go from "protocols + mocks" to "Joe runs, glances at glasses, finishes, HealthKit sees it."
+
+### v0.2 User Stories
+
+**Story 1: Watch App Launch Surface** — App icon tap → watch foreground workout screen within 1s. Owner: Laughlin. Est. 3–4 days.
+
+**Story 2: Bare Workout Flow on Watch** — "Start" → watch records HKWorkoutSession, HR + distance + pace; glasses show live metrics; "Finish" → summary. Owner: Laughlin + Weiss. Est. 5–6 days.
+
+**Story 3: Post-Run Save to HealthKit** — "Save" → HKWorkout + HKWorkoutRoute written; Apple Fitness shows run. Owner: Laughlin. Est. 3–4 days.
+
+**Story 4: HUD Frame Builder** — Metrics → ActiveLook frame stream at ~1Hz. Owner: Weiss + Amber. Est. 4–5 days.
+
+**Story 5: iPhone Companion Mirror** — iPhone shows real-time pace/HR/distance/time via WCSession. Owner: Laughlin + Amber. Est. 3–4 days.
+
+### Out of Scope for v0.2
+
+1. **HUD Customization Editor** (→ v1) — D6 locks baked presets for v0.1. v0.2 doesn't change that.
+2. **iPhone Settings / Layout Config UI** (→ v0.2.5 or v1) — Phone app in v0.2 is read-only mirror only.
+3. **GPS Route Map on Phone** (→ v1) — Core metric spine (pace/HR/distance/time) only; route is nice-to-have.
+4. **Multi-Workout Types** (→ v1) — D3 locks running-only for v0.1; v0.2 stays running-only.
+5. **Action Button + Smart Stack Full Integration** (→ v0.2.5) — Story 1 covers foreground launch (foundation); refinement deferred.
+
+### Open Product Questions for Joe
+
+1. **Watch-Only Run Assumption:** Should v0.2 assume runner always has watch but *may* leave phone at home? Affects phone mirror prioritization.
+2. **Glasses Disconnect Handling:** When glasses drop mid-run, pause watch session (A), show haptic + keep recording (B, per D4), or silently keep recording (C)?
+3. **HealthKit Active Energy:** Estimate from HR + age/weight, or let Health app calc from raw HR/distance?
+4. **Post-Run Summary UI:** Static summary card (A), auto-save + disappear (B), or card + options menu (C)?
+5. **Offline Metrics:** Should v0.2 support running completely offline (no phone, no iCloud)? Current assumption: yes (D5 + D9 locked this).
+
+### v0.2 Size & Timeline
+
+**Estimate:** 3–4 weeks.
+
+| Team | Workstream | Size | Owner |
+|------|-----------|------|-------|
+| Watch | Stories 1–3 | 2.5 weeks | Laughlin |
+| Glasses | Story 4 | 1.5 weeks | Weiss |
+| Phone | Story 5 | 1 week | Laughlin + Amber |
+| QA | Integration tests | 1 week | Amber |
+
+**Success Criteria:**
+1. ✅ Joe can launch 10-min test run from watch, see metrics on glasses HUD, finish, data in Apple Health (all within 1 min).
+2. ✅ HUD frame delivery is steady (~1Hz, no stutter, no lag > 500ms).
+3. ✅ Glasses disconnect doesn't crash app or lose watch-side metrics.
+4. ✅ iPhone mirror dashboard is readable at a glance (large pace/HR).
+5. ✅ Post-run HealthKit write is reliable and idempotent.
+
+### Recommendations
+
+1. **Lock the disconnect-handling UX (Q2 above) before Laughlin starts Story 2.**
+2. **Weiss + Laughlin should pair briefly on the BLE push integration.**
+3. **After v0.2 merges, gather Joe's real-run feedback ASAP.**
+
+**Decision Gate:** Killian proposes v0.2 scope locked. Awaiting Joe's answers to the 5 open questions (especially Q2 and Q4).
+
+---
+
+## 2026-05-15T18:26:26Z: Richards — v0.2 Technical Slice Proposal
+
+**Author:** Richards (Lead / Architect)  
+**Date:** 2026-05-15T14:26:26-04:00  
+**Status:** Proposed — awaiting Joe review and team input
+
+### Executive Summary
+
+v0.1 foundation is live: `ARRunnerCore` SPM, `GlassesFrameTransport` protocol, `WorkoutController` actor, `WorkoutHealthSubstrate` integration seams, and test scaffolding. All CI green (Linux + macOS + CodeQL).
+
+v0.2 scope: Extend v0.1 seams into a **credible implementation slice**. Three parallel workstreams ship the core user-visible workout loop (watch starts, glasses display live metrics, phone mirrors, glasses reconnect on drop). Smaller footprint than v0.1, focused on delivery value with low architectural risk.
+
+### v0.2 Candidate Workstreams
+
+**1. Glasses Hardware Integration (Weiss) — CRITICAL PATH**
+- Implement `ActiveLookAdapter: GlassesFrameTransport` conformance on watchOS.
+- Handle GATT write for HUD frame updates (~1 Hz).
+- Error handling: GATT write timeout, connection loss, invalid frame.
+- Acceptance: Real Watch + glasses hardware sends live frame at workout tick rate.
+- Deliverable: Merged to main; Weiss owns beta test on personal hardware.
+- Risk: Medium (ActiveLook watchOS SDK gaps). Mitigation: Pivot to phone relay as fallback (~2–3 day impl, 1 Hz latency acceptable).
+- Dependency: None — builds on v0.1 stubs, works in parallel.
+
+**2. Watch SwiftUI View Stack (Laughlin) — CRITICAL PATH**
+- Surface `WorkoutController` state in functional watch app UI.
+- Workout start view, live metrics view, pause/resume/end controls, lock-screen complication.
+- Acceptance: User can start workout from Smart Stack widget, see live metrics, end workout; complication visible.
+- Deliverable: Functional watch app UI; merged to main.
+- Risk: Low. Mitigation: Integration test on hardware.
+- Dependency: None — builds on v0.1 `WorkoutController` actor, works in parallel with Workstream 1.
+
+**3. iPhone Companion Mirror (Laughlin)**
+- Phone app receives live metrics via `WCSession`, displays in SwiftUI.
+- Implement `WCSessionDelegate` for `WorkoutTickMessage` from watch.
+- Live metric tiles (HR, pace, distance, elapsed time) + post-run summary.
+- Acceptance: iPhone companion shows live metrics during watch workout; summary persists post-run.
+- Deliverable: Phone app with live mirror + summary.
+- Risk: Low — uses existing WCSession patterns from v0.1 architecture doc.
+- Dependency: Workstream 2 (watch must send ticks); Workstream 1 (optional).
+
+**4. Glasses Disconnect Resilience (Weiss + Laughlin) — CRITICAL PATH**
+- Implement D4 contract — workout continues if glasses drop; subtle UX.
+- Auto-reconnect loop in `BLEManager` (exponential backoff, max retry window).
+- Haptic alert when BLE connection lost; "HUD offline" indicator on watch view.
+- Log drop event in run metadata.
+- Acceptance: Disconnect glasses mid-run; watch continues ticking; reconnect auto-succeeds within 5s; user sees haptic + offline indicator.
+- Deliverable: Merged to main; integrated into Workstreams 1 + 2.
+- Risk: Low — standard BLE reconnect pattern.
+- Dependency: Workstreams 1 + 2.
+
+**5. HUD Layout Preset System (Laughlin)**
+- Bake 2–3 ActiveLook Config-Generator layouts at build time.
+- Phone app picker: user selects layout before workout.
+- Watch reads preset on `WorkoutLifecycle.started`, pushes to glasses via `GlassesFrameTransport`.
+- Acceptance: User can pick layout from phone; watch applies at start; glasses display chosen layout.
+- Deliverable: Preset factory + phone picker UI; merged to main.
+- Risk: Low — uses ActiveLook Config-Generator outputs (Weiss owns inputs).
+- Dependency: Workstreams 1–3.
+
+### Risk & Dependency Matrix
+
+| Workstream | Risk | Blocked By | Blocks |
+|-----------|------|-----------|--------|
+| **1. Glasses Hardware** | Medium (SDK unknowns) | Nothing | 4 (reconnect logic), 5 (config push) |
+| **2. Watch UI** | Low | Nothing | 3 (WCSession sender), 4 (disconnect UX) |
+| **3. Phone Mirror** | Low | 2 (watch must send ticks) | Nothing |
+| **4. Disconnect Resilience** | Low | 1 + 2 (uses both) | Nothing |
+| **5. HUD Presets** | Low | 1 (SDK outputs) | Nothing |
+
+**Critical path:** 1 → 4; 2 (parallel).
+
+### Recommended v0.2 Slice
+
+**Ship in v0.2 (3 workstreams):**
+1. **Glasses Hardware Integration** (Weiss) — Without this, no glasses output; core promise unmet.
+2. **Watch UI + Workout Loop** (Laughlin) — User-visible running app; turns v0.1 foundation into a workout.
+3. **Glasses Disconnect Resilience** (Weiss + Laughlin) — Fulfills D4; production-critical.
+
+**Why this slice?** Delivers a **credible end-to-end workout loop**: user starts on watch, sees live metrics on glasses (and in complication), glasses reconnect gracefully if signal drops.
+
+**Defer to v0.2.1 or v0.3:**
+- **Workstream 3 (Phone Mirror):** Nice-to-have. If phone is absent, watch + glasses works fine (per D5).
+- **Workstream 5 (HUD Presets):** Cosmetics. v0.2 can ship with single hard-coded layout; preset picker is polish.
+
+**Rationale:**
+- **Architectural clarity:** Core loop (watch → glasses, resilience) is the hard part; phone mirror is downstream convenience.
+- **Time risk:** Presets require ActiveLook Config-Generator outputs (Weiss input); deferring removes dependency fork.
+- **User value:** Core 3 workstreams unlock "I can run with my AR glasses" (D5 fulfilled).
+- **Unblock downstream:** Laughlin can start design on Workstream 3 (phone UI) in parallel; doesn't block v0.2 ship.
+
+### Process Item: Git Worktree Convention
+
+**Issue:** During v0.1 parallel work on shared macOS dev machine, branch shifts moved `HEAD` between Laughlin's git calls, causing coordination hazard.
+
+**Proposal for `.squad/routing.md` or new `.squad/skills/parallel-agent-worktrees/SKILL.md`:**
+
+> **Parallel Agent Working Directory Isolation**
+> 
+> When multiple agents work in parallel on the shared macOS dev machine, each agent must isolate its working directory using `git worktree add ../AR-Runner-{agent}-{task}` to avoid HEAD collisions. This prevents branch switches in one agent from interfering with git operations in another agent's session. Example: Amber uses `../AR-Runner-amber-integration`, Weiss uses `../AR-Runner-weiss-ble`, Laughlin uses `../AR-Runner-laughlin-workout`. All worktrees remain siblings of the main checkout; Scribe reconciles merges to main. This pattern is mandatory for all parallel multi-agent sessions going forward.
+
+### Success Criteria (v0.2 Soft Launch)
+
+- ✅ Real ActiveLook glasses display live workout metrics at 1 Hz (Workstream 1)
+- ✅ Watch app UI lets user start/pause/end workouts and view live complication (Workstream 2)
+- ✅ Glasses auto-reconnect on signal drop; watch shows offline indicator + haptic alert (Workstream 4)
+- ✅ (Optional) iPhone companion shows live metrics during watch workout (Workstream 3)
+- ✅ (Optional) User can pick HUD layout preset from phone (Workstream 5)
+- ✅ All PRs merged, CI green (Linux + macOS + CodeQL), zero regressions vs. v0.1
+- ✅ Weiss tests on personal Watch + glasses hardware; Laughlin + Amber verify simulator + integration tests

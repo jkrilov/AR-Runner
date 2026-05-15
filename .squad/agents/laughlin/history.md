@@ -88,3 +88,42 @@ Richards's second fix (commit 079cb73, chore/ci-workflows) resolved ARRunnerWatc
 **For your implementation:** Your WorkoutController runs in ARRunnerWatch (app target). When you test on CI, expect this runtime download step to run automatically. On your local macOS machine, you likely have the watchOS simulator runtime already cached — this is why it worked locally but failed CI first time.
 
 **Reference:** `.squad/orchestration-log/2026-05-14T21:26:21Z-richards.md` for full details.
+
+### 2026-05-15T14:33:20-04:00 — v0.2 #2 + #3 — Watch SwiftUI app + iPhone live mirror
+
+**Branch:** `feat/v02-watch-ui-and-mirror-laughlin` (suffix because another agent was racing me on the unsuffixed name; same lesson Weiss documented).
+
+**Outcome:** PR opened, all four app targets build clean (watchOS + iOS + both widget extensions), Core tests 55/55 green.
+
+**Workstream #2 — Watch SwiftUI workout app:**
+- `WorkoutViewModel.LaunchState` grew `.pendingFinish` and `.cancelled` to model decision #5 (Finish menu pauses, presents Save / Discard / Resume).
+- `requestFinish()` pauses the controller and parks it in `.pendingFinish`. The `confirmationDialog` Bool binding auto-resumes the run if the user dismisses without choosing — a stray tap-out can't strand the workout in pendingFinish.
+- Hybrid energy (decision #4): pure-Swift `EnergyEstimator` + `EnergyAccumulator` in Core integrate HR samples by elapsed time (Keytel 2005 formula). Watch view model holds an `EnergyAccumulator`, ingests HR samples from the existing metric stream, and publishes `estimatedActiveKilocalories` for the HUD. After Save, the HealthKit-official `WorkoutSummary.totalActiveEnergyKilocalories` overrides the estimate in the post-run footer.
+- "Discard" caveat: the canonical `WorkoutHealthSubstrate` protocol does not expose a HK-level discard path in v0.2 (and was off-limits per the brief). Discard ends the controller normally — the HKWorkout still writes — and just suppresses the on-device summary. The view-model `.cancelled` state surfaces a "Run discarded" hint; users can delete the workout from the Health app. Worth re-litigating in v0.3 alongside the iPhone settings UI.
+
+**Workstream #3 — iPhone live mirror:**
+- New shared `WorkoutTickMessage` payload in Core. Bumped `WCMessage.currentSchemaVersion` from 1 → 2 with backward-decoding for v1 envelopes (older watch builds keep working against the v0.2 phone mirror).
+- Watch publishes a tick every 1 s while phase ∈ {running, paused, pendingFinish}. Best-effort: silent drop if the phone is unreachable. Reachability-aware delivery — `sendMessageData` when reachable, `updateApplicationContext` for live-tick latest-only fallback, `transferUserInfo` for queued lifecycle transitions.
+- iPhone `WorkoutMirrorViewModel` republishes the latest snapshot. `Status` enum models `.idle` / `.live` / `.stale(since:)` / `.ended` so the dashboard can dim/annotate when ticks dry up. 8 s stale threshold; pure visual signal — no retries, no nags.
+- New `WorkoutMirrorView` replaces the placeholder `Live` tab. Single screen, no controls, no settings (decision #3 keeps phone read-only).
+
+**Watch-first guarantee (decision #3):** the view-model's `mirror` parameter is optional. If WCSession is unsupported / unactivated / unreachable, every send silently drops. The watch records, saves, and renders identically with no phone present. Verified by reading the code path — every WC call is best-effort.
+
+**SwiftUI-on-watchOS gotchas:**
+1. `confirmationDialog` needs a `Bool` binding; presenting based on a `LaunchState` case requires a derived binding. Setter must handle the dismiss-without-choice case (we route it to `resumeFromFinish`).
+2. `Task { … }` closures inside a `@MainActor @Observable` view-model inherit MainActor isolation by default — calling sync MainActor-isolated methods from inside that Task does NOT need `await`, and the compiler warns if you add it ("no async operations occur within 'await' expression"). Drop the await; do NOT change isolation.
+3. SwiftUI macro-generated `@Observable` classes interplay fine with `@State private var viewModel = ViewModel(...)` default initializers — the default expression runs in the enclosing `@MainActor` view's init context.
+
+**WCSession patterns (Swift 6 strict-concurrency edition):**
+- `WCSessionDelegate` conformance triggers MainActor-isolation inference in iOS 18 / watchOS 11 SDKs in subtle ways. The cleanest pattern is `final class : NSObject, @unchecked Sendable` (no `@MainActor`) with delegate methods declared without isolation modifiers — they get nonisolated treatment via `@unchecked`. The `ARRunner*Environment` singletons are `@MainActor` and call `service.activate()` once at app launch; everything else stays off the main actor.
+- For live-tick publishing prefer the three-tier pattern: `sendMessageData` (reachable, low-latency), `updateApplicationContext` (background, latest-wins), `transferUserInfo` (queued, durable). The watch `transmit(_:preferLatestOnly:preferQueued:)` helper picks based on the message type — live tick → latest-only; lifecycle event → queued; other → queued.
+- `AsyncStream` is the right shape for the inbound side. The phone receiver's `incomingMessages` stream is bridged into a MainActor view-model; subscribers see future messages only, no replay.
+
+**Hybrid energy approach:**
+- `EnergyEstimator` is pure Foundation in Core so it builds on Linux SPM (the existing `ARRunnerCoreTests` Linux job validates it). Sex switch defaults `.unspecified` to the male/female average so we never lose the estimate when the user hasn't shared sex.
+- `maxSampleGapSeconds` clamp prevents long pauses from inflating the estimate when the watch resumes sampling. Tested with a 5-min gap → bounded to the 10-s clamp.
+- `BodyProfile` lives in Core too. Watch reads body mass + age + sex from HealthKit at workout start; if any field is missing, the view-model just doesn't construct an `EnergyAccumulator` and the live kcal row reads "—".
+
+**Menu-on-finish pattern:**
+- The Finish menu is a `confirmationDialog` driven by `launchState == .pendingFinish`. Dialog actions invoke async view-model methods via `Task { await … }`. The Resume button has `role: .cancel` so dragging down on the watch does the right thing.
+- Two-phase commit: Finish → pause + show menu (controller still alive) → Save / Discard ends controller. Resume just calls `controller.resume()`. This means the user can Finish, change their mind, Resume, and continue the same `WorkoutController` — no new HK session, no lost samples.
