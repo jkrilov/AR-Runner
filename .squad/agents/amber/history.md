@@ -76,3 +76,25 @@ Addressed Killian's 3 🟡 nits on PR #4 (chore/public-repo-prep) as the fresh-e
 2. CONTRIBUTING.md — added Releases-page pointer so outside readers know how to detect v0.1.
 3. CODE_OF_CONDUCT.md — new minimal file pointing to Contributor Covenant v2.1.
 Sanity-checked `swift build` in ARRunnerCore (clean). One commit; Joe to merge.
+
+### 2026-05-15T12:51:36-04:00 — Integration mocks v0.1 (feat/integration-mocks)
+Built the testing scaffolding for downstream wiring of glasses + HealthKit without real hardware. Three production seams added to `ARRunnerCore` (kept additive to avoid clashing with Weiss's `feat/ble-wrapper` and Laughlin's `feat/workout-controller`):
+- `Protocols/GlassesConnection.swift` — `GlassesConnectionState` enum + `GlassesConnectionObserver` protocol (separate from existing `GlassesFrameTransport` so Weiss's richer protocol can subsume on merge without my PR fighting it).
+- `Protocols/HealthKitSubstrate.swift` — minimal `HealthKitSubstrate` protocol Laughlin's controller can adopt; exposes stable `workoutID` (D9), lifecycle phases, async metric stream.
+- `Workout/WorkoutController.swift` — actor orchestrator wiring substrate + transport + metadata store; D4 happy path lives here.
+
+Mocks (test target):
+- `MockGlassesFrame` — actor double with recorded writes/layouts, explicit `simulateDisconnect/simulateReconnect`, one-shot failure injection (`failNextConnect`/`failNextLayoutPush`/`failNextMetricUpdate`), multi-subscriber connection-state stream that replays current state on subscribe.
+- `FakeHealthKitSubstrate` — actor with deterministic scenario replay (`steadyRun` / `intervals` / `explicit` / `ended`), stable workout UUID for D9 side-store tests, `isScenarioComplete` poll for tests that need to await replay.
+- `InMemoryARMetadataStore` — drop-in `ARMetadataStore` for D9 assertions without filesystem.
+
+Six new tests in `WorkoutControllerIntegrationTests`, all green; total `swift test` is 12/12.
+
+**Learnings (mock-design + Swift 6 in test code):**
+- **Subscribe BEFORE you start.** First test draft had the controller call `substrate.start(...)` *then* `startMetricFanout()`. The substrate's replay task fires the first metric on the next yield, racing the subscription. First metric was lost in `testExplicitScenarioReplaysDeterministicFieldUpdates`. Fix: start the consumer tasks first, then call `substrate.start(...)`. Sounds obvious in hindsight; it's the kind of bug that would silently chew the first heart-rate sample of every run on real hardware too. Worth a callout for Laughlin when she wires the real `HKLiveWorkoutBuilder`.
+- **Swift 6 actor + `func foo() -> AsyncStream` protocol requirement = isolation conformance error.** `[#ConformanceIsolation]`: an actor's instance method is actor-isolated; a non-`async` protocol requirement is nonisolated; conformance fails. Fix is to make the requirement `async` (`func metrics() async -> AsyncStream<...>`). Cheap workaround vs. `nonisolated` (which would bar touching actor state) or `@preconcurrency` (which silences the safety net). Worth a skill — if Weiss/Laughlin hit the same wall on their protocol surfaces, this is the canonical fix.
+- **Tests that capture `var` arrays inside `Task { ... }` trip `[#SendingRisksDataRace]` under Swift 6.** Wrap the accumulator in a tiny in-test `actor Collector { ... }`. Boring, but cheaper than every other option.
+- **`AsyncStream` isn't available on macOS < 10.15.** SPM defaults to ancient macOS deployment when `Package.swift` doesn't list it. Fix: add `.macOS(.v13)` alongside `.iOS(.v18)` / `.watchOS(.v11)`. Linux CI is unaffected (no availability checks), but local `swift build` on macOS now works for everyone.
+- **Multi-subscriber `AsyncStream` replay-on-subscribe pattern.** For connection state and phase, yield the current value into the new continuation immediately, store the continuation under a UUID key, and clean up in `onTermination`. Used in both `MockGlassesFrame` (state stream) and `FakeHealthKitSubstrate` (phase stream). Standard pattern but worth documenting because it's *not* what `AsyncStream(unfolding:)` gives you.
+- **Workspace had untracked WIP from prior agent sessions (Weiss's full `Glasses/` source, Laughlin's `Workout/WorkoutHealthSubstrate.swift` + `InMemoryWorkoutHealthSubstrate.swift`, an expanded `GlassesFrameTransport.swift`, etc.).** None of it was on `origin/main`. Stashed into `.squad/.scratch/amber-stashed/` (gitignored) so this PR stays independent per the brief. When Weiss's and Laughlin's PRs land, the protocol seams I introduced (`GlassesConnectionObserver`, `HealthKitSubstrate`) will need a small reconciliation pass — they're additive and shouldn't conflict, but the eventual merged `WorkoutController` will probably collapse mine into Laughlin's richer one.
+- **Don't trust local file listings to match what `swift build` will see.** Untracked files in the working tree compile silently. If your build error mentions types you don't own, check `find . -name "*.swift"` first.
