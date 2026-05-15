@@ -538,18 +538,19 @@ extension DisconnectResilienceTests {
         _ = substrate // keep symmetry with sibling tests
     }
 
-    // EXPECTED-FAILING-UNTIL: v0.2 #4 implementation (Laughlin).
-    // Contract: the watch UI must be able to subscribe to a per-disconnect
-    // alert event so it can fire one haptic per outage (decision #2). Today
-    // the only proxy is observing `WorkoutState.glassesConnected` flipping
-    // false on the controller's `states` stream — workable, but it ties UI
-    // logic to state-snapshot diffing. A dedicated `controller.alerts`
-    // `AsyncStream<WorkoutAlertEvent>` (or equivalent) would be cleaner and
-    // would isolate the haptic-trigger contract.
+    // EXPECTED-FAILING-UNTIL: deferred — architectural pivot in v0.2 #4.
+    // Resolution: the watch view-model (`WorkoutViewModel.handle(statusEvent:)`
+    // in `ARRunnerWatch/Workout/WorkoutViewModel.swift`) consumes
+    // `transport.statusEvents()` directly and fires the haptic on `.dropped`
+    // with a 10s debounce. No `controller.alerts` stream was added — the
+    // 1:1 haptic-per-outage contract is already pinned by
+    // `test_Disconnect_EmitsDroppedExactlyOnce` above (one `.dropped` per
+    // outage → one haptic). If a Core-level alerts stream is desired in a
+    // future slice, this skip can be lifted and the test body fleshed out.
     func test_HapticAlertHook_OnDisconnect_ExpectedFailing() async throws {
         try XCTSkipIf(
             true,
-            "EXPECTED-FAILING-UNTIL: v0.2 #4 implementation — WorkoutController has no dedicated alerts stream for haptic triggers. Owner: Laughlin."
+            "DEFERRED — v0.2 #4 ships haptics in the watch view-model off transport.statusEvents(); no controller.alerts stream. 1:1 contract is covered by test_Disconnect_EmitsDroppedExactlyOnce."
         )
 
         // When implemented, the test will look approximately like this

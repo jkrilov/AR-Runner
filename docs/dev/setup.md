@@ -25,6 +25,18 @@ XcodeGen reads `project.yml` and generates the Xcode project file (`AR-Runner.xc
 open AR-Runner.xcodeproj
 ```
 
+## Troubleshooting
+
+### `Cannot find 'TypeName' in scope` for a file that exists on disk
+
+You're looking at a stale generated `AR-Runner.xcodeproj`. The project bundle is gitignored and XcodeGen rebuilds it from `project.yml`, recursively including everything under each target's `sources` path. When a teammate adds a new `.swift` file in a feature branch, your local pbxproj doesn't know about it until you regenerate.
+
+```bash
+xcodegen generate
+```
+
+Re-run any time after pulling, switching branches, or noticing an unexpected "missing symbol" error for a file that clearly exists.
+
 ## Shared package layout
 
 `ARRunnerCore` is the shared local Swift Package Manager dependency used by the app and widget targets.

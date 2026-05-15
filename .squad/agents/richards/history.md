@@ -100,3 +100,27 @@ Condensed from deep-dive learnings (17.5 KB → 2.5 KB summary, full entries bel
 All three PRs now open and awaiting Joe's review/coordination. Cross-agent protocol naming gaps identified for small follow-up reconciliation PR post-merge (expected minor, well-documented in decisions.md).
 
 decisions.md now 61442 bytes (merged 4 inbox entries: weiss, laughlin, amber, and CI architecture).
+
+
+### 2026-05-15: pbxproj target-membership "bug" was actually stale-generated-project (XcodeGen)
+
+**Reported symptom:** `Cannot find 'GlassesTransportFactory' in scope` at `ARRunnerWatch/Views/WorkoutView.swift:11`. Coordinator diagnosed it as PR #9 having missed `GlassesTransportFactory.swift` and `ActiveLookGlassesAdapterHardwareTests.swift` from `AR-Runner.xcodeproj/project.pbxproj` target membership, and assigned a surgical pbxproj-edit task.
+
+**Actual root cause:** This repo uses **XcodeGen**. `AR-Runner.xcodeproj/` is gitignored (see `.gitignore`: `*.xcodeproj/`), regenerated from `project.yml`. The Watch target's `sources: [path: ARRunnerWatch]` is **recursive** — every `.swift` under that tree is auto-included. Both "missing" files exist on disk and appear with 4 refs each immediately after `xcodegen generate`. Joe's local pbxproj was simply stale (generated before PR #9 landed those files).
+
+**Unblock for Joe:** `xcodegen generate` from repo root; re-open Xcode.
+
+**Recurring failure-mode pattern (durable learning):**
+- Symptom: "Cannot find X in scope" for a Swift type whose file demonstrably exists.
+- Diagnosis trap: looks identical to a missed Xcode-target-membership bug (the classic Apple-developer footgun in hand-managed `.xcodeproj` files). In a hand-edited project, it would be — and the suggested fix (add to PBXBuildFile / PBXFileReference / PBXGroup / PBXSourcesBuildPhase) is correct.
+- In **this** repo, it's never that. pbxproj is generated. The fix is always `xcodegen generate`.
+- The generated-project/hand-edited-project distinction needs to be the **first** question whenever an Xcode target-membership bug is suspected. `git check-ignore AR-Runner.xcodeproj/project.pbxproj` answers it in one shot.
+
+**Process miss:** Coordinator's diagnosis didn't sanity-check whether `AR-Runner.xcodeproj/` was tracked in git before prescribing pbxproj edits. Adding a checklist item for that is going through Scribe (see `.squad/decisions/inbox/richards-pbxproj-target-membership-checklist.md`).
+
+**Artifacts produced:**
+- New skill: `.squad/skills/xcodegen-stale-generated-project/SKILL.md` — failure mode + 30-second triage.
+- Decision inbox: `.squad/decisions/inbox/richards-pbxproj-target-membership-checklist.md` — proposes triage-first rule for any "missing symbol / target membership" report.
+- Doc PR: small troubleshooting section added to `docs/dev/setup.md` so the next dev who hits this self-serves in one step.
+
+**No code/pbxproj edits made.** pbxproj is gitignored — committing it would create a stale snapshot that fights XcodeGen on every regen.

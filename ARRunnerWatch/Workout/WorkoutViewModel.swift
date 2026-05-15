@@ -4,6 +4,9 @@
 import ARRunnerCore
 import Foundation
 import SwiftUI
+#if canImport(WatchKit)
+import WatchKit
+#endif
 
 /// `@MainActor` view model that owns a `WorkoutController` and republishes its
 /// state + metrics for SwiftUI consumption. The controller itself is the
@@ -43,6 +46,11 @@ final class WorkoutViewModel {
     private(set) var distanceMeters: Double?
     private(set) var elapsed: TimeInterval = 0
     private(set) var glassesConnected: Bool = false
+    /// True while the glasses transport is in a dropped state. Mirrors the
+    /// inverse of `glassesConnected` for state-driven UI; published as its
+    /// own field so the view can react to the side-channel `.dropped` /
+    /// `.reconnected` events from the transport directly (D4).
+    private(set) var hudOffline: Bool = false
     /// Live local kcal estimate (decision #4 hybrid). Replaced by the
     /// HealthKit-official figure inside `WorkoutSummary` on Save.
     private(set) var estimatedActiveKilocalories: Double?
@@ -64,17 +72,36 @@ final class WorkoutViewModel {
     private let transportFactory: (@Sendable () -> any GlassesFrameTransport)?
     private let mirror: WorkoutMirrorPublisher?
     private let bodyProfile: BodyProfile?
+    private let hapticPlayer: @Sendable () -> Void
+    private let now: @Sendable () -> Date
+
+    /// Minimum gap between two haptic alerts for the same disconnect cycle.
+    /// Prevents spam if the transport rapid-fires multiple `.dropped` events
+    /// (e.g., link flapping). Reset to "fire-eligible" on `.reconnected` so a
+    /// new outage after a recovery alerts immediately.
+    private static let hapticDebounceInterval: TimeInterval = 10
+    private var lastHapticAt: Date?
 
     init(
         substrateFactory: @escaping @Sendable () -> any WorkoutHealthSubstrate,
         transportFactory: (@Sendable () -> any GlassesFrameTransport)? = nil,
         mirror: WorkoutMirrorPublisher? = nil,
-        bodyProfile: BodyProfile? = nil
+        bodyProfile: BodyProfile? = nil,
+        hapticPlayer: (@Sendable () -> Void)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.substrateFactory = substrateFactory
         self.transportFactory = transportFactory
         self.mirror = mirror
         self.bodyProfile = bodyProfile
+        self.hapticPlayer = hapticPlayer ?? Self.defaultHapticPlayer
+        self.now = now
+    }
+
+    private static let defaultHapticPlayer: @Sendable () -> Void = {
+        #if canImport(WatchKit) && os(watchOS)
+        WKInterfaceDevice.current().play(.notification)
+        #endif
     }
 
     func start(activity: SportType = .running) async {
@@ -212,11 +239,46 @@ final class WorkoutViewModel {
         glassesStatusTask = Task { [weak self] in
             let stream = await transport.statusEvents()
             for await event in stream {
-                if case .dropped(let reason, _) = event {
-                    await self?.reportGlasses(.from(droppedReason: reason))
-                }
+                await self?.handle(statusEvent: event)
             }
         }
+    }
+
+    /// MainActor-isolated handler for transport status events. Per D4:
+    /// * `.dropped` during an active workout → forward signal to the
+    ///   controller (counter + state flag), surface the HUD-offline UI hint,
+    ///   and play a debounced subtle haptic.
+    /// * `.reconnected` → clear the HUD-offline hint and reset the haptic
+    ///   debounce so a fresh outage alerts immediately. The connection-state
+    ///   stream separately re-flips `glassesConnected` via the controller.
+    /// Other status events (battery, RSSI, reconnect-attempt failures) are
+    ///   side-channel telemetry only — no UX side effects in v0.2.
+    private func handle(statusEvent event: GlassesStatusEvent) async {
+        switch event {
+        case .dropped(let reason, _):
+            hudOffline = true
+            await reportGlasses(.from(droppedReason: reason))
+            fireDisconnectHapticIfEligible()
+        case .reconnected:
+            hudOffline = false
+            lastHapticAt = nil
+        case .batteryLevel, .signalQuality, .reconnectAttemptFailed:
+            break
+        }
+    }
+
+    /// Trigger the watchOS haptic for a glasses drop, subject to D4 rules:
+    /// only while the workout is actively running (not idle / paused /
+    /// pendingFinish / ending / ended), and only once per debounce window so
+    /// a flapping link does not spam the user's wrist.
+    private func fireDisconnectHapticIfEligible() {
+        guard launchState == .running else { return }
+        let timestamp = now()
+        if let lastHapticAt, timestamp.timeIntervalSince(lastHapticAt) < Self.hapticDebounceInterval {
+            return
+        }
+        lastHapticAt = timestamp
+        hapticPlayer()
     }
 
     private func isStartable() -> Bool {
@@ -231,6 +293,8 @@ final class WorkoutViewModel {
         distanceMeters = nil
         elapsed = 0
         estimatedActiveKilocalories = nil
+        hudOffline = false
+        lastHapticAt = nil
         if let bodyProfile {
             energy = EnergyAccumulator(estimator: EnergyEstimator(profile: bodyProfile))
         } else {
