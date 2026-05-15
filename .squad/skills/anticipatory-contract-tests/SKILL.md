@@ -55,3 +55,19 @@ Used both in the test docstring and as the `XCTSkipIf` message. Greppable across
 ## Example
 
 See `ARRunnerCore/Tests/ARRunnerCoreTests/Integration/DisconnectResilienceTests.swift` (PR #8). Three expected-failing tests (`*_ExpectedFailing` suffix) cover three contract gaps; matching inbox entry at `.squad/decisions/inbox/amber-v02-resilience-contract-gaps.md`.
+
+## Linux vs. macOS scheduler races (post-PR #8 lesson)
+
+When an integration test pipes data through a controller that owns its own internal stream-forwarding task, **never let the test ALSO subscribe to the same upstream `AsyncStream`**. `AsyncStream` is single-consumer-by-design: yields go to whichever waiter the runtime picks. On macOS Darwin the test bridge often wins enough yields to stay green; on swift-corelibs Linux the controller's internal task can drain the entire stream first, leaving the test's bridge with zero metrics. PR #8 CI run 25936009488 burned a debug cycle on this exact pattern.
+
+Concrete failure mode and correct fix:
+
+- `WorkoutController.start(...)` calls `attachSubstrateStreams()` which spawns a `forwardingTask` doing `for await metric in substrate.metricEvents`.
+- The test's `bridgeMetrics` *also* did `for await metric in substrate.metricEvents` — two consumers fighting over the same single-consumer stream.
+- **Fix:** subscribe the test bridge to `controller.metrics` (the controller's outbound published stream), not to `substrate.metricEvents`. The controller republishes every metric it ingests, so the bridge sees all of them.
+
+**Rule of thumb:** if the canonical controller exposes a `public nonisolated let foo: AsyncStream<T>` output, the test bridge MUST consume that. If the controller doesn't expose one, that's a contract gap to flag in `decisions/inbox/` — don't double-subscribe upstream as a workaround.
+
+**Also worth keeping:** anticipatory tests using `AsyncStream`-backed mocks should still ensure the consumer side is ready before the producer fires (for the `glasses.updateField` → `.notConnected` flavour of race). But verify your hypothesis on the failing platform — adding a debug log inside the bridge that prints `glasses.connectionState` would have invalidated the connect-ordering hypothesis in 30 seconds and saved a CI round-trip.
+
+**Reproduction tip:** `gh run view <id> --log-failed | grep -iE "(failed|XCTAssert|error:)"` extracts the specific failing test + assertion when the GitHub UI snippet truncates.

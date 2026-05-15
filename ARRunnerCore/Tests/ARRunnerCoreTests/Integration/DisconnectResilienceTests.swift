@@ -57,11 +57,11 @@ final class DisconnectResilienceTests: XCTestCase {
     }
 
     private func bridgeMetrics(
-        from substrate: FakeHealthKitSubstrate,
+        from controller: WorkoutController,
         to glasses: MockGlassesFrame,
         layoutID: String
     ) -> Task<Void, Never> {
-        let stream = substrate.metricEvents
+        let stream = controller.metrics
         return Task {
             var fieldIndex: UInt8 = 0
             for await metric in stream {
@@ -145,7 +145,7 @@ extension DisconnectResilienceTests {
         let controller = WorkoutController(substrate: substrate)
 
         let glassesBridge = await bridgeGlasses(glasses, into: controller)
-        let metricBridge = bridgeMetrics(from: substrate, to: glasses, layoutID: "balanced-run")
+        let metricBridge = bridgeMetrics(from: controller, to: glasses, layoutID: "balanced-run")
         defer {
             glassesBridge.cancel()
             metricBridge.cancel()
@@ -249,7 +249,7 @@ extension DisconnectResilienceTests {
         let controller = WorkoutController(substrate: substrate)
 
         let glassesBridge = await bridgeGlasses(glasses, into: controller)
-        let metricBridge = bridgeMetrics(from: substrate, to: glasses, layoutID: "balanced-run")
+        let metricBridge = bridgeMetrics(from: controller, to: glasses, layoutID: "balanced-run")
         defer {
             glassesBridge.cancel()
             metricBridge.cancel()
@@ -422,7 +422,7 @@ extension DisconnectResilienceTests {
         let controller = WorkoutController(substrate: substrate)
 
         let glassesBridge = await bridgeGlasses(glasses, into: controller)
-        let metricBridge = bridgeMetrics(from: substrate, to: glasses, layoutID: "balanced-run")
+        let metricBridge = bridgeMetrics(from: controller, to: glasses, layoutID: "balanced-run")
         defer {
             glassesBridge.cancel()
             metricBridge.cancel()

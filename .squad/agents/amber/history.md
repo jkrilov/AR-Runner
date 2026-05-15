@@ -35,6 +35,17 @@ Wrote `DisconnectResilienceTests.swift` BEFORE Weiss + Laughlin implement the au
 
 PR #8 ships 7 anchoring tests + 3 expected-failing skip-marked tests. `swift test` → 57 pass / 3 skipped / 0 fail.
 
+### 2026-05-15T15:05:00-04:00 — Linux-only flake in PR #8 D4 test (CI run 25936009488)
+
+`test_DisconnectMidWorkout_KeepsRecordingIntoSubstrate` passed every macOS xcodebuild matrix entry but failed `swift test (ARRunnerCore, Linux)` with `XCTAssertTrue failed - Pre-disconnect HUD writes did not arrive`. **Two debugging passes** — first hypothesis was wrong, the real cause was subtler:
+
+- **Wrong-but-plausible first hypothesis (didn't fix it).** I assumed the test called `controller.start()` (which triggers `FakeHealthKitSubstrate.begin` and its 24-emit replay Task) BEFORE `glasses.connect()` resumed, so on Linux the substrate would drain into the bridge before glasses were connected and every `try? await glasses.updateField(...)` would throw `.notConnected`. Reordered setup to connect-first, pushed, CI failed with the **identical** assertion. Lesson: when a Linux-only flake "looks like" a connect-ordering race, *prove it* (e.g. log `glasses.connectionState` inside the bridge) before pushing — don't push a comment-rich change you haven't actually validated against the failing platform.
+- **Real root cause: two consumers on a single-consumer `AsyncStream`.** `WorkoutController.start(...)` calls `attachSubstrateStreams()` which spawns its own internal `forwardingTask` doing `for await metric in substrate.metricEvents`. The test's `bridgeMetrics` helper *also* did `for await metric in substrate.metricEvents` directly. `AsyncStream` is single-consumer-by-design — yields are delivered to whichever waiter the runtime picks. On macOS Darwin scheduling the test bridge happened to win enough yields to satisfy `>= 6`; on Linux swift-corelibs the controller's forwardingTask drained all 24 metrics first and the bridge got nothing.
+- **Right fix.** Bridge from `controller.metrics` (the controller's published outbound `AsyncStream<WorkoutMetric>`) instead of `substrate.metricEvents`. Architecturally correct too — in production the HUD mirrors what the controller publishes, not what the substrate raw-emits. The controller's own forwardingTask republishes via `metricContinuation.yield(metric)`, so the bridge sees every metric the controller ingests.
+- **Generalisable rule.** When wiring an integration test through a controller that owns an internal stream-forwarding task, **never let the test ALSO subscribe to the same upstream stream.** Subscribe to the controller's *outbound* stream. If the controller doesn't expose one, that's a contract gap to flag — don't double-subscribe upstream as a workaround.
+- **No canonical-surface bug.** `WorkoutController`, `GlassesFrameTransport`, `WorkoutHealthSubstrate` are all fine; `controller.metrics` already exists and is the right hook.
+- **Diagnostic workflow worth keeping.** `gh run view <id> --log-failed | grep -iE "(failed|XCTAssert|error:)"` quickly extracts the failing test name + assertion message from a noisy CI tail when the GitHub UI snippet truncates. Just don't stop at "I have a plausible cause" — verify on the failing platform before pushing.
+
 ## Archive
 
 See `history-archive.md` for earlier 2026-05-14 learnings (scaffold validation, CI toolchain, integration mocks v0.1, PR #4 nit follow-up).
