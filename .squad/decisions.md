@@ -441,6 +441,84 @@ Removed both redundant declarations. Swift 6 language mode (`swift-tools-version
 ### For Laughlin & Weiss
 
 When importing Apple samples or third-party SDK examples (especially ActiveLook), strip `.enableUpcomingFeature("StrictConcurrency")` lines on import — it's a CI-breaker under Swift 6.0 even though local builds may pass.
+## Session 2026-05-15: Public-Repo Preparation & Review
+
+### 2026-05-15: Richards & Joe — ActiveLook Visual Assets Hard Rule (Permanent Decision)
+
+**Author:** Richards (Lead / Architect)  
+**Date:** 2026-05-15  
+**Status:** Approved by Joe Krilov 2026-05-15. Lock as permanent decision.
+
+**Decision:** AR-Runner will not commit any asset, font, layout template, or generated config from the `ActiveLook/Activelook-Visual-Assets` or `ActiveLook/Config-Generator` repositories. Original art only.
+
+This applies to icons, fonts, PNGs, prebuilt layouts, `cfgDescriptor/` files, and any binary configs produced by `Config-Generator`. Any HUD layouts, glyphs, or visual presets that AR-Runner ships must be authored from scratch under the project's Apache 2.0 outbound license.
+
+**Rationale:** The two ActiveLook visual-asset repositories are licensed **CC BY-NC-ND 4.0** (Attribution-NonCommercial-NoDerivatives). That license is **incompatible** with AR-Runner's Apache 2.0 outbound license on three axes:
+1. **NonCommercial (NC):** Apache 2.0 permits commercial use; CC BY-NC-ND forbids it.
+2. **NoDerivatives (ND):** Apache 2.0 permits modification; CC BY-NC-ND forbids derivative works.
+3. **Sub-licensability:** Apache 2.0 is freely sub-licensable; CC BY-NC-ND is not.
+
+The ActiveLook **iOS SDK** itself (`ActiveLook/ios-sdk`) is Apache 2.0 and is fine to consume via SPM — this rule is strictly about visual/config assets from the other two repos.
+
+**Enforcement:** Killian (product) and Weiss (ActiveLook integration) are the natural owners of any future "should we ship layout X?" call. Code reviewers should reject PRs that add files from those two upstream repos.
+
+---
+
+### 2026-05-15: Richards & Joe — Public-Repo Prep Locked
+
+**Author:** Richards (Lead / Architect)  
+**Date:** 2026-05-15  
+**Status:** Approved by Joe Krilov 2026-05-15. Implementation in PR `chore/public-repo-prep`.
+
+**Context:** Richards delivered a public-repo readiness audit recommending 14 cleanup items before flipping `jkrilov/AR-Runner` from private to public. The audit closed with 5 open questions for Joe. Joe answered all 5 verbatim on 2026-05-15. This entry locks those answers into the ledger.
+
+**Joe's 5 answers:**
+1. **License:** Apache 2.0
+2. **Copyright holder:** Joe Krilov
+3. **ActiveLook visual-assets hard rule:** YES, lock as permanent decision. (See sibling entry above.)
+4. **Outside-PR posture in CONTRIBUTING.md:** Paused until v0.1 lands (issues for discussion welcome; PRs paused so foundation can settle)
+5. **Squad-system in README:** Light footnote (credit + brief explanation, doesn't lead the README)
+
+**Implementation in `chore/public-repo-prep` (PR #4):**
+| Item | File(s) |
+|------|---------|
+| Apache 2.0 LICENSE with `Copyright 2026 Joe Krilov` footer | `LICENSE` (new) |
+| SPDX two-line headers on all 23 committed `.swift` files | `ARRunnerCore/`, `ARRunnerWatch/`, `ARRunnerPhone/`, `ARRunnerWidgets/` |
+| Light SECURITY.md (PVR pointer, best-effort, no SLA) | `SECURITY.md` (new) |
+| CONTRIBUTING.md (paused-until-v0.1) | `CONTRIBUTING.md` (new) |
+| README status callout + Squad footnote + license line | `README.md` (modified) |
+| Corporate-account redaction | `.squad/orchestration-log/` and audit doc |
+| ActiveLook visual-assets hard rule decision drop | Above |
+| This decision drop | This entry |
+
+**Locked downstream policies:**
+- **Outside PRs paused until v0.1.** CONTRIBUTING.md is the canonical statement; revisit when v0.1 ships.
+- **SPDX header pattern is locked** as the project convention for any new `.swift` source file:
+  ```swift
+  // SPDX-FileCopyrightText: 2026 Joe Krilov
+  // SPDX-License-Identifier: Apache-2.0
+  ```
+  New files added in any future PR must include this header. Reviewers should reject PRs that add untagged Swift sources.
+- **README's primary job remains explaining AR-Runner the product.** The Squad footnote is a footer-level credit, not a framing device.
+- **Vulnerability reports route through GitHub Private Vulnerability Reporting** once the repo is public and PVR is enabled in repo settings.
+
+**Not yet done (deferred to Joe + post-merge):** Flip visibility, apply repo-settings changes (branch protection, PVR, Dependabot alerts, secret scanning, Discussions), tag `v0.1.0-pre`, open welcome Discussion.
+
+---
+
+### 2026-05-15: Killian — PR #4 Review Verdict (Public-Repo Prep)
+
+**Author:** Killian (Product Strategist)  
+**Date:** 2026-05-15  
+**Status:** 🟡 Approved with non-blocking nits  
+**PR:** https://github.com/jkrilov/AR-Runner/pull/4
+
+**Verdict:** PR #4 is approved to merge. Richards's implementation matches the 5 locked answers from Joe and the audit's 14-step checklist. No material issues found.
+
+**Nits (non-blocking — for Joe to decide: fold in or punt):**
+- **Nit A:** Add a hyperlink to ActiveLook (website or GitHub org) on first mention in README so strangers can orient.
+- **Nit B:** CONTRIBUTING.md doesn't tell outside readers how to know when v0.1 ships. One-liner pointing to the Releases page would help.
+- **Nit C:** No CODE_OF_CONDUCT.md. GitHub's community profile will flag it once public. A minimal file would close the gap.
 
 ---
 

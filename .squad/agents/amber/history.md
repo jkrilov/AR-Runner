@@ -69,3 +69,10 @@ PR #3 had three red checks after Richards's runtime-install attempt landed (`079
 - **Cost win as a side effect:** dropping the `-downloadPlatform` step saves ~3–5 min wall-clock per watchOS cell. macOS minutes are billed at 10x Linux on private repos.
 
 - 2026-05-15 — Lesson: when introducing a new Apple-platform xcodebuild workflow, include the `maxim-lobanov/setup-xcode@v1` Xcode 16.4 pin from day one. The macos-15 runner's default `xcode-select` toolchain advertises watchOS 11.0 / iOS 18.0 runtimes that aren't actually installed, so any generic-simulator destination fails with `xcodebuild error 70`. Discovered first in `ci-build.yml`, repeated in `codeql.yml` (PR #3) — don't make me find this a third time.
+
+## 2026-05-15 — PR #4 nit follow-up (cross-reviewer)
+Addressed Killian's 3 🟡 nits on PR #4 (chore/public-repo-prep) as the fresh-eyes implementer per reviewer-separation spirit:
+1. README.md — hyperlinked first ActiveLook mention to https://www.activelook.net.
+2. CONTRIBUTING.md — added Releases-page pointer so outside readers know how to detect v0.1.
+3. CODE_OF_CONDUCT.md — new minimal file pointing to Contributor Covenant v2.1.
+Sanity-checked `swift build` in ARRunnerCore (clean). One commit; Joe to merge.
