@@ -93,7 +93,9 @@ final class WorkoutViewModel {
     func reportGlasses(_ signal: GlassesConnectivitySignal) async {
         guard let controller else { return }
         await controller.reportGlassesSignal(signal)
-    }    private func endedSummary() throws -> WorkoutSummary? {
+    }
+
+    private func endedSummary() throws -> WorkoutSummary? {
         if case .ended(let summary) = launchState { return summary }
         return nil
     }
