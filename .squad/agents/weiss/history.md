@@ -148,3 +148,18 @@ Richards completed CI architecture design + implementation. Three workflows now 
 **Things deliberately not changed:** `GlassesFrameTransport` protocol surface (frozen for v0.2), reconnect backoff (v0.1 defaults are fine until hardware run), curated layout catalog (waiting on baked layout IDs from Config-Generator output). Phone-relay fallback **not** needed — the watch-native path is solid.
 
 **Validation:** `swift test` on Core (66 pass), `xcodebuild` on `ARRunnerWatch` watchOS Simulator (green), `xcodebuild` on `ARRunnerPhone` iOS Simulator (green). All with no code signing per CI conventions.
+
+### 2026-05-15: Linux CI flake — `testD4HappyPath_DisconnectMidRun_…` AsyncStream multi-consumer race
+
+After PR #9's first green Linux CI run (25936072101, 42s), the very next run on the same branch (25936170485, 54s — only the docs commit `60d7d5f` had been added) failed with `XCTAssertTrue failed - Expected metric updates to reach glasses before disconnect` at exactly 2.001 s — the `waitUntil` deadline. Locally on macOS the same test runs in ~7 ms.
+
+**Root cause:** `WorkoutControllerIntegrationTests.bridgeMetrics` was iterating `substrate.metricEvents` directly. `WorkoutController.attachSubstrateStreams()` *also* iterates `substrate.metricEvents` from inside `start()`. Swift's `AsyncStream` is single-consumer: each yielded value is delivered to whichever iterator calls `next()` first; it is not broadcast. With two competing iterators and an unbounded buffer, the substrate's 18 rapid emissions can be drained entirely by the controller's `forwardingTask` before the test's bridge wakes up — leaving `glasses.receivedUpdates` empty and the D4 timing assertion firing on its 2 s deadline. macOS's scheduler happened to favour the test bridge; Linux's did not. None of my actual PR changes (battery service discovery, `displayLayout` framing, `GlassesTransportFactory`) touched this code path — the race was latent in v0.1 integration mocks and Linux merely exposed it.
+
+**Fix:** Re-wire `bridgeMetrics` to consume `controller.metrics` instead of `substrate.metricEvents`. The controller already re-publishes every ingested metric on its own stream (`metricContinuation.yield(metric)` inside `ingest(metric:)`), so the test bridge gets a fan-out point that doesn't fight the controller's own subscriber. This is also the more correct layering: the glasses display reflects what the controller has accepted, not what the raw substrate emitted. Test renamed parameter (`from substrate:` → `from controller:`) and the call site updated.
+
+**Validation:** Full `swift test` on Core: 48/48 pass locally. macOS CI must continue to pass; Linux CI re-run pending.
+
+**Lessons for future BLE/integration work:**
+1. **`AsyncStream` is single-consumer.** If two pieces of code both `for await` over the same stream, you've created a race. Either fan out via a re-publishing layer (what `WorkoutController.metrics` does) or use `AsyncChannel` / `AsyncBroadcastSequence` from swift-async-algorithms.
+2. **macOS-passes-Linux-fails timing tests are almost always a hidden race**, not a "Linux is slower" timeout problem. The 2 s budget here is 285× the actual runtime — more time wouldn't have helped; correct fan-out did.
+3. **Test bridges should consume from the highest-level published stream available**, not reach behind the SUT to its dependency. Less coupling, no race with the SUT's own subscribers.

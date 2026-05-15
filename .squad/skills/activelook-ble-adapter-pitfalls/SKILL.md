@@ -118,3 +118,33 @@ symbol so the matrix stays green without a paired pair on the bench.
   `@preconcurrency`. CoreBluetooth types are not formally `Sendable`;
   the import-with-`@preconcurrency` escape hatch is documented as the
   Swift 6 path until Apple updates the framework.
+
+## Test-side gotcha: `AsyncStream` is single-consumer
+
+When writing integration tests that bridge metrics from a substrate into a
+`MockGlassesFrame`, **do not iterate the substrate's raw metric stream
+directly** if the system-under-test (e.g. `WorkoutController`) already
+iterates it. Swift's `AsyncStream` delivers each yielded value to whichever
+iterator calls `next()` first — it is *not* broadcast. Two competing
+iterators race, and the loser sees nothing.
+
+**Symptom:** macOS CI green; Linux CI fails the "metric updates reach
+glasses before disconnect" assertion at exactly the `waitUntil` deadline
+(the substrate's emissions all got drained by the controller's forwarder
+before the test bridge woke up). Linux's scheduler is the trigger, the race
+is the cause.
+
+**Fix:** Subscribe the test bridge to the controller's *re-published*
+stream (e.g. `controller.metrics`). The controller already fans values out
+on its own continuation inside `ingest(metric:)`; the test gets a clean
+fan-out point and stops fighting the SUT for individual emissions. This is
+also the more correct layering — glasses display reflects what the
+controller has accepted, not raw substrate output.
+
+If a future scenario genuinely needs N independent consumers of the same
+upstream, reach for `AsyncChannel` or `AsyncBroadcastSequence` from
+`swift-async-algorithms`. Don't try to multiplex a bare `AsyncStream`.
+
+**Heuristic:** "macOS passes, Linux fails at the waitUntil deadline" is
+almost always a hidden race, not a slow-CI timeout. Bumping the timeout
+hides the bug; fixing the fan-out kills it.
