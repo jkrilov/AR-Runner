@@ -5,23 +5,28 @@ import Foundation
 import XCTest
 @testable import ARRunnerCore
 
-/// v0.2 Workstream #5 — `RunningHUDPreset` contract tests (ANTICIPATORY).
+/// v0.2 Workstream #5 — `RunningHUDPreset` contract tests.
 ///
-/// This file is written BEFORE Weiss's `RunningHUDPreset` enum lands in
-/// `ARRunnerCore/Sources/ARRunnerCore/Glasses/RunningHUDPreset.swift`. Each
-/// test below encodes one bullet of the public contract Weiss is
-/// implementing against; every one of them is currently
-/// `XCTSkipIf(true, "EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — ...")`
-/// with the body kept as a `// commented-out` sketch so the Swift target
-/// continues to compile while `RunningHUDPreset` does not exist.
+/// This file is the **post-merge union** of two parallel PRs:
 ///
-/// **How to "turn this file on" when v0.2 #5 lands** (Weiss / reviewer):
-///   1. In each test, delete the `try XCTSkipIf(true, ...)` line.
-///   2. Uncomment the `// CONTRACT-BODY:` block immediately below it.
-///   3. If Weiss picked different case names, do a search/replace inside
-///      this file ONLY (`.standard` → final name, etc.). The contract
-///      *shape* (3+ cases, sensible default, distinct descriptors,
-///      ActiveLook-shippable) is what matters; the names are flex.
+///   * Amber's anticipatory contract tests from PR #14
+///     (`feat/v02-preset-contract-tests`) — 5 tests written *before* the
+///     `RunningHUDPreset` enum existed, originally guarded with
+///     `XCTSkipIf(true, "EXPECTED-FAILING-UNTIL: v0.2 #5 implementation")`
+///     and a commented-out `// CONTRACT-BODY:` sketch. The skip gates have
+///     been removed and the bodies activated/adapted now that the real
+///     implementation is in scope (PR #15).
+///   * Weiss's implementation-side contract tests from PR #15
+///     (`feat/v02-reconnect-and-presets`) — 7 tests covering the surface
+///     Amber's bullets implied (rawValue stability, displayName, curated
+///     `HUDLayout` mapping, deviceLayoutID resolution, on-the-wire frame
+///     bytes, Codable round-trip).
+///
+/// The two sets are complementary: Amber's express the *intent* (≥3 cases,
+/// sensible default, distinct descriptors, ships through ActiveLook,
+/// running-domain field semantics); Weiss's lock the *concrete* shape
+/// (`.standard`/`.minimal`/`.dataDense`, balanced/minimal/telemetry layouts,
+/// 0x62 displayLayout framing, persistence-grade rawValues).
 ///
 /// Locked v0.2 decisions exercised here:
 ///   * **v0.2 #5 (BACKEND ONLY)** — `RunningHUDPreset` constants live in
@@ -33,32 +38,105 @@ import XCTest
 ///
 /// Anticipatory pattern reference:
 ///   `.squad/skills/anticipatory-contract-tests/SKILL.md` (Amber).
-///   This is the SECOND independent application of the pattern after
-///   `DisconnectResilienceTests` (v0.2 #4).
 final class RunningHUDPresetTests: XCTestCase {
+
+    // MARK: - Implementation contract (Weiss, PR #15)
+
+    func testAllCases_HaveStableRawValuesForPersistence() {
+        // Locked: changing these rawValues invalidates persisted preferences
+        // (when a picker eventually ships in v0.3+). If you really need to
+        // rename, also write a migration.
+        XCTAssertEqual(RunningHUDPreset.standard.rawValue,  "standard")
+        XCTAssertEqual(RunningHUDPreset.minimal.rawValue,   "minimal")
+        XCTAssertEqual(RunningHUDPreset.dataDense.rawValue, "dataDense")
+        XCTAssertEqual(RunningHUDPreset.allCases.count, 3)
+    }
+
+    func testDefaultIsStandard() {
+        // Per scope decision 5b: the watch app uses `default` on connect with
+        // no picker UI in v0.2. Standard is the right baseline runner's HUD.
+        XCTAssertEqual(RunningHUDPreset.default, .standard)
+    }
+
+    func testDisplayNamesArePopulated() {
+        for preset in RunningHUDPreset.allCases {
+            XCTAssertFalse(preset.displayName.isEmpty,
+                           "\(preset) must expose a non-empty displayName for future picker UI")
+        }
+    }
+
+    func testLayoutMappingsMatchCuratedHUDLayouts() {
+        XCTAssertEqual(RunningHUDPreset.standard.layout,  .balancedRun())
+        XCTAssertEqual(RunningHUDPreset.minimal.layout,   .minimalRun())
+        XCTAssertEqual(RunningHUDPreset.dataDense.layout, .telemetryRun())
+
+        XCTAssertEqual(RunningHUDPreset.standard.layoutID,  "balanced-run")
+        XCTAssertEqual(RunningHUDPreset.minimal.layoutID,   "minimal-run")
+        XCTAssertEqual(RunningHUDPreset.dataDense.layoutID, "telemetry-run")
+    }
+
+    func testEveryPresetResolvesToCuratedDeviceID() {
+        // No silent .none holes: every preset must be in the catalog or the
+        // adapter would drop the layout descriptor on connect.
+        for preset in RunningHUDPreset.allCases {
+            XCTAssertNotNil(preset.deviceLayoutID,
+                            "\(preset) is missing a CuratedLayoutCatalog entry")
+            XCTAssertNotNil(preset.layoutDescriptor(),
+                            "\(preset).layoutDescriptor() must be non-nil")
+        }
+    }
+
+    /// Round-trip every preset's descriptor through the same framing the
+    /// `ActiveLookGlassesAdapter` uses on the wire. Asserts the exact bytes
+    /// match `ActiveLookCommand.displayLayout(id:)` so we never accidentally
+    /// double-frame, regress to v0.1's text-on-display bug, or misroute a
+    /// preset to the wrong device slot.
+    func testLayoutDescriptorRoundTripMatchesActiveLookFraming() throws {
+        for preset in RunningHUDPreset.allCases {
+            let id = try XCTUnwrap(preset.deviceLayoutID,
+                                   "\(preset) missing device id")
+            let descriptor = try XCTUnwrap(preset.layoutDescriptor())
+            let expected = ActiveLookCommand.displayLayout(id: id)
+            XCTAssertEqual(descriptor, expected,
+                           "Preset \(preset) descriptor must match displayLayout(id: 0x\(String(id, radix: 16)))")
+
+            // Frame envelope sanity per ActiveLook spec §3.1:
+            //   start byte 0xFF, cmdID 0x62, ..., terminator 0xAA, payload [id].
+            XCTAssertEqual(descriptor.first, 0xFF, "ActiveLook frames start with 0xFF")
+            XCTAssertEqual(descriptor.last,  0xAA, "ActiveLook frames terminate with 0xAA")
+            XCTAssertEqual(descriptor[1], ActiveLookCommand.ID.layoutDisplay.rawValue,
+                           "Preset descriptor must use cmdID 0x62 (layoutDisplay)")
+            XCTAssertTrue(descriptor.contains(id),
+                          "Frame must carry the resolved on-device layout id")
+        }
+    }
+
+    func testCodableRoundTrip() throws {
+        for preset in RunningHUDPreset.allCases {
+            let data = try JSONEncoder().encode(preset)
+            let decoded = try JSONDecoder().decode(RunningHUDPreset.self, from: data)
+            XCTAssertEqual(decoded, preset)
+        }
+    }
+
+    // MARK: - Anticipatory contract (Amber, PR #14 — gates flipped on)
 
     // MARK: - 1. Existence + cases
 
     /// Locks: `RunningHUDPreset` exists, is `CaseIterable`, has at least
-    /// 3 cases. The "≥ 3" floor matches D6 (curated set) and the spawn
-    /// prompt's `.standard` / `.minimal` / `.dataDense` trio.
+    /// 3 cases. The "≥ 3" floor matches D6 (curated set) and the
+    /// `.standard` / `.minimal` / `.dataDense` trio.
     func testPresetTypeExistsWithAtLeastThreeCases() throws {
-        // EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss.
-        try XCTSkipIf(
-            true,
-            "EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss."
+        let cases = RunningHUDPreset.allCases
+        XCTAssertGreaterThanOrEqual(
+            cases.count, 3,
+            "Curated D6 set requires at least 3 presets (standard / minimal / dataDense)."
         )
-
-        // CONTRACT-BODY (uncomment when Weiss's PR lands):
-        // let cases = RunningHUDPreset.allCases
-        // XCTAssertGreaterThanOrEqual(
-        //     cases.count, 3,
-        //     "Curated D6 set requires at least 3 presets (standard / minimal / dataDense)."
-        // )
-        // // Sendable + RawRepresentable<String> are part of the public contract.
-        // for preset in cases {
-        //     XCTAssertFalse(preset.rawValue.isEmpty, "Each case must have a non-empty stable rawValue for storage.")
-        // }
+        // Sendable + RawRepresentable<String> are part of the public contract.
+        for preset in cases {
+            XCTAssertFalse(preset.rawValue.isEmpty,
+                           "Each case must have a non-empty stable rawValue for storage.")
+        }
     }
 
     // MARK: - 2. Sensible default
@@ -66,68 +144,46 @@ final class RunningHUDPresetTests: XCTestCase {
     /// Locks: `RunningHUDPreset.default` returns a member of `allCases`,
     /// and it is the *general-running* preset — NOT `.minimal`
     /// (distraction-light, intentionally sparse) and NOT `.dataDense`
-    /// (training-specific, cognitively heavy). For most runners on first
-    /// connect, the default should land on the balanced middle option.
+    /// (training-specific, cognitively heavy).
     func testDefaultIsSensibleGeneralRunningPreset() throws {
-        // EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss.
-        try XCTSkipIf(
-            true,
-            "EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss."
+        let chosen = RunningHUDPreset.default
+        XCTAssertTrue(
+            RunningHUDPreset.allCases.contains(chosen),
+            "default must be one of the named cases (no synthesized 'unknown')."
         )
-
-        // CONTRACT-BODY (uncomment when Weiss's PR lands):
-        // let chosen = RunningHUDPreset.default
-        // XCTAssertTrue(
-        //     RunningHUDPreset.allCases.contains(chosen),
-        //     "default must be one of the named cases (no synthesized 'unknown')."
-        // )
-        // XCTAssertNotEqual(
-        //     chosen, .minimal,
-        //     "default must not be .minimal — too sparse for first-connect general running."
-        // )
-        // XCTAssertNotEqual(
-        //     chosen, .dataDense,
-        //     "default must not be .dataDense — that's training-specific (intervals/coaching)."
-        // )
-        // // Implicitly: default == .standard (or whichever balanced case Weiss picks).
+        XCTAssertNotEqual(
+            chosen, .minimal,
+            "default must not be .minimal — too sparse for first-connect general running."
+        )
+        XCTAssertNotEqual(
+            chosen, .dataDense,
+            "default must not be .dataDense — that's training-specific (intervals/coaching)."
+        )
     }
 
     // MARK: - 3. Layout descriptor round-trip
 
-    /// Locks: `layoutDescriptor()` returns a non-empty/non-default value
-    /// for every case, AND each case returns a *distinct* descriptor.
-    /// Without this, presets could silently collapse into aliases of one
-    /// another and the user-visible "I picked dataDense" would be a lie.
+    /// Locks: `layoutDescriptor()` returns a non-empty value for every
+    /// case, AND each case returns a *distinct* descriptor. Without this,
+    /// presets could silently collapse into aliases of one another.
     func testEachPresetHasDistinctNonEmptyLayoutDescriptor() throws {
-        // EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss.
-        try XCTSkipIf(
-            true,
-            "EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss."
-        )
-
-        // CONTRACT-BODY (uncomment when Weiss's PR lands):
-        // let descriptors = RunningHUDPreset.allCases.map { ($0, $0.layoutDescriptor()) }
-        //
-        // // (a) Non-empty / non-default for every preset.
-        // // The descriptor type is Weiss's call (HUDLayout, [UInt8], a struct, ...).
-        // // The contract is: it carries enough bytes/fields to ship a layout.
-        // // For the common candidates, "non-empty" maps to:
-        // //   * HUDLayout  → !slots.allSatisfy { $0 == nil }
-        // //   * [UInt8]    → !isEmpty
-        // //   * struct     → at least one field populated (Equatable != .init())
-        // for (preset, descriptor) in descriptors {
-        //     XCTAssertFalse(
-        //         describedAsEmpty(descriptor),
-        //         "\(preset).layoutDescriptor() returned an empty/default value — preset has no content to ship."
-        //     )
-        // }
-        //
-        // // (b) Distinct across all presets.
-        // let unique = Set(descriptors.map { hashableForm($0.1) })
-        // XCTAssertEqual(
-        //     unique.count, descriptors.count,
-        //     "Each RunningHUDPreset must produce a distinct layoutDescriptor — presets must not be aliases."
-        // )
+        var seen: [[UInt8]] = []
+        for preset in RunningHUDPreset.allCases {
+            let descriptor = try XCTUnwrap(
+                preset.layoutDescriptor(),
+                "\(preset).layoutDescriptor() returned nil — preset has no content to ship."
+            )
+            XCTAssertFalse(
+                descriptor.isEmpty,
+                "\(preset).layoutDescriptor() returned an empty value."
+            )
+            XCTAssertFalse(
+                seen.contains(descriptor),
+                "\(preset) produced a duplicate layoutDescriptor — presets must not be aliases."
+            )
+            seen.append(descriptor)
+        }
+        XCTAssertEqual(seen.count, RunningHUDPreset.allCases.count)
     }
 
     // MARK: - 4. ActiveLook frame compatibility
@@ -135,95 +191,73 @@ final class RunningHUDPresetTests: XCTestCase {
     /// Locks: each preset descriptor can be shipped via the existing
     /// `ActiveLookCommand.displayLayout(id:)` encoder without throwing,
     /// and the resulting wire frame is a structurally valid ActiveLook
-    /// frame (starts 0xFF, ends 0xAA, length-byte matches actual length).
-    /// This is the integration assertion that Weiss's preset descriptors
-    /// actually round-trip through the frame layer Amber's mock captures.
+    /// frame (starts 0xFF, ends 0xAA, ≥ 6 bytes). Plus an integration
+    /// assertion that `MockGlassesFrame.selectLayout` accepts every
+    /// preset's `layoutID`.
     func testEachPresetShipsThroughActiveLookFrameWithoutThrowing() async throws {
-        // EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss.
-        try XCTSkipIf(
-            true,
-            "EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss."
-        )
+        let glasses = MockGlassesFrame()
+        try await glasses.connect()
 
-        // CONTRACT-BODY (uncomment when Weiss's PR lands):
-        // let glasses = MockGlassesFrame()
-        // try await glasses.connect()
-        //
-        // for preset in RunningHUDPreset.allCases {
-        //     // Each preset must declare *some* on-device layout slot ID it maps to.
-        //     // Weiss's PR will expose either preset.layoutSlotID (UInt8) or
-        //     // include it inside the descriptor — adapt this line accordingly.
-        //     let slotID: UInt8 = preset.activeLookLayoutSlotID
-        //
-        //     // The wire frame produced by ActiveLookCommand must be valid:
-        //     let frame = ActiveLookCommand.displayLayout(id: slotID)
-        //     XCTAssertEqual(frame.first, 0xFF, "\(preset): frame must start with ActiveLook start byte 0xFF.")
-        //     XCTAssertEqual(frame.last,  0xAA, "\(preset): frame must end with ActiveLook footer 0xAA.")
-        //     XCTAssertGreaterThanOrEqual(frame.count, 6, "\(preset): minimum frame size is 6 bytes.")
-        //
-        //     // And the canonical transport accepts the layout selection without throwing.
-        //     try await glasses.selectLayout(id: preset.rawValue)
-        // }
-        //
-        // let recorded = await glasses.selectedLayouts
-        // XCTAssertEqual(
-        //     recorded.count, RunningHUDPreset.allCases.count,
-        //     "Every preset should have been shipped to glasses.selectLayout exactly once."
-        // )
+        for preset in RunningHUDPreset.allCases {
+            let slotID = try XCTUnwrap(
+                preset.deviceLayoutID,
+                "\(preset) missing on-device layout slot ID"
+            )
+
+            let frame = ActiveLookCommand.displayLayout(id: slotID)
+            XCTAssertEqual(frame.first, 0xFF, "\(preset): frame must start with ActiveLook start byte 0xFF.")
+            XCTAssertEqual(frame.last,  0xAA, "\(preset): frame must end with ActiveLook footer 0xAA.")
+            XCTAssertGreaterThanOrEqual(frame.count, 6, "\(preset): minimum frame size is 6 bytes.")
+
+            try await glasses.selectLayout(id: preset.layoutID)
+        }
+
+        let recorded = await glasses.selectedLayouts
+        XCTAssertEqual(
+            recorded.count, RunningHUDPreset.allCases.count,
+            "Every preset should have been shipped to glasses.selectLayout exactly once."
+        )
+        XCTAssertEqual(
+            Set(recorded), Set(RunningHUDPreset.allCases.map(\.layoutID)),
+            "Recorded layout IDs must match every preset's layoutID."
+        )
     }
 
     // MARK: - 5. Per-preset field selection (running-domain semantics)
 
-    /// Locks the *fitness-domain* contract, not just the technical surface:
-    ///   * `.minimal` includes HR (the safety-relevant metric runners check
-    ///     mid-stride) but EXCLUDES cadence (a coaching/training metric
-    ///     that's noise for casual runs).
-    ///   * `.dataDense` includes cadence (training mode wants it).
-    ///   * `.standard` sits between — has HR, but cadence is optional
-    ///     (we only assert HR presence, not cadence absence).
-    ///
-    /// This is the assertion that catches a future refactor that
-    /// "simplifies" the presets into identical field sets. Without it,
-    /// the only thing distinguishing presets would be the rawValue string.
+    /// Locks the *fitness-domain* contract:
+    ///   * `.minimal` includes HR (safety-relevant) but EXCLUDES cadence
+    ///     (training noise for casual runs).
+    ///   * `.dataDense` includes both HR and cadence (training mode).
+    ///   * `.standard` includes HR.
+    /// Plus a soft monotonic guard so a future "simplify" refactor can't
+    /// silently collapse the presets into identical field sets.
     func testPresetsExposeRunningDomainAppropriateFields() throws {
-        // EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss.
-        try XCTSkipIf(
-            true,
-            "EXPECTED-FAILING-UNTIL: v0.2 #5 implementation — RunningHUDPreset not yet defined. Owner: Weiss."
-        )
+        func metrics(of preset: RunningHUDPreset) -> Set<MetricKind> {
+            Set(preset.layout.slots.compactMap { $0 })
+        }
 
-        // CONTRACT-BODY (uncomment when Weiss's PR lands):
-        // // Weiss's descriptor exposes a queryable field-set. Most likely shapes:
-        // //   * descriptor.metricKinds: Set<MetricKind>
-        // //   * descriptor.slots: [MetricKind?]  (HUDLayout-compatible)
-        // // Either way, fold to a Set<MetricKind> for the assertions below.
-        //
-        // func metrics(of preset: RunningHUDPreset) -> Set<MetricKind> {
-        //     // adapt one line to whichever accessor Weiss ships:
-        //     return Set(preset.layoutDescriptor().slots.compactMap { $0 })
-        // }
-        //
-        // let minimal     = metrics(of: .minimal)
-        // let standard    = metrics(of: .standard)
-        // let dataDense   = metrics(of: .dataDense)
-        //
-        // XCTAssertTrue(minimal.contains(.heartRate),
-        //     ".minimal must surface heartRate — safety-relevant during running.")
-        // XCTAssertFalse(minimal.contains(.cadence),
-        //     ".minimal must NOT surface cadence — training-specific noise for casual runs.")
-        //
-        // XCTAssertTrue(standard.contains(.heartRate),
-        //     ".standard must surface heartRate.")
-        //
-        // XCTAssertTrue(dataDense.contains(.cadence),
-        //     ".dataDense must surface cadence — training/coaching mode.")
-        // XCTAssertTrue(dataDense.contains(.heartRate),
-        //     ".dataDense must surface heartRate.")
-        //
-        // // Soft monotonic guard: dataDense should be the richest preset.
-        // XCTAssertGreaterThanOrEqual(dataDense.count, standard.count,
-        //     ".dataDense must expose at least as many metrics as .standard.")
-        // XCTAssertGreaterThanOrEqual(standard.count, minimal.count,
-        //     ".standard must expose at least as many metrics as .minimal.")
+        let minimal   = metrics(of: .minimal)
+        let standard  = metrics(of: .standard)
+        let dataDense = metrics(of: .dataDense)
+
+        XCTAssertTrue(minimal.contains(.heartRate),
+            ".minimal must surface heartRate — safety-relevant during running.")
+        XCTAssertFalse(minimal.contains(.cadence),
+            ".minimal must NOT surface cadence — training-specific noise for casual runs.")
+
+        XCTAssertTrue(standard.contains(.heartRate),
+            ".standard must surface heartRate.")
+
+        XCTAssertTrue(dataDense.contains(.cadence),
+            ".dataDense must surface cadence — training/coaching mode.")
+        XCTAssertTrue(dataDense.contains(.heartRate),
+            ".dataDense must surface heartRate.")
+
+        // Soft monotonic guard: dataDense should be the richest preset.
+        XCTAssertGreaterThanOrEqual(dataDense.count, standard.count,
+            ".dataDense must expose at least as many metrics as .standard.")
+        XCTAssertGreaterThanOrEqual(standard.count, minimal.count,
+            ".standard must expose at least as many metrics as .minimal.")
     }
 }

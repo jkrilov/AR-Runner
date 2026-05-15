@@ -163,3 +163,188 @@ After PR #9's first green Linux CI run (25936072101, 42s), the very next run on 
 1. **`AsyncStream` is single-consumer.** If two pieces of code both `for await` over the same stream, you've created a race. Either fan out via a re-publishing layer (what `WorkoutController.metrics` does) or use `AsyncChannel` / `AsyncBroadcastSequence` from swift-async-algorithms.
 2. **macOS-passes-Linux-fails timing tests are almost always a hidden race**, not a "Linux is slower" timeout problem. The 2 s budget here is 285× the actual runtime — more time wouldn't have helped; correct fan-out did.
 3. **Test bridges should consume from the highest-level published stream available**, not reach behind the SUT to its dependency. Less coupling, no race with the SUT's own subscribers.
+
+### 2026-05-15T16:49:00-04:00: v0.2 #4 BLE auto-reconnect + #5 layout presets backend
+
+**Branch:** `feat/v02-reconnect-and-presets` (worktree at `AR-Runner-weiss-v02-followups`).
+
+**Workstream #4 — auto-reconnect.** Most of the loop was already in
+`ActiveLookGlassesAdapter` from PR #9: drop → emit `.dropped` → transition to
+`.reconnecting` → spawn `runReconnectLoop()` Task with `ExponentialBackoff` →
+on success re-discover services and re-apply `activeLayoutDeviceID` →
+`resumePendingConnect`. v0.2 closed the contract:
+1. **Max retries cap.** Loop now caps at 30 attempts; on exhaustion it emits a
+   new `GlassesStatusEvent.reconnectAbandoned(attempts:)` and transitions to
+   `.failed`. Workout still continues per D4 — caller can call `connect()`
+   again to retry from scratch.
+2. **Deinit cleanup.** Added `deinit { reconnectTask?.cancel() }` on the
+   actor. `Task.cancel()` is nonisolated so it is legal from actor deinit
+   (Swift 6 semantics).
+3. **Reconnect loop already cancels** on user-initiated `disconnect()`
+   (sets `userDisconnectRequested = true` and cancels the task).
+
+**Anticipatory tests turned green.** Amber's
+`DisconnectResilienceTests.test_AutoReconnectAfterTransportDrop_ExpectedFailing`
+and `test_Reconnect_AutoReappliesPreviousLayout_ExpectedFailing` are now
+running tests, not skipped. The third
+(`test_HapticAlertHook_OnDisconnect_ExpectedFailing`) stays skipped — it's
+Laughlin's `controller.alerts` UI-side surface, not transport.
+
+To make the mock match the real adapter without breaking existing tests
+that drive `simulateDisconnect`/`simulateReconnect` by hand, I added opt-in
+init flags on `MockGlassesFrame`:
+`autoReconnect: Bool = false`, `autoReconnectDelay: TimeInterval = 0.05`,
+`autoReapplyLayout: Bool = false`. The two flipped tests opt in. The five
+existing anchor tests untouched (`MockGlassesFrame()` default ctor preserves
+the old "park at .reconnecting until manual reconnect" behavior).
+
+**Workstream #5 — `RunningHUDPreset` backend.** New public type in
+`ARRunnerCore/.../Glasses/RunningHUDPreset.swift`:
+
+```swift
+public enum RunningHUDPreset: String, CaseIterable, Sendable, Codable, Equatable {
+    case standard      // → balancedRun()  → 0x02
+    case minimal       // → minimalRun()   → 0x01
+    case dataDense     // → telemetryRun() → 0x03
+
+    public static let `default`: RunningHUDPreset = .standard
+
+    public var displayName: String { ... }     // for future picker UI
+    public var layout: HUDLayout { ... }       // single source of slot order
+    public var layoutID: String { layout.id }  // string ID for selectLayout(id:)
+    public var deviceLayoutID: UInt8? { ... }  // resolves via CuratedLayoutCatalog
+    public func layoutDescriptor() -> [UInt8]? // pre-encoded `0x62 displayLayout` frame
+}
+```
+
+Why this shape:
+- The `[UInt8]?` from `layoutDescriptor()` is the contract — it is exactly
+  what the BLE adapter writes to the RX characteristic. Callers don't reach
+  into `ActiveLookCommand` directly.
+- `Optional` on `deviceLayoutID`/`layoutDescriptor()` flags presets that
+  aren't in `CuratedLayoutCatalog` yet — surface a configuration error
+  instead of silently shipping `0x00`.
+- `Codable` + stable `rawValue`s make the persisted preference for the
+  eventual v0.3 picker safe — locked by `testAllCases_HaveStableRawValuesForPersistence`.
+
+**Wiring on connect (and reconnect).** Adapter now takes
+`defaultPreset: RunningHUDPreset? = .default`. In init it pre-seeds
+`activeLayoutDeviceID = defaultPreset.deviceLayoutID`. The existing
+`handleCharacteristicsDiscovered` path (which already re-applies
+`activeLayoutDeviceID` after the connect transition) means the v0.2 #5
+default preset auto-applies on **every** connect — initial AND post-drop
+reconnect — with zero net new code in the connect path. Pass
+`defaultPreset: nil` to disable (e.g. tests that want a clean slate).
+
+**Tests added (`RunningHUDPresetTests`, 7 cases):**
+- Stable raw values for persistence.
+- `default == .standard`.
+- DisplayName populated for every case.
+- Layout / layoutID mappings match curated `HUDLayout`s.
+- Every preset resolves to a non-nil `CuratedLayoutCatalog` entry (no holes).
+- `layoutDescriptor()` byte-equals `ActiveLookCommand.displayLayout(id:)` and
+  has the right envelope (0xFF…0xAA, cmdID 0x62, payload contains id).
+- Codable round-trip per case.
+
+**Validation:** `swift test` on Core: 73/73 pass (was 66; +7 preset tests, +2
+flipped anticipatory). 1 skipped (Laughlin's haptic hook — unchanged). macOS
+`xcodebuild` on `ARRunnerWatch` watchOS: BUILD SUCCEEDED. No code-signing
+required.
+
+**Notable non-changes (intentional):**
+- `GlassesFrameTransport` protocol surface — frozen for v0.2.
+- `StubGlassesTransport` — still happy-path; no auto-reconnect (it's the
+  preview/DEBUG stub, callers get `.connected` synchronously).
+- No picker UI — Joe locked v0.2 #5 to backend only (scope decision 5b).
+- No new `defaultPreset` plumbing in `WorkoutViewModel` — adapter applies it
+  itself on connect, which is the right layer (it owns `activeLayoutDeviceID`
+  for the post-reconnect re-apply already).
+
+## Learnings
+
+### 2026-05-15: Adding cases to public `Sendable` enums in this repo
+
+`GlassesStatusEvent` got a new case (`.reconnectAbandoned`) for the D4 retry-
+exhaustion contract. Audited callers first: only `if case .x = event` checks
+exist (in `WorkoutViewModel`, `StubGlassesTransportTests`, the resilience
+collector). No exhaustive switches without `default:`. Adding the case was
+source-compatible — no caller broke. **Heuristic for future enum extensions
+in Core:** grep for `switch event` + `case .` patterns and confirm every
+callsite either has a `default:` or uses `if case` pattern matching. If it
+does, the addition is safe; otherwise it's a breaking change and you need a
+migration story.
+
+### 2026-05-15: Default-preset placement — adapter, not view model
+
+I considered putting the v0.2 #5 auto-apply in `WorkoutViewModel.start()`
+(call `selectLayout(id: RunningHUDPreset.default.layoutID)` after the
+opportunistic `connect()`). Rejected because:
+1. The adapter already has the post-reconnect re-apply infrastructure
+   (`activeLayoutDeviceID` + the unconditional re-write in
+   `handleCharacteristicsDiscovered`). Pre-seeding it from the default
+   preset means initial connect AND every reconnect both get the right
+   layout with zero new code.
+2. View-model-side selection would skip the post-reconnect re-apply unless I
+   also wired a re-select on `.reconnected` events — duplicating logic.
+3. The transport is the right layer to know "what should be on the glasses
+   right now" because it owns the post-drop "the glasses forget" recovery.
+
+### 2026-05-15: Opt-in mock behavior beats mock-rewrite
+
+`MockGlassesFrame` is consumed by 5+ tests. Making auto-reconnect /
+auto-reapply default-on would have broken anchor tests that drive
+`simulateDisconnect` + `simulateReconnect` manually. Opt-in init flags
+(`autoReconnect: Bool = false`, etc.) added the new behavior with zero
+churn on existing tests — only the two flipped anticipatory tests opt in.
+**Heuristic:** when augmenting a shared mock to cover a new contract,
+prefer init flags over default-behavior changes. The blast radius is the
+test that needs the new behavior, not every call site.
+
+### 2026-05-15: Actor `deinit` + `Task.cancel()` is OK in Swift 6
+
+`Task.cancel()` is nonisolated; calling it on a stored property from an
+actor `deinit` is legal in Swift 6 strict concurrency. You can read stored
+properties (no isolation hop needed in deinit) and you can call any
+nonisolated method on them. What you CAN'T do is `await` or call isolated
+methods. So `deinit { reconnectTask?.cancel() }` is the right pattern for
+"cancel the in-flight reconnect loop when the adapter goes away" —
+specifically belt-and-suspenders alongside the `[weak self]` capture in
+the loop, which would also let it self-terminate on next iteration.
+
+- **2026-05-15 — Parallel-PR XCTSkipIf conflict resolution pattern.** When two
+  branches each flip non-overlapping `XCTSkipIf` gates in the same test file,
+  Git's auto-merge usually does the right thing (it sees them as line-disjoint
+  edits). The case to watch out for is **both-added** conflicts where two
+  branches independently created a *new* test file at the same path with the
+  same class name (here: Amber's anticipatory `RunningHUDPresetTests` from
+  PR #14 vs. my implementation-side `RunningHUDPresetTests` from PR #15).
+  Resolution recipe that worked: keep BOTH sets of test methods in one
+  class — the test method names didn't collide (Amber: `testPresetType…`,
+  `testDefaultIsSensible…`, etc.; mine: `testAllCases_HaveStable…`,
+  `testDefaultIsStandard`, etc.), so the union compiles cleanly. For each
+  of Amber's anticipatory tests I deleted the `try XCTSkipIf(true, ...)`
+  line, uncommented the `// CONTRACT-BODY:` block, and adapted symbol
+  names to the shipped API (`preset.activeLookLayoutSlotID` →
+  `preset.deviceLayoutID`; `preset.rawValue` for transport →
+  `preset.layoutID`; `preset.layoutDescriptor().slots` →
+  `preset.layout.slots`). Result: all 12 tests in the merged class pass,
+  Amber's contract intent is preserved, and my concrete-shape locks are
+  retained. Rule of thumb: when the anticipatory and implementation tests
+  cover the same surface from different angles, *union* is better than
+  *replace* — the anticipatory bullets capture intent ("default isn't
+  too sparse"; "presets aren't aliases"; "running-domain field semantics")
+  that the implementation tests don't, and removing them would lose the
+  contract-grade phrasing.
+
+### 2026-05-15: Switch-Exhaustiveness Trap When Adding Enum Cases Mid-Branch
+
+**Incident:** PR #15 added `GlassesStatusEvent.reconnectAbandoned(attempts:)` to the Core enum. Linux `swift test` was green. After rebasing onto main (which had merged Laughlin's PR #13 introducing a `switch event` consumer in `ARRunnerWatch/Workout/WorkoutViewModel.swift`), CI failed with `error: switch must be exhaustive` on the macOS Watch app target. The Linux package only compiles Core; it never sees the Watch UI consumers.
+
+**Root cause:** New enum cases on a Core type are silent breakage for any downstream `switch` that doesn't use `@unknown default`. Cross-PR rebases can introduce such consumers without the original branch noticing — the compiler only complains when both PRs land in the same target build.
+
+**Fix:** Added `case .reconnectAbandoned:` to the Watch view-model switch — mirrors `.dropped` UX (sets `hudOffline = true`, fires the debounced disconnect haptic). No reconnect attempted; BLE layer has exhausted its budget.
+
+**Process recommendation (capture for future PRs):**
+- Whenever a PR adds/removes a case on a public Core enum, run a **local `xcodebuild -scheme ARRunnerWatch -destination 'generic/platform=watchOS Simulator' build`** before pushing — at least once after the final rebase. Linux `swift test` is necessary but not sufficient.
+- Same applies to `ARRunnerPhone` and `ARRunnerWidgetsWatch` schemes if they consume the type. A 60–90s local watch build catches what CI takes ~10 min to surface.
+- If the platform-specific build is unavailable locally, flag the PR description with "⚠️ adds enum case — needs Watch-target CI green before merge" so reviewers don't approve on Linux-only signal.

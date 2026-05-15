@@ -33,4 +33,8 @@ public enum GlassesStatusEvent: Sendable, Equatable {
     case reconnected(gap: TimeInterval, at: Date)
     /// A reconnect attempt failed; transport will retry per backoff policy.
     case reconnectAttemptFailed(attempt: Int, nextDelay: TimeInterval)
+    /// Auto-reconnect gave up after `attempts` consecutive failures (D4 cap).
+    /// Workout MUST continue (per D4); the HUD is treated as offline until the
+    /// caller invokes `connect()` again.
+    case reconnectAbandoned(attempts: Int)
 }
