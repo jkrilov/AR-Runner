@@ -1,0 +1,36 @@
+feat: WorkoutController + HKWorkoutSession lifecycle (v0.1)
+
+Sport-agnostic WorkoutController in ARRunnerCore that wraps an injected
+WorkoutHealthSubstrate (HealthKit on watchOS, in-memory mock in tests).
+Surface: start/pause/resume/end + AsyncStream<WorkoutState> +
+AsyncStream<WorkoutMetric> + glasses connectivity signal input.
+
+Decisions referenced:
+- D2: Swift 6 strict concurrency, watchOS 11 / iOS 18 targets.
+- D3: sport-agnostic core; running default for v0.1.
+- D4: glasses disconnect signal recorded but does NOT pause the workout.
+- D5: phone optional; controller has no WCSession dependency.
+- D7: foreground watch app launch (this controller is the worker).
+- D8: actor isolation, no @unchecked on the controller itself.
+- D9: WorkoutSummary.healthKitWorkoutID is the side-store join key.
+
+Includes:
+- ARRunnerCore: WorkoutState, WorkoutSummary, WorkoutSplit,
+  GlassesConnectivitySignal, WorkoutHealthSubstrate protocol,
+  InMemoryWorkoutHealthSubstrate (public; reused by Amber's mocks),
+  WorkoutController actor.
+- ARRunnerWatch: HealthKitWorkoutSubstrate (real HKWorkoutSession +
+  HKLiveWorkoutBuilder wrapper), WorkoutViewModel (@MainActor +
+  @Observable), WorkoutView wired to start/pause/end with live HR,
+  distance, elapsed, and HUD-online status.
+- ARRunnerCoreTests: 14 new tests covering state transitions, metric
+  forwarding, summary aggregation, glasses-signal-doesn't-pause (D4),
+  substrate failure surfacing.
+- Package.swift: added .macOS(.v14) so AsyncStream resolves on macOS
+  hosts (CI matrix + local swift test). watchOS 11 / iOS 18 still
+  authoritative for app targets.
+
+Out of scope (deferred): phone WCSession sync, AR side-store persistence,
+glasses HUD rendering, Action Button intent, cycling/walking surfaces.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

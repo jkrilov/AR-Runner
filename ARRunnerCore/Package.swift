@@ -17,7 +17,7 @@ let package = Package(
         // target where `AsyncStream` / `Task` are available. Linux CI ignores
         // this list; the app-shell xcodebuild matrix uses the per-target
         // iOS/watchOS deployment targets in `project.yml`.
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     products: [
         .library(
