@@ -29,6 +29,9 @@
 
 ### 2026-05-14: Team update from Joe — v0.1 foundation scaffold + BLE spike landed on feat/v01-foundation. Branch awaiting Joe's push & PR. Next: WorkoutController impl (Laughlin) + watchOS BLE wrapper impl (Weiss).
 
+### 2026-05-15: Reviewer assignment — public-repo prep PR
+
+Richards completed a full public-repo readiness audit (verdict: 🟡 Go ahead with cleanup). When Richards's implementation PR lands, **Killian is the recommended reviewer** — product perspective benefits the README/status framing and squad-system documentation decisions. Richards is locked out per the reviewer-rejection protocol (authored both audit + plan).
 ### 2026-05-15: PR #4 review — public-repo prep (🟡 approved with nits)
 
 **Reviewed:** Richards's `chore/public-repo-prep` branch (3 commits: LICENSE + SPDX headers, SECURITY/CONTRIBUTING/README, history log). Verdict posted on PR #4 and decision drop in inbox.

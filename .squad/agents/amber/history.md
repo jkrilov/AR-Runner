@@ -24,6 +24,51 @@ First Mac build of the v0.1 scaffold after Windows authoring. Toolchain: xcodege
 - **Test coverage is shallow but correct.** Each of the six suites is a single `testCodableRoundTrip`. That's fine for scaffold; tests live alongside the work that adds real behavior. When metrics calc / split detection / pace smoothing land, I'll grow these into property-based or scenario suites.
 - **Repro is in `docs/dev/macos-build-validation.md`.** Anyone else moving from Windows runs the same five commands and sees green.
 
+### 2026-05-14T21:00:00Z: Scribe — CI Workflows Landed on chore/ci-workflows
+
+**From:** Scribe (session orchestration)
+
+Richards completed CI architecture design + implementation. Three workflows now committed to `.github/workflows/`:
+
+1. **`ci-core-tests.yml`** — Linux runner. Tests `ARRunnerCore` with `swift test` on `swift:6.0-jammy` container.
+2. **`ci-build.yml`** — macOS runner. Builds all four app targets (Watch, Phone, WidgetsPhone, WidgetsWatch) via xcodebuild 4-way matrix.
+3. **`codeql.yml`** — GitHub CodeQL security analysis (PR + weekly).
+
+**Critical for Amber:** The Linux ci-core-tests job now enforces ARRunnerCore platform-agnosticism mechanically. Future PRs (from Weiss, Laughlin, and all subsequent contributors) must keep concrete Apple-framework code out of Core. Your three scaffold fixes enabled this — the Linux spike only works because those bugs are now resolved. This is architectural enforcement paying dividends immediately.
+
+**Architecture assurance:** Weiss's BLE wrapper (ActiveLook SDK) must live in ARRunnerWatch, not ARRunnerCore. Laughlin's HealthKit + WatchConnectivity code must live in ARRunnerWatch, not ARRunnerCore. The Linux ci-core-tests job blocks any slip-ups. This is the payoff from D8 (Swift 6 strict concurrency) + ADR-007 (protocol boundaries).
+
+**Timeline:** PR #3 (chore/ci-workflows) queued behind PR #2 (macos-build-validation). Joe will open both manually. When merged, all subsequent feature branches auto-validate.
+
+**Reference:** `.squad/orchestration-log/2026-05-14T21:00:00Z-richards.md` for full ADRs and design rationale. `.squad/decisions.md` now contains the full CI architecture decision with all trade-offs captured.
+
+### 2026-05-14T21:12:00Z: Scribe — CI Swift 6.0 Toolchain Gotcha (Richards fix landed)
+
+**From:** Scribe (session orchestration)
+
+PR #3 (chore/ci-workflows) first real CI run caught hard error:
+> error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6
+
+**Root cause:** Scaffold included redundant `.enableUpcomingFeature("StrictConcurrency")` in `ARRunnerCore/Package.swift`. Local Swift 6.3.2 silently tolerates it; CI Swift 6.0 treats as hard error. This is the classic toolchain-version gap — your smoke test couldn't catch this because you tested locally against 6.3.2.
+
+**Fix applied (350eae0):** Removed the explicit flag. Swift 6 language mode (`swift-tools-version: 6.0` + `.swiftLanguageMode(.v6)`) is the single source of truth.
+
+**Key lesson for future smoke tests:** When validating across platforms, verify against the CI toolchain version (6.0), not just local. Deprecated flags, newly-removed APIs, and other version-specific changes will silently pass local build but hard-fail CI. Treat CI as the authoritative compiler.
+
+**Action:** Your local smoke-test process is still valuable — it caught the earlier three bugs. This one slipped through because the local toolchain was too permissive. Consider adding a "CI toolchain simulation" step for future validation sprints.
+### 2026-05-14T17:33:30-04:00 — CI fix: Xcode pin replaces failing `-downloadPlatform watchOS`
+
+PR #3 had three red checks after Richards's runtime-install attempt landed (`079cb73`). I owned the revision. Notes for next time:
+
+- **`xcodebuild -downloadPlatform <platform>` does NOT work unattended on GitHub-hosted runners.** Exits 70 with `Finding content...Unable to connect to simulator.` That's Apple's "command requires an interactive Apple ID auth session or sudo" error. Anyone reaching for `-downloadPlatform` in CI hits this wall. Do not use it. Pin a Xcode that already bundles the runtime, or use `xcrun simctl runtime add` with a cached DMG, or `mxcl/xcodes-action@v1` if you want the auth-free download flow.
+- **Pinning Xcode by symlink path (`/Applications/Xcode_16.app`) is brittle.** That path can shift across runner image revisions. Pin explicitly with `maxim-lobanov/setup-xcode@v1` + `xcode-version: '16.4'`. Same shape every run, regardless of which Xcode the image symlinks to.
+- **Runner image manifest is the source of truth for "what simulator runtimes ship pre-installed."** Cross-check both `Installed SDKs` *and* `Installed Simulators` sections of `actions/runner-images/.../macos-15-Readme.md`. An SDK present without its matching simulator runtime is a destination-resolution trap. As of 2026-05, macos-15's default is Xcode 16.4 with iOS 18.5 + watchOS 11.5 simulators pre-baked — both ≥ our D2 minimums (iOS 18 / watchOS 11), so no download step is needed at all.
+- **`Ineligible destinations:` in xcodebuild errors is an *enumeration*, not a destination-spec diagnosis.** The task brief told me `name:Any iOS Device` was a smoking gun that the destination string had been mangled to `generic/platform=iOS` (real device). It wasn't. Reading the full error block — including `error:iOS 18.0 is not installed. To use with Xcode, first download and install the platform` — is what surfaced the real cause. When the runtime is missing, the only candidate destination that survives enumeration is the real-device placeholder; that's what gets logged. Look at the `error:` field, not just the `name:` field.
+- **Asymmetric resolver leniency between scheme types is real and bites both platforms.** Richards already documented the watchOS variant (app-scheme strict, widget-extension scheme lenient). Same shape on iOS: `ARRunnerPhone` passed under the missing iOS 18.0 runtime; `ARRunnerWidgetsPhone` did not. Same root cause; same fix; one knob (Xcode pin) covers both.
+- **Local Mac toolchain (Xcode 26.5 / Swift 6.3.2) remains the source of truth for destination *strings*.** CI runner image manifest is the source of truth for *runtime availability*. Two different sources, two different questions. Don't conflate them.
+- **Cost win as a side effect:** dropping the `-downloadPlatform` step saves ~3–5 min wall-clock per watchOS cell. macOS minutes are billed at 10x Linux on private repos.
+
+- 2026-05-15 — Lesson: when introducing a new Apple-platform xcodebuild workflow, include the `maxim-lobanov/setup-xcode@v1` Xcode 16.4 pin from day one. The macos-15 runner's default `xcode-select` toolchain advertises watchOS 11.0 / iOS 18.0 runtimes that aren't actually installed, so any generic-simulator destination fails with `xcodebuild error 70`. Discovered first in `ci-build.yml`, repeated in `codeql.yml` (PR #3) — don't make me find this a third time.
 
 ## 2026-05-15 — PR #4 nit follow-up (cross-reviewer)
 Addressed Killian's 3 🟡 nits on PR #4 (chore/public-repo-prep) as the fresh-eyes implementer per reviewer-separation spirit:
