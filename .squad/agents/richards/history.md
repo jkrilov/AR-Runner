@@ -6,6 +6,16 @@
 - **Role:** Lead
 - **Joined:** 2026-05-14T18:30:31.650Z
 
+## Session Summary — 2026-05-15
+
+**Archive (v1 deep-dive condensed):** 17.5 KB → 2.5 KB. Full entries remain in decisions.md and skill docs.
+
+- **GitHub Remote Setup:** Initialized repo with Squad scaffolding (126 files), SSH remote configured, runtime state correctly gitignored.
+- **CI/Simulator Runtime Architecture:** Built Linux + macOS matrix (Linux enforces ARRunnerCore purity). Xcode 16.4 + `maxim-lobanov/setup-xcode` solved simulator runtime gaps on macos-15. Skill captured for future Apple-platform CI matrices.
+- **Swift 6 StrictConcurrency:** Stripped redundant `.enableUpcomingFeature("StrictConcurrency")` (D8 remains locked, just implicit under Swift 6 language mode).
+- **System Architecture (ADR-001 through ADR-007):** Delivered `docs/planning/architecture.md` (v0.1). D1–D9 locked by Joe; BLE spike (Weiss) + WorkoutController impl (Laughlin) + layout editor design (Killian) are next phases.
+- **Public-Repo Readiness Audit:** Verdict 🟡 = go after small cleanup. Single hard 🔴: username `joekrilov_microsoft` in one orchestration log. ActiveLook licensing nuance: SDK is Apache 2.0 ✓, Visual-Assets are CC BY-NC-ND 4.0 ⚠️ (hard rule: original art only). 5 open questions for Joe on LICENSE, copyright, visual-assets policy, outside-PR posture, Squad documentation tone.
+
 ## Learnings
 
 ### GitHub Remote Setup — 2026-05-14T14:37:10-04:00
@@ -102,3 +112,17 @@
   4. The `Ineligible destinations:` error block is an enumeration fallback, not a destination-spec diagnosis — read the full block, not just the `name:` field.
 - **Going forward:** When you need a runtime that isn't pre-baked on any image, Option B is cached DMG + `xcrun simctl runtime add`, or Option C is `mxcl/xcodes-action`. Avoid `-downloadPlatform` in unattended CI.
 - **Skill updates:** `.squad/skills/swift-linux-macos-runner-split/SKILL.md` now documents this gotcha + confidence bumped to **medium** (pattern recognized across two fix iterations).
+
+### Public-Repo Readiness Audit — 2026-05-15T09:49:00-04:00
+
+- **Deliverable:** `docs/dev/public-repo-readiness.md` (verdict 🟡 = go after small cleanup pass) + decision drop `.squad/decisions/inbox/richards-public-repo-recommendation.md`. Read-only audit by directive — no files sanitized, no LICENSE created, no commits.
+- **Headline finding:** repo is fundamentally clean. Zero real secrets in 193 tracked files. All `gho_/ghp_/sk-/AKIA/xoxb-` matches were template/skill examples teaching detection patterns. The single hard 🔴 was a corporate-identity leak (`joekrilov_microsoft`) in one orchestration log line — `.squad/orchestration-log/2026-05-14T20-48-00Z-amber.md:46`. One sed-edit fixes it.
+- **ActiveLook licensing — the nuance worth remembering:** ActiveLook is two licenses, not one.
+  - `ActiveLook/ios-sdk` (the SPM dep we'll consume) = **Apache 2.0**. Permissive, patent grant included. Compatible with us shipping under MIT/Apache/BSD/MPL.
+  - `ActiveLook/Activelook-Visual-Assets` + `Config-Generator` = **CC BY-NC-ND 4.0**. NonCommercial + NoDerivatives. **This is a one-way trap** — once we commit a single icon or layout binary from those repos, AR-Runner can never be permissively OSS-licensed without renegotiation. Killian's product brief implicitly lets this in via D6 ("bake 2–3 curated layout presets at build time using Config-Generator"). My recommendation: hard rule that all baked layouts must be original art, never derived from the visual-assets repo. Flagged as open question to Joe.
+- **License pick: Apache 2.0 over MIT.** Both are fine; Apache wins because (1) matches inbound ActiveLook SDK license — uniform inbound/outbound story, no compatibility analysis for downstream consumers, (2) explicit patent grant is non-trivial when wrapping vendor BLE/GATT protocols, (3) the SPDX two-line header pattern (`SPDX-License-Identifier: Apache-2.0` + copyright) is the Swift ecosystem standard (used by `swift-collections`, `swift-async-algorithms`). Plain MIT loses on points (1) and (2). GPL is wrong fit (App Store distribution friction).
+- **Commit-metadata email leak:** `jkrilov@gmail.com` is the author email on all 32 commits. Already public on Joe's GitHub profile (every push exposes it). Not worth a history-rewrite + force-push to scrub. Classified 🟢. Note: the upstream Squad coordinator file (`.github/agents/squad.agent.md` line 35) explicitly forbids storing `git config user.email` in committed files — that rule was followed correctly; the leak is in commit metadata, not file content.
+- **Squad logs / agent histories: keep, don't strip.** They're a working demonstration of the multi-agent dev method and have public value. The instinct to strip "raw transcripts" before going public is wrong here — the transcripts ARE the value-add for OSS readers studying how this kind of project gets built. Only one line needed redaction.
+- **`squad.agent.md` is the upstream Squad governance file (v0.9.4 from `bradygaster/squad`)** — already public elsewhere. Going public here adds zero new disclosure even though it references internal-only model aliases like `claude-opus-4.6-1m (Internal only)`. Same shape of disclosure as our `.squad/config.json` references to `claude-opus-4.7-1m-internal`. Both classified 🟢 — model name strings, not credentials.
+- **For Killian (when reviewing the prep PR):** the README status-framing decision is yours. The audit recommends a "Pre-v0.1, no installable build" banner at the top so first-time visitors don't expect a working app. You may want to soften or sharpen the language. Per reviewer protocol, the prep PR cannot be reviewed by me (I authored the audit) — Killian or Amber are the right reviewers.
+- **Reusable skill candidate:** "private-to-public OSS readiness audit for personal projects with vendored SDKs" — distinct from the upstream `secret-handling` skill. Captures the inbound-license-vs-outbound-license analysis pattern, the CC BY-NC-ND trap, the SPDX-header recommendation, and the "keep agent transcripts; strip only credentials" stance. Worth extracting if Joe runs another personal project through this same gate.

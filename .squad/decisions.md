@@ -525,3 +525,38 @@ Rationale:
 
 Richards owns the original CI implementation and the StrictConcurrency fix. His most recent fix (the `-downloadPlatform` step) introduced these regressions; Joe routed the revision to me for fresh perspective. Strict reviewer-rejection lockout doesn't formally apply (CI is automated, not a reviewer verdict), but the routing reflects the same intent. My local validation (Xcode 26.5 / Swift 6.3.2) is the source of truth for the destination strings; CI runner-image manifest is the source of truth for what runtimes ship pre-installed.
 ---
+
+---
+
+## Public-Repo Readiness Audit — Richards (2026-05-15T09:49:00-04:00)
+
+**Status:** Recommendation — pending Joe approval  
+**Full audit:** docs/dev/public-repo-readiness.md
+
+### Verdict
+
+🟡 **Go public after a small, well-scoped cleanup pass.** Estimated 30–60 min of work + one PR cycle.
+
+### Top 3 must-dos before flipping visibility
+
+1. **Redact Microsoft-corporate username** (`joekrilov_microsoft`) — single occurrence in `.squad/orchestration-log/2026-05-14T20-48-00Z-amber.md:46`.
+2. **Add LICENSE (Apache 2.0)** + 2-line SPDX headers on ~20 committed `.swift` files.
+3. **Add SECURITY.md, CONTRIBUTING.md, status banner in README.md** — light versions for personal-project scope.
+
+### Hard rule to lock into the ledger
+
+**AR-Runner shall not commit any asset, font, or layout template from ActiveLook/Activelook-Visual-Assets or ActiveLook/Config-Generator.** Both are CC BY-NC-ND 4.0, incompatible with permissive OSS. Original art only.
+
+If AR-Runner remains permanently non-commercial, the licensing recommendation flips (source-available, non-commercial). Joe's call.
+
+### Open questions for Joe (5)
+
+1. **Apache 2.0 confirmed?** (vs. MIT — Apache better fit.)
+2. **Copyright holder string** — `Joe Krilov`?
+3. **ActiveLook visual-assets policy** — adopt the hard rule above?
+4. **Outside-PR posture** — paused-until-v0.1 or open from day one?
+5. **Squad-system tone in README** — explicit mention, light footnote, or no mention?
+
+### Reviewer protocol note
+
+When the prep PR lands, reviewer must not be Richards (authored both audit + plan). **Recommend Killian** — product perspective benefits the README/status framing.
