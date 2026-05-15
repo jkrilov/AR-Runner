@@ -8,10 +8,7 @@ struct RootView: View {
     var body: some View {
         TabView {
             NavigationStack {
-                ContentPlaceholderView(
-                    title: "Live",
-                    subtitle: "Live workout mirror and route context land here."
-                )
+                WorkoutMirrorView(service: ARRunnerPhoneEnvironment.shared.mirror)
             }
             .tabItem {
                 Label("Live", systemImage: "figure.run")

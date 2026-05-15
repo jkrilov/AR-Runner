@@ -1199,3 +1199,112 @@ v0.2 scope: Extend v0.1 seams into a **credible implementation slice**. Three pa
 - ✅ (Optional) User can pick HUD layout preset from phone (Workstream 5)
 - ✅ All PRs merged, CI green (Linux + macOS + CodeQL), zero regressions vs. v0.1
 - ✅ Weiss tests on personal Watch + glasses hardware; Laughlin + Amber verify simulator + integration tests
+
+## 2026-05-15T18:55:00Z: Amber — v0.2 D4 resilience contract gaps
+
+**From:** Amber (QA & Fitness Domain)  
+**Source:** PR #8 — `feat/v02-disconnect-resilience-tests`  
+**Audience:** Weiss (BLE / glasses transport), Laughlin (workout controller / watch UI)
+
+While writing the anticipatory test suite for v0.2 #4 (D4 disconnect/reconnect resilience), the following contract gaps surfaced in the canonical surface. Each is tied to a test in `DisconnectResilienceTests.swift` so the implementation has a target.
+
+### G1 — `GlassesFrameTransport` has no auto-reconnect surface (Weiss)
+
+The protocol exposes `connect()` and `disconnect()` but no way to enable a transport-managed auto-reconnect loop. Weiss's `ReconnectPolicy` and `ExponentialBackoff` already exist as types but aren't reachable through the protocol. Decision #2 says "auto-reconnect in background" — implementation needs an entry point.
+
+**Suggested shape:** either an `enableAutoReconnect(policy: ReconnectPolicy) async` method on the protocol, or a constructor option on the canonical `ActiveLookGlassesAdapter` that defaults to a sensible policy. **Pinned by:** `test_AutoReconnectAfterTransportDrop_ExpectedFailing`.
+
+### G2 — No layout re-application contract after reconnect (Weiss)
+
+After a reconnect the previously-active layout is lost. Today every test must manually re-`selectLayout` post-reconnect, which means production code would have to track `currentLayoutID` and replay it itself. The transport (or a thin wrapper) is the natural owner.
+
+**Suggested shape:** transport tracks `currentLayoutID` set on the last successful `selectLayout` call and auto-replays it on the connection state's `.connected` re-entry. **Pinned by:** `test_Reconnect_AutoReappliesPreviousLayout_ExpectedFailing`.
+
+### G3 — `WorkoutController.glassesDisconnectCount` is global, not session-scoped
+
+`reportGlassesSignal(_:)` does not gate on workout phase, so pre-`start` connect/disconnect traffic accumulates on the same counter that the `WorkoutSummary` reads. Today's behavior is documented in `test_DisconnectBoundary_PreBegin_DoesNotPerturbPhase`, but the surface should be tightened — either reset the counter on `start(activityType:)`, or only count disconnects while `phase ∈ {.running, .paused}`.
+
+**Owner:** Laughlin. **Tradeoff:** scoping is the conservative choice but means the WC mirror can't surface "you've had 3 drops this session" until after `start`.
+
+### G4 — No dedicated alerts surface for haptic triggers (Laughlin)
+
+The watch UI's only "fire a haptic on disconnect" signal today is observing `WorkoutState.glassesConnected` flipping to `false` on `controller.states`. That works but couples haptic logic to state-snapshot diffing. A dedicated `AsyncStream<WorkoutAlertEvent>` (with cases like `.glassesDropped`, `.glassesReconnected`, future room for `.heartRateZoneEntered`) would isolate the contract and make the haptic trigger point unambiguous.
+
+**Pinned by:** `test_HapticAlertHook_OnDisconnect_ExpectedFailing` (skipped today; body sketch is in the test comment).
+
+### G5 — `reportGlassesSignal` mutates `glassesConnected` in any phase
+
+Including `.idle`, `.ended`, and `.failed`. This is fine for `.idle` (G3 covers it) but emitting a state snapshot with `.ended` phase and a flipped `glassesConnected` after the workout is over is probably noise. **Suggested fix:** short-circuit `reportGlassesSignal` when `phase == .ended` (skip both the count bump and the state emission).
+
+**Owner:** Laughlin. Low priority — observable only by lingering subscribers to `controller.states`.
+
+## 2026-05-15T18:55:00Z: v0.2 Product Decisions Locked
+
+**By:** Joe Krilov (via Copilot interactive walkthrough)  
+**Why:** Locks the v0.2 slice so Weiss / Laughlin / Amber can kick off in parallel.
+
+**Locked decisions for v0.2:**
+
+| # | Decision | Verdict |
+|---|---|---|
+| 1 | iPhone live mirror | **IN** — read-only watch→phone mirror via WCSession; no phone-side config UI |
+| 2 | Glasses disconnect UX | **Keep recording + haptic alert** (D4 confirmed); auto-reconnect in background |
+| 3 | Phone-presence assumption | **Watch-first** — must work with watch alone; phone mirror opportunistic |
+| 4 | HealthKit active energy | **Hybrid** — local estimate (HR/age/weight) for live display; write HR-only to HealthKit, let it compute official kcal |
+| 5 | Post-run save flow | **Menu** (Save / Cancel / Resume); workout pauses on Finish; immediate-save toggle deferred to v0.3 with iPhone settings UI |
+| 6 | Offline guarantee | **Offline-capable** — must work with no phone/network; may opportunistically use phone/network when present |
+
+**v0.2 workstreams approved (Killian + Richards reconciled):**
+
+- **#1 Glasses Hardware Integration** (Weiss) — wire real ActiveLook BLE on watchOS to canonical `GlassesFrameTransport`. Spike-grade acceptable; if SDK watchOS support is blocked, document the gap and pivot to phone-relay.
+- **#2 Watch SwiftUI workout app** (Laughlin) — start / pause / finish, live HR + pace + distance, lock-screen complication, Finish→menu (Save / Cancel / Resume) per decision #5.
+- **#3 iPhone live mirror** (Laughlin) — read-only WCSession dashboard, ~1Hz tick stream, post-run summary card. No settings UI.
+- **#4 Glasses Disconnect Resilience** (Weiss + Laughlin) — auto-reconnect loop, subtle haptic when HUD drops, "HUD offline" indicator. Anchored to D4.
+- **#5 HUD layout presets** — **DEFERRED to v0.3** per Richards's recommended slice.
+
+**Process items locked:**
+
+- Worktree convention being landed as `.squad/skills/parallel-agent-worktrees/SKILL.md` by Richards this session. Adopt for future parallel batches.
+- Per-agent model overrides: Weiss / Laughlin / Amber / Richards pinned to `claude-opus-4.7-1m-internal` for code work (`.squad/config.json`, Layer 0).
+
+**Out of scope (carried forward from Killian):**
+
+- HUD editor (D6 → v1)
+- iPhone settings UI (v0.3, will host the Save flow toggle)
+- Route map (v1)
+- Multi-sport (D3 → v1)
+- Action Button polish (v0.2.5)
+
+## 2026-05-15T18:55:00Z: Richards — Parallel-agent worktree convention landed as SKILL
+
+**By:** Richards (Lead / Architect)  
+**Status:** SKILL `.squad/skills/parallel-agent-worktrees/SKILL.md` formalized
+
+The parallel-agent worktree convention proposed in my `v02-technical-slice` decision is now formalized as a canonical skill at `.squad/skills/parallel-agent-worktrees/SKILL.md`.
+
+### Rule (binding from v0.2 onward)
+
+Whenever **two or more coding agents** are spawned in parallel on the shared dev machine, each agent runs in its own git worktree:
+
+```bash
+git worktree add ../AR-Runner-{agent}-{task} -b feat/{area}-{task} main
+```
+
+- Worktree dir: `../AR-Runner-{agent}-{task}` (sibling of main checkout).
+- Branch: `feat/{area}-{task}`.
+- Spawn prompts pass `WORKTREE_PATH` + `WORKTREE_MODE: true` (squad.agent.md spawn template).
+- Cleanup: `git worktree remove` after PR merge; `git worktree prune` for orphans.
+- `.squad/` state stays worktree-local; `merge=union` reconciles append-only files on merge (see squad.agent.md → Worktree Awareness).
+
+### Scope
+
+- **Applies to:** v0.3 batches and any v0.2 follow-up batch that spawns parallel coding agents (e.g., another foundation-style multi-stream push).
+- **Does NOT apply to:** solo agent runs, doc-only / `.squad/`-only single-writer work, read-only explore agents.
+
+### Provenance
+
+Born from the v0.1 foundation batch shared-filesystem collision documented in `.squad/log/2026-05-15T16-51-36Z-v01-foundation-batch.md` (Amber's branch shift moved `HEAD` between Laughlin's git calls). Confidence remains **medium** until a parallel batch completes cleanly under this rule, at which point it graduates to **high**.
+
+### Trade-off (named)
+
+Each worktree costs a duplicate working directory on disk (full file checkout per agent) and one extra `git worktree remove` step at PR-merge time. In exchange we get hard isolation of `HEAD`/index/working dir per agent — eliminating an entire class of mid-flight collision bugs that are otherwise non-deterministic and painful to diagnose. Worth it.
