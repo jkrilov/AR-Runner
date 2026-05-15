@@ -41,3 +41,9 @@ Richards completed a full public-repo readiness audit (verdict: 🟡 Go ahead wi
 **Nits (non-blocking):** (A) ActiveLook needs a hyperlink on first README mention — strangers won't know what it is. (B) CONTRIBUTING should point to a Releases page so outsiders know when PRs reopen. (C) CODE_OF_CONDUCT.md is missing — GitHub community profile will flag it.
 
 **Product-perspective insight:** When taking a repo public, the README's job changes from "team reference doc" to "30-second pitch to a stranger." The pre-v0.1 framing matters more than the technical details — leading with status (what this ISN'T yet) before product shape (what it WILL be) is the right hierarchy. This is the pattern for any future "going public" prep on other projects.
+
+### 2026-05-15: v0.1 foundation workstreams in flight
+
+Three parallel agents (Weiss, Laughlin, Amber) are executing the v0.1 foundation spike. Expected completion: concurrent PRs will land (BLE adapter, WorkoutController, integration test scaffolding). Post-merge, small reconciliation pass for protocol naming alignment (not blocking).
+
+Joe explicitly greenlit parallel kickoff after public-repo flip; all three agents running on claude-opus-4.7-1m-internal.
