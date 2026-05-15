@@ -12,7 +12,12 @@ let package = Package(
     name: "ARRunnerCore",
     platforms: [
         .iOS(.v18),
-        .watchOS(.v11)
+        .watchOS(.v11),
+        // Declared so `swift test` on a developer Mac picks a deployment
+        // target where `AsyncStream` / `Task` are available. Linux CI ignores
+        // this list; the app-shell xcodebuild matrix uses the per-target
+        // iOS/watchOS deployment targets in `project.yml`.
+        .macOS(.v13)
     ],
     products: [
         .library(
