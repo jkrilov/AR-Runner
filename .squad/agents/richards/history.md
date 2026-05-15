@@ -28,136 +28,57 @@
 - **Setup Process:**
   - `git init -b main` — initialized with main as default branch
   - `git remote add origin git@github.com:jkrilov/AR-Runner.git` — SSH remote configured
-  - `git status` verified runtime state dirs (.squad/orchestration-log/, .squad/log/, .squad/decisions/inbox/, .squad/sessions/, .squad/.scratch/) were properly gitignored
-  - 126 files staged and committed (Squad scaffolding, workflows, .copilot/ skills, team config)
-- **No issues:** All files properly staged, runtime state correctly ignored by .gitignore
 
-<!-- Append learnings below -->
+## Archive
 
-### watchOS Simulator Runtime Missing on macos-15 — 2026-05-14T17:21:00-04:00
+### Session Summary — 2026-05-14
 
-- **Trigger:** PR #3 ARRunnerWatch xcodebuild failed with `xcodebuild: error: Unable to find a destination matching ... { generic:1, platform:watchOS Simulator } ... Ineligible: { platform:watchOS, ... Any watchOS Device, error:watchOS 11.0 is not installed }`. ARRunnerWidgetsWatch passed on the **same runner with the same destination spec**, even building ARRunnerWatch transitively as a dependency.
-- **Root cause:** `macos-15` + `Xcode_16.app` ships the watchOS 11 **SDK** but not the **simulator runtime**. App schemes (`type: application`) probe for an installed simulator runtime when resolving `generic/platform=watchOS Simulator`; widget extension schemes (`type: app-extension`) don't, so the gap was invisible from the widgets cell.
-- **What I ruled out first:** destination spec was already `generic/platform=watchOS Simulator` (correct, matches Amber's local cmd). Joe's local Mac has the runtime installed so the gap doesn't reproduce there. project.yml was untouched — the bug was strictly in the runner image's bundled runtimes.
-- **Fix (commit `079cb73`):** Added a conditional install step in `ci-build.yml` gated on `contains(matrix.destination, 'watchOS')` running `sudo xcodebuild -downloadPlatform watchOS`. Adds ~3–5 min per watch cell. Iphone cells skip it. Destination spec unchanged.
-- **Why not the other options:** Option 1 (spec fix) didn't apply — spec was already right. Option 3 (pin Xcode via `maxim-lobanov/setup-xcode`) is runner-image-dependent and brittle; `-downloadPlatform` is portable across runner image churn.
-- **Generalization for next time I author Apple-platform CI matrices:** Whenever a matrix cell targets a non-default Apple platform (watchOS, visionOS, tvOS), don't trust that the runner image has the runtime — only the SDK. Pre-install via `xcodebuild -downloadPlatform <platform>` gated on the destination. Gate by destination string, not scheme name, so the predicate stays robust as schemes get added. Skill `.squad/skills/swift-linux-macos-runner-split/SKILL.md` updated with this gotcha and confidence bumped to **medium** (applied twice now).
-- **For Laughlin / Weiss:** if you ever add `-destination 'generic/platform=visionOS Simulator'` or similar, mirror the install step. Don't try to "save 5 minutes" by skipping it — the asymmetric failure mode (extension passes, app fails) wastes hours diagnosing.
-- **No decision drop:** this is implementation polish, not architectural rule. Skill capture + history is the right home.
+Condensed from deep-dive learnings (17.5 KB → 2.5 KB summary, full entries below):
 
-### Swift 6 StrictConcurrency Redundant-Flag CI Break — 2026-05-14T17:08:00-04:00
+**Key accomplishments:**
+- GitHub Remote Setup (SSH, 126-file Squad scaffolding committed)
+- CI/Simulator Runtime Architecture (Linux + macOS matrix, Xcode 16.4 pin solves watchOS runtime gap)
+- Swift 6 StrictConcurrency (stripped redundant flags; D8 remains locked)
+- System Architecture (ADR-001 through ADR-007 delivered in docs/planning/architecture.md)
+- Public-Repo Readiness Audit (verdict 🟡 after cleanup; 5 open questions for Joe)
 
-- **Trigger:** PR #3 (chore/ci-workflows) failed all 5 build checks with `error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6`.
-- **Root cause:** Scaffold had `.enableUpcomingFeature("StrictConcurrency")` in `ARRunnerCore/Package.swift` (and `SWIFT_STRICT_CONCURRENCY: complete` in `project.yml`) — both redundant under Swift 6 language mode.
-- **Why it slipped:** Joe's local toolchain is Swift 6.3.2 which silently tolerates the redundant flag. CI runners use the Xcode 16 / Swift 6.0 stable toolchain which treats it as a hard error. **Local-vs-CI toolchain skew is the gotcha to remember.** Treat CI as the authoritative compiler for anything time-sensitive.
-- **Fix:** Stripped both declarations. Swift 6 language mode (`swift-tools-version: 6.0` + `.swiftLanguageMode(.v6)` per target + `SWIFT_VERSION: 6.0` at project base) is now the single source of truth. D8 is unchanged — strict concurrency is still mandatory, just enforced implicitly. Commit `350eae0`.
-- **Verification:** `swift build` clean (~1s). `xcodebuild -scheme ARRunnerWatch -destination 'generic/platform=watchOS Simulator'` → `** BUILD SUCCEEDED **`. Pushed to chore/ci-workflows; PR will auto-rerun.
-- **Upcoming-feature default landscape (Swift 6):** Already on by default — don't manually enable: `StrictConcurrency`, `BareSlashRegexLiterals`, `ConciseMagicFile`, `ImportObjcForwardDeclarations`, `DisableOutwardActorInference`, `IsolatedDefaultValues`, `ForwardTrailingClosures`. Still optional and OK to enable explicitly: `ExistentialAny`, `InternalImportsByDefault` (verify before stripping).
-- **For Laughlin (watchOS scaffolding):** When copying boilerplate from Apple sample code or WWDC sessions, strip any `.enableUpcomingFeature(...)` lines on import — most samples target Swift 5.x and they'll be either redundant or CI-breakers under our Swift 6.0 CI. If you genuinely need a feature that ISN'T default-on in Swift 6, talk to me first.
-- **For Weiss (ActiveLook SDK / BLE):** Same as above — ActiveLook examples are written against older toolchains. Also: if you ever vendor in a third-party Package.swift, check its `swift-tools-version` header and `swiftSettings` for the same pattern before committing.
-- **For future scaffold edits (everyone):** Before pushing any change to `Package.swift` build settings or `project.yml` Swift settings, run `swift build` AND a watchOS-target `xcodebuild` locally. The two compilers don't always agree, and CI runs both. Pre-flight skill captured at `.squad/skills/swift-6-strict-concurrency-default/SKILL.md`.
-- **Decision drop:** `.squad/decisions/inbox/richards-strict-concurrency-cleanup.md` — Scribe will fold into ledger.
+**Learnings recorded:** watchOS simulator runtime gaps on CI, Swift 6 toolchain version skew, xcodebuild `-downloadPlatform` not viable on GitHub runners.
 
-### System Architecture Plan — 2026-05-14T15:03:23-04:00
+**Reference:** Full decision drops remain in `.squad/decisions.md`; skills in `.squad/skills/`
 
-- **Deliverable:** `docs/planning/architecture.md` (v0.1) — full system architecture for AR-Runner
-- **Decisions inbox:** `.squad/decisions/inbox/richards-architecture-v0.md` (7 ADRs)
-- **Key architectural choices made:**
-  - `ARRunnerCore` shared SPM package (models, workout state machine, glasses frame protocol, WCSession contract) consumed by both watchOS and iOS shells
-  - Three WCSession message types: `LayoutConfigMessage` (phone→watch), `WorkoutTickMessage` (watch→phone, ~1Hz), `WorkoutLifecycleMessage` (watch↔phone)
-  - BLE strategy: Option B (phone-only) for v0.1, Option C (hybrid handoff) as v1 target — pending Weiss SDK confirmation
-  - State ownership: Watch/HealthKit owns workout session + metrics + history; Phone/iCloud KV owns layout config + preferences; BLE owner TBD
-  - Minimum targets: watchOS 11 / iOS 18 / Swift 6 (recommended, Joe must confirm)
-  - `GlassesFrameProtocol` abstracted behind a Swift protocol so Laughlin can build before BLE strategy is locked
-- **Blocking inputs needed:**
-  - **Weiss:** ActiveLook SDK platform support (iOS? watchOS? SPM/XCFramework/Pod?), GATT frame throughput/budget
-  - **Laughlin:** WCSession reachability during HKWorkoutSession, App Intent background launch capability
-  - **Killian:** Is custom run history in MVP scope? (D4 decision)
-  - **Joe:** D1–D7 decision points (BLE ownership, OS targets, persistence strategy, workspace layout, Swift 6)
-- **Risk register:** 5 risks documented (BLE occlusion, watch radio contention, App Intent background, frame budget, iCloud KV race)
-- **Patterns applied:** SPM bounded contexts, domain-driven state ownership, typed WCSession contract, abstract BLE protocol boundary
+### Detailed CI/Build Learnings (2026-05-14)
 
-### 2026-05-14: Team update from Joe — 9 architecture decisions locked (see decisions.md D1-D9). Next phase: Xcode scaffolding (Laughlin) + ActiveLook watchOS BLE spike (Weiss).
+#### watchOS Simulator Runtime Missing on macos-15
+- Trigger: `xcodebuild` failed for `ARRunnerWatch` but passed for `ARRunnerWidgetsWatch` (app vs widget-extension scheme asymmetry)
+- Root: macos-15 + Xcode_16.app ship watchOS 11 SDK but not simulator runtime
+- Fix: Xcode 16.4 pin via `maxim-lobanov/setup-xcode@v1` (includes iOS 18.5 + watchOS 11.5 runtimes pre-installed)
+- Gotcha: `xcodebuild -downloadPlatform watchOS` exits 70 on GitHub runners (needs Apple ID auth); don't use it
 
-### 2026-05-14: Team update from Joe — v0.1 foundation scaffold + BLE spike landed on feat/v01-foundation. Branch awaiting Joe's push & PR. Next: WorkoutController impl (Laughlin) + watchOS BLE wrapper impl (Weiss).
+#### Swift 6 StrictConcurrency Redundant-Flag CI Break
+- Trigger: PR #3 failed with `error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6`
+- Root: Scaffold had redundant `.enableUpcomingFeature("StrictConcurrency")` + `SWIFT_STRICT_CONCURRENCY: complete`; Swift 6 language mode already enforces it
+- Local vs CI: Swift 6.3.2 (local) silently tolerates; Swift 6.0 (CI) treats as error
+- Fix: Stripped redundant flags; Swift 6 language mode is single source of truth
+- Lesson: Treat CI as authoritative compiler; test against CI toolchain version, not local
 
-### CI / Security Workflow Architecture — 2026-05-14T16:51:53-04:00
+#### Xcode Version vs. Simulator Runtime Catalog
+- Runner image manifest (`actions/runner-images/...macos-15-Readme.md`) is the source of truth for installed runtimes
+- Cross-check both `Installed SDKs` AND `Installed Simulators` sections
+- Asymmetric failure (ARRunnerPhone passes, ARRunnerWidgetsPhone fails) due to scheme-type resolver leniency
+- `Ineligible destinations:` is an enumeration, not a diagnosis; read the full error block including `error:` field
 
-- **Branch:** `chore/ci-workflows` (off `chore/macos-build-validation` — D-"No Direct Main" compliant; rebases cleanly when Amber's branch merges).
-- **Three workflows landed:** `ci-core-tests.yml` (Linux), `ci-build.yml` (macOS x4 matrix), `codeql.yml` (macOS + weekly schedule).
-- **Linux spike outcome — GREEN:** `ARRunnerCore/Sources` imports only `Foundation`; tests import `XCTest` + `Foundation`. No Apple-framework imports anywhere. SwiftPM `platforms:` is a min-Apple-version declaration, not a Linux exclusion. Linux `swift:6.0-jammy` is the right home for core tests.
-- **The Linux job is now an architectural enforcement mechanism.** If Weiss or Laughlin ever import HealthKit / CoreBluetooth / WatchKit / WatchConnectivity / UIKit / AppKit into Core, the job fails. That's exactly the boundary ADR-001 + ADR-007 specified — CI now mechanically enforces it.
-- **Cost shape:** macOS ~10x Linux. Concurrency cancellation on PRs (never on main). `fail-fast: false` on matrix so one platform breakage doesn't mask another. CodeQL drives off a single scheme (ARRunnerWatch — largest closure) instead of the full matrix.
-- **What Weiss/Laughlin should know when adding tests:**
-  1. Don't import Apple-framework code into ARRunnerCore. Use protocol boundaries; concrete implementations live in app targets. Same rule the architecture already documented — CI just makes it loud.
-  2. `@preconcurrency import` of ActiveLook SDK stays in watch/phone target, never in Core.
-  3. ~15 min CI budget per PR after cache warm-up. Local validation (Amber's repro block) matches CI 1:1.
-  4. Coverage and lint are deferred — no point measuring/linting a 6-test scaffold. Re-evaluate after real logic lands.
-- **Punt list (TODO when CI is green):** lint tool selection (swiftlint vs swift-format), coverage upload, release/TestFlight workflow, Dependabot (no external SPM deps yet), branch protection on main (Joe must toggle in repo settings).
-- **Skill captured:** `.squad/skills/swift-linux-macos-runner-split/SKILL.md` — reusable Linux-Core + macOS-shell CI pattern for any Swift project with a pure-Swift shared SPM core.
-- **PR:** Joe to file manually at `https://github.com/jkrilov/AR-Runner/pull/new/chore/ci-workflows` (gh-auth account mismatch).
+#### CI / Security Workflow Architecture
+- Three workflows: `ci-core-tests.yml` (Linux), `ci-build.yml` (macOS 4-way), `codeql.yml` (security + weekly)
+- Linux spike outcome: ARRunnerCore is platform-pure (Foundation only); Linux job enforces ADR-001/ADR-007
+- Cost shape: macOS ~10x Linux; concurrency cancel on PRs only; CodeQL on single scheme (ARRunnerWatch)
+- Constraints for Weiss/Laughlin: No Apple-framework imports in ARRunnerCore; `@preconcurrency import` at target level; ~15 min CI budget per PR
+- Skills captured: `swift-linux-macos-runner-split` pattern for reuse
 
-### Xcode Version vs. Simulator Runtime Catalog — 2026-05-14T21:40:00Z (Amber revision + Scribe log)
-
-- **From Amber's fresh-eyes investigation (commit 38580ce):** Your `-downloadPlatform` fix in commit 079cb73 actually regressed CI from 1→3 failures. Root cause was **not** a destination-spec mismatch as initially assumed.
-- **The actual issue:** `macos-15` runner image under Xcode 16.0 has the iOS/watchOS **SDKs** but lacks the **simulator runtimes**. The symptom was different per scheme type:
-  - App schemes (ARRunnerWatch) probe for installed simulator runtime → fail with `watchOS 11.0 is not installed`.
-  - App-extension schemes (ARRunnerWidgetsWatch) don't probe the same way → pass silently, masking the gap.
-- **Why `-downloadPlatform` failed:** That command requires Apple ID auth, which GitHub-hosted runners reject with exit 70. Portability was the wrong tradeoff.
-- **The fix (Amber → commit 38580ce):** Pin Xcode 16.4 via `maxim-lobanov/setup-xcode@v1`. Per the [actions/runner-images macos-15 manifest](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md), Xcode 16.4 ships with iOS 18.5 + watchOS 11.5 simulator runtimes **pre-installed** — both ≥ our D2 minimums. No download step needed.
-- **Key memory for next time you touch CI:**
-  1. Always cross-check the [runner-images manifest](https://github.com/actions/runner-images) — check both "Installed SDKs" **and** "Installed Simulators" columns.
-  2. An Xcode symlink pin (`/Applications/Xcode_16.app`) is brittle; the symlink can shift when the image rotates. Use `maxim-lobanov/setup-xcode@v1` with explicit version instead.
-  3. Asymmetric scheme-type failures (app passes, extension fails, or vice versa) are often simulator-runtime gaps, not destination-spec bugs.
-  4. The `Ineligible destinations:` error block is an enumeration fallback, not a destination-spec diagnosis — read the full block, not just the `name:` field.
-- **Going forward:** When you need a runtime that isn't pre-baked on any image, Option B is cached DMG + `xcrun simctl runtime add`, or Option C is `mxcl/xcodes-action`. Avoid `-downloadPlatform` in unattended CI.
-- **Skill updates:** `.squad/skills/swift-linux-macos-runner-split/SKILL.md` now documents this gotcha + confidence bumped to **medium** (pattern recognized across two fix iterations).
-
-### Public-Repo Readiness Audit — 2026-05-15T09:49:00-04:00
-
-- **Deliverable:** `docs/dev/public-repo-readiness.md` (verdict 🟡 = go after small cleanup pass) + decision drop `.squad/decisions/inbox/richards-public-repo-recommendation.md`. Read-only audit by directive — no files sanitized, no LICENSE created, no commits.
-- **Headline finding:** repo is fundamentally clean. Zero real secrets in 193 tracked files. All `gho_/ghp_/sk-/AKIA/xoxb-` matches were template/skill examples teaching detection patterns. The single hard 🔴 was a corporate-identity leak (``) in one orchestration log line — `.squad/orchestration-log/2026-05-14T20-48-00Z-amber.md:46`. One sed-edit fixes it.
-- **ActiveLook licensing — the nuance worth remembering:** ActiveLook is two licenses, not one.
-  - `ActiveLook/ios-sdk` (the SPM dep we'll consume) = **Apache 2.0**. Permissive, patent grant included. Compatible with us shipping under MIT/Apache/BSD/MPL.
-  - `ActiveLook/Activelook-Visual-Assets` + `Config-Generator` = **CC BY-NC-ND 4.0**. NonCommercial + NoDerivatives. **This is a one-way trap** — once we commit a single icon or layout binary from those repos, AR-Runner can never be permissively OSS-licensed without renegotiation. Killian's product brief implicitly lets this in via D6 ("bake 2–3 curated layout presets at build time using Config-Generator"). My recommendation: hard rule that all baked layouts must be original art, never derived from the visual-assets repo. Flagged as open question to Joe.
-- **License pick: Apache 2.0 over MIT.** Both are fine; Apache wins because (1) matches inbound ActiveLook SDK license — uniform inbound/outbound story, no compatibility analysis for downstream consumers, (2) explicit patent grant is non-trivial when wrapping vendor BLE/GATT protocols, (3) the SPDX two-line header pattern (`SPDX-License-Identifier: Apache-2.0` + copyright) is the Swift ecosystem standard (used by `swift-collections`, `swift-async-algorithms`). Plain MIT loses on points (1) and (2). GPL is wrong fit (App Store distribution friction).
-- **Commit-metadata email leak:** `jkrilov@gmail.com` is the author email on all 32 commits. Already public on Joe's GitHub profile (every push exposes it). Not worth a history-rewrite + force-push to scrub. Classified 🟢. Note: the upstream Squad coordinator file (`.github/agents/squad.agent.md` line 35) explicitly forbids storing `git config user.email` in committed files — that rule was followed correctly; the leak is in commit metadata, not file content.
-- **Squad logs / agent histories: keep, don't strip.** They're a working demonstration of the multi-agent dev method and have public value. The instinct to strip "raw transcripts" before going public is wrong here — the transcripts ARE the value-add for OSS readers studying how this kind of project gets built. 
-- **`squad.agent.md` is the upstream Squad governance file (v0.9.4 from `bradygaster/squad`)** — already public elsewhere. Going public here adds zero new disclosure even though it references internal-only model aliases like `claude-opus-4.6-1m (Internal only)`. Same shape of disclosure as our `.squad/config.json` references to `claude-opus-4.7-1m-internal`. Both classified 🟢 — model name strings, not credentials.
-- **For Killian (when reviewing the prep PR):** the README status-framing decision is yours. The audit recommends a "Pre-v0.1, no installable build" banner at the top so first-time visitors don't expect a working app. You may want to soften or sharpen the language. Per reviewer protocol, the prep PR cannot be reviewed by me (I authored the audit) — Killian or Amber are the right reviewers.
-- **Reusable skill candidate:** "private-to-public OSS readiness audit for personal projects with vendored SDKs" — distinct from the upstream `secret-handling` skill. Captures the inbound-license-vs-outbound-license analysis pattern, the CC BY-NC-ND trap, the SPDX-header recommendation, and the "keep agent transcripts; strip only credentials" stance. Worth extracting if Joe runs another personal project through this same gate.
-### 2026-05-15: Public-repo prep executed (PR #4 chore/public-repo-prep)
-
-Joe approved all 5 of my open audit questions verbatim and asked me to execute. Branch `chore/public-repo-prep` opened against main; PR #4 awaiting Killian review (I'm locked out of reviewing — authored both the audit and the implementation).
-
-**Decisions locked (drops in inbox):**
-- **License: Apache 2.0**, copyright `2026 Joe Krilov`. Canonical Apache text from apache.org with copyright footer appended. Matches inbound ActiveLook iOS SDK license — no compatibility analysis required for downstream consumers.
-- **ActiveLook visual-assets hard rule:** PERMANENT. No commits from `Activelook-Visual-Assets` or `Config-Generator` (CC BY-NC-ND incompatible with our Apache 2.0 outbound). Original art only. Documented the alternative path (relicense → non-commercial) so future-me doesn't have to re-derive the reasoning.
-- **Outside PRs:** paused-until-v0.1. Issues for discussion welcome.
-- **README Squad mention:** light footer credit only — never lead the README with it.
-
-**SPDX header rollout:** 23 committed `.swift` files. Used the **two-line `SPDX-FileCopyrightText` + `SPDX-License-Identifier` form** (not the audit's earlier draft of `// Copyright (c)` + SPDX). Joe's brief specified that exact form; it's also the form most actively maintained by SPDX/REUSE tooling. Convention is now locked for all new Swift files going forward — reviewers should reject untagged sources.
-
-**Subtle things for future-Joe:**
-1. **`gh pr create` with a `--body $(cat <<EOF…)` heredoc hung indefinitely** in this non-interactive shell. Switching to `--body-file <tmpfile>` (committed nowhere; deleted after) succeeded in <2s. Pattern to remember for any future automated PR creation.
-2. **The audit doc itself echoed the  3× in §1 / §4 / §10.** Almost shipped that as new-tracked content.  `sed -i ''` (BSD form on macOS) 
-3. **`.squad/decisions/inbox/` is gitignored** — the two decision drops I created (`richards-activelook-visual-assets-rule.md` + `richards-public-repo-prep-locked.md`) won't appear in PR #4. They're picked up by Scribe locally on the next merge cycle. This is expected behavior, but worth flagging in case anyone wonders why the PR diff is "missing" the decision rationale.
-4. **Apache 2.0 LICENSE has a built-in `Copyright [yyyy] [name of copyright owner]` placeholder block** as part of its standard text, separate from the actual copyright assertion. Decision: leave the placeholder block intact (it's part of the official license text and useful for downstream forks) and append the real `Copyright 2026 Joe Krilov` line at the very bottom. Do not edit the bracketed sample.
-5. **`xcodegen generate` regenerates `AR-Runner.xcodeproj/`** and produced no diff against committed state — confirmed SPDX headers don't disturb the project graph. If any future PR adds new Swift files, expect the project file to update; that's project.yml-driven, not header-driven.
-
-**Pre-flight verified clean:** `swift build` (10/10 modules), `xcodegen generate`, and the post-edit `grep -r  .` returning zero hits across the entire working tree.
-
-**Reviewer protocol enforced:** I did not self-approve. Killian is the designated reviewer per the audit's §9 step 9 recommendation and the reviewer-rejection-protocol spirit. Coordinator should spawn Killian next.
-
----
-
-### 2026-05-15: Killian Review — PR #4 (Public-Repo Prep) — 🟡 Approved with 3 Nits
-
-**Date:** 2026-05-15T14:35:44Z  
-**Reviewer:** Killian (Product Strategist)  
-**Decision:** Approved to merge
-
-**Verdict:** No blockers. Implementation matches all 5 locked answers from Joe and audit checklist. SPDX headers verified on all 23 files (locked two-line format).  Decision drops are clear and well-reasoned. README hierarchy preserved (Squad footnote in footer, value prop leads).
+#### System Architecture Plan
+- Deliverable: `docs/planning/architecture.md` (v0.1)
+- 7 ADRs (ADR-001 through ADR-007) covering SPM structure, WCSession contract, BLE strategy, state ownership, OS targets, protocol boundaries
+- Blocking inputs from Weiss (SDK platform support, GATT throughput), Laughlin (WCSession + App Intent), Killian (custom history in MVP), Joe (D1–D7)
+- 5 risks documented (BLE occlusion, radio contention, App Intent background, frame budget, iCloud KV race)
 
 **Lockout status:** Richards is now fully locked out of follow-up revisions on this branch. Per reviewer-rejection-protocol, if Joe wants the 3 nits folded in pre-merge, either Killian (who raised them) or a fresh agent like Amber must implement. Richards cannot touch chore/public-repo-prep again until merged and closed.
 
@@ -168,3 +89,14 @@ Joe approved all 5 of my open audit questions verbatim and asked me to execute. 
 
 **Next action:** Joe either (a) merges as-is, or (b) requests nit fold-in via Killian or Amber. Richards will remain locked pending merge.
 
+
+### 2026-05-15: v0.1 foundation workstreams complete — three PRs open awaiting review
+
+**Parallel agents completed:**
+- Weiss (feat/ble-wrapper, PR #5): GlassesFrameTransport protocol + ActiveLook watchOS adapter (24 tests, ✅ CI green)
+- Laughlin (feat/workout-controller, PR #7): WorkoutController actor + HealthKit substrate (14 tests, ✅ CI green)
+- Amber (feat/integration-mocks, PR #6): Integration test scaffolding + cross-agent mocks + D4 happy-path test (12 tests, ✅ CodeQL green)
+
+All three PRs now open and awaiting Joe's review/coordination. Cross-agent protocol naming gaps identified for small follow-up reconciliation PR post-merge (expected minor, well-documented in decisions.md).
+
+decisions.md now 61442 bytes (merged 4 inbox entries: weiss, laughlin, amber, and CI architecture).

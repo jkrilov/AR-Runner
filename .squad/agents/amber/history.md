@@ -18,36 +18,55 @@ First Mac build of the v0.1 scaffold after Windows authoring. Toolchain: xcodege
 - **Shared widget appex + multi-host = Apple parent-prefix wall.** A single `app-extension` target with `platform: auto` and `supportedDestinations: [iOS, watchOS]` can't satisfy Apple's "embedded binary bundle ID must be prefixed with parent app bundle ID" rule for *both* `com.arrunner.phone` and `com.arrunner.watch` parents. Fix is to split into per-platform targets that share a single source directory — preserves "one widget codebase" while giving each `.appex` the right prefix. Pattern captured as a skill (`.squad/skills/xcodegen-shared-widget-per-platform/`).
 - **`WidgetFamily.systemSmall` is iOS-only.** When sharing widget sources between iOS and watchOS, the `supportedFamilies` list MUST be gated with `#if os(watchOS)`. Trivial but the kind of thing that bites once and you don't forget.
 - **xcodegen regenerates `Config/`.** The Info.plist and entitlements files in `Config/` are derived from `project.yml` on every `xcodegen generate`. Gitignore them along with `*.xcodeproj/`. The dev-setup doc's reference to `AR-Runner.xcworkspace` was wrong — xcodegen only produces `AR-Runner.xcodeproj` for this project layout.
-- **D8 (Swift 6 strict concurrency) is paying off already.** Zero data-race / `Sendable` warnings across the whole scaffold. The actor discipline (`WorkoutController`, `WatchConnectivityService`, `GlassesService` are all actors; `GlassesFrameTransport` is `Sendable`; app entries are `@MainActor`) holds.
-- **Heads-up for Weiss (ActiveLook SDK boundary):** when the iOS SDK gets pulled in for the watch BLE wrapper, use `@preconcurrency import` per D8. The scaffold-side surface (`GlassesFrameTransport`) is already `Sendable` and won't fight you. Drop concrete transport conformances in the watch app target, not in ARRunnerCore — keeps the core platform-agnostic.
-- **Heads-up for Laughlin:** the "Metadata extraction skipped — No AppIntents.framework dependency found" warning is benign right now (StartWorkoutIntent lives in the widget extension). It'll vanish once the parent watch target either imports AppIntents directly or wires the intent into its launch flow. Don't waste time chasing it before the foreground-launch glue is in.
-- **Test coverage is shallow but correct.** Each of the six suites is a single `testCodableRoundTrip`. That's fine for scaffold; tests live alongside the work that adds real behavior. When metrics calc / split detection / pace smoothing land, I'll grow these into property-based or scenario suites.
-- **Repro is in `docs/dev/macos-build-validation.md`.** Anyone else moving from Windows runs the same five commands and sees green.
 
-### 2026-05-14T21:00:00Z: Scribe — CI Workflows Landed on chore/ci-workflows
+## Archive — Earlier v0.1 Build & CI Validation Work (2026-05-14)
 
-**From:** Scribe (session orchestration)
+### Condensed Summary
 
-Richards completed CI architecture design + implementation. Three workflows now committed to `.github/workflows/`:
+Three separate validation sprints identified and fixed critical scaffold bugs:
 
-1. **`ci-core-tests.yml`** — Linux runner. Tests `ARRunnerCore` with `swift test` on `swift:6.0-jammy` container.
-2. **`ci-build.yml`** — macOS runner. Builds all four app targets (Watch, Phone, WidgetsPhone, WidgetsWatch) via xcodebuild 4-way matrix.
-3. **`codeql.yml`** — GitHub CodeQL security analysis (PR + weekly).
+1. **watchOS Product Type Trap:** `application.watchapp2` is legacy (pre-watchOS 7). Causes build collision on xcodebuild. Fixed with `type: application` + `platform: watchOS` + `WKApplication: true` in Info.plist.
 
-**Critical for Amber:** The Linux ci-core-tests job now enforces ARRunnerCore platform-agnosticism mechanically. Future PRs (from Weiss, Laughlin, and all subsequent contributors) must keep concrete Apple-framework code out of Core. Your three scaffold fixes enabled this — the Linux spike only works because those bugs are now resolved. This is architectural enforcement paying dividends immediately.
+2. **Shared Widget Bundle ID Prefix Rule:** Multi-host widget appex can't satisfy Apple's "embedded binary bundle ID must prefix parent" rule for both watch and phone. Fixed by splitting into per-platform targets that share source directory. Pattern captured in `.squad/skills/xcodegen-shared-widget-per-platform/`.
 
-**Architecture assurance:** Weiss's BLE wrapper (ActiveLook SDK) must live in ARRunnerWatch, not ARRunnerCore. Laughlin's HealthKit + WatchConnectivity code must live in ARRunnerWatch, not ARRunnerCore. The Linux ci-core-tests job blocks any slip-ups. This is the payoff from D8 (Swift 6 strict concurrency) + ADR-007 (protocol boundaries).
+3. **WidgetFamily.systemSmall iOS-Only Gate:** Missing `#if os(watchOS)` for family list causes CI failure. Trivial gate; critical to remember.
 
-**Timeline:** PR #3 (chore/ci-workflows) queued behind PR #2 (macos-build-validation). Joe will open both manually. When merged, all subsequent feature branches auto-validate.
+4. **xcodegen Config/ Regeneration:** Info.plist and entitlements derived from `project.yml` on every generate; must gitignore alongside `.xcodeproj`. Dev-setup doc corrected (workspace reference was wrong; `.xcodeproj` is output).
 
-**Reference:** `.squad/orchestration-log/2026-05-14T21:00:00Z-richards.md` for full ADRs and design rationale. `.squad/decisions.md` now contains the full CI architecture decision with all trade-offs captured.
+5. **Swift 6 Strict Concurrency Validation:** Zero data-race warnings across scaffold. Actor discipline (WorkoutController, WatchConnectivityService, GlassesService as actors; GlassesFrameTransport as Sendable; app entries as @MainActor) is already paying dividends.
 
-### 2026-05-14T21:12:00Z: Scribe — CI Swift 6.0 Toolchain Gotcha (Richards fix landed)
+**Repro process:** Five-command validation script in `docs/dev/macos-build-validation.md`. Anyone else validating across macOS matches your results.
 
-**From:** Scribe (session orchestration)
+**For Weiss (ActiveLook SDK):** Use `@preconcurrency import` per D8; keep concrete implementations in watch app target, not ARRunnerCore.
 
-PR #3 (chore/ci-workflows) first real CI run caught hard error:
-> error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6
+**For Laughlin:** "No AppIntents.framework" warning is benign until foreground-launch wiring lands.
+
+### CI Swift 6.0 Toolchain Gotcha
+
+PR #3 caught hard error: `error: upcoming feature 'StrictConcurrency' is already enabled as of Swift version 6`
+
+- Root: Scaffold had redundant `.enableUpcomingFeature("StrictConcurrency")`
+- Local Swift 6.3.2 tolerates; CI Swift 6.0 rejects
+- Fix: Removed explicit flag; Swift 6 language mode is source of truth
+- Lesson: Smoke-test against CI toolchain version, not just local
+
+### CI Workflows: xcodebuild -downloadPlatform Failure Analysis
+
+PR #3 revision after Richards's `-downloadPlatform watchOS` attempt failed three CI checks:
+
+- **Problem:** `xcodebuild -downloadPlatform` exits 70 with auth failure on GitHub runners (requires Apple ID session)
+- **Solution:** Pin Xcode 16.4 via `maxim-lobanov/setup-xcode@v1`; pre-installed runtimes cover D2 minimums (iOS 18 / watchOS 11)
+- **Lesson:** Runner image manifest is source of truth for installed runtimes; both SDKs and simulators must be present
+- **Asymmetry:** watchOS app-scheme strict, widget-extension lenient (same on iOS); one Xcode pin fixes both
+- **Cost win:** Dropping `-downloadPlatform` saves 3–5 min per watchOS cell
+
+### PR #4 Nit Follow-Up (Cross-Reviewer)
+
+Addressed Killian's three 🟡 nits on `chore/public-repo-prep`:
+1. README.md — hyperlinked first ActiveLook mention
+2. CONTRIBUTING.md — added Releases-page pointer
+3. CODE_OF_CONDUCT.md — minimal Contributor Covenant v2.1 reference
+
 
 **Root cause:** Scaffold included redundant `.enableUpcomingFeature("StrictConcurrency")` in `ARRunnerCore/Package.swift`. Local Swift 6.3.2 silently tolerates it; CI Swift 6.0 treats as hard error. This is the classic toolchain-version gap — your smoke test couldn't catch this because you tested locally against 6.3.2.
 
@@ -88,13 +107,3 @@ Mocks (test target):
 - `FakeHealthKitSubstrate` — actor with deterministic scenario replay (`steadyRun` / `intervals` / `explicit` / `ended`), stable workout UUID for D9 side-store tests, `isScenarioComplete` poll for tests that need to await replay.
 - `InMemoryARMetadataStore` — drop-in `ARMetadataStore` for D9 assertions without filesystem.
 
-Six new tests in `WorkoutControllerIntegrationTests`, all green; total `swift test` is 12/12.
-
-**Learnings (mock-design + Swift 6 in test code):**
-- **Subscribe BEFORE you start.** First test draft had the controller call `substrate.start(...)` *then* `startMetricFanout()`. The substrate's replay task fires the first metric on the next yield, racing the subscription. First metric was lost in `testExplicitScenarioReplaysDeterministicFieldUpdates`. Fix: start the consumer tasks first, then call `substrate.start(...)`. Sounds obvious in hindsight; it's the kind of bug that would silently chew the first heart-rate sample of every run on real hardware too. Worth a callout for Laughlin when she wires the real `HKLiveWorkoutBuilder`.
-- **Swift 6 actor + `func foo() -> AsyncStream` protocol requirement = isolation conformance error.** `[#ConformanceIsolation]`: an actor's instance method is actor-isolated; a non-`async` protocol requirement is nonisolated; conformance fails. Fix is to make the requirement `async` (`func metrics() async -> AsyncStream<...>`). Cheap workaround vs. `nonisolated` (which would bar touching actor state) or `@preconcurrency` (which silences the safety net). Worth a skill — if Weiss/Laughlin hit the same wall on their protocol surfaces, this is the canonical fix.
-- **Tests that capture `var` arrays inside `Task { ... }` trip `[#SendingRisksDataRace]` under Swift 6.** Wrap the accumulator in a tiny in-test `actor Collector { ... }`. Boring, but cheaper than every other option.
-- **`AsyncStream` isn't available on macOS < 10.15.** SPM defaults to ancient macOS deployment when `Package.swift` doesn't list it. Fix: add `.macOS(.v13)` alongside `.iOS(.v18)` / `.watchOS(.v11)`. Linux CI is unaffected (no availability checks), but local `swift build` on macOS now works for everyone.
-- **Multi-subscriber `AsyncStream` replay-on-subscribe pattern.** For connection state and phase, yield the current value into the new continuation immediately, store the continuation under a UUID key, and clean up in `onTermination`. Used in both `MockGlassesFrame` (state stream) and `FakeHealthKitSubstrate` (phase stream). Standard pattern but worth documenting because it's *not* what `AsyncStream(unfolding:)` gives you.
-- **Workspace had untracked WIP from prior agent sessions (Weiss's full `Glasses/` source, Laughlin's `Workout/WorkoutHealthSubstrate.swift` + `InMemoryWorkoutHealthSubstrate.swift`, an expanded `GlassesFrameTransport.swift`, etc.).** None of it was on `origin/main`. Stashed into `.squad/.scratch/amber-stashed/` (gitignored) so this PR stays independent per the brief. When Weiss's and Laughlin's PRs land, the protocol seams I introduced (`GlassesConnectionObserver`, `HealthKitSubstrate`) will need a small reconciliation pass — they're additive and shouldn't conflict, but the eventual merged `WorkoutController` will probably collapse mine into Laughlin's richer one.
-- **Don't trust local file listings to match what `swift build` will see.** Untracked files in the working tree compile silently. If your build error mentions types you don't own, check `find . -name "*.swift"` first.

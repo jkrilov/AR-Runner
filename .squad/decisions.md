@@ -638,3 +638,333 @@ If AR-Runner remains permanently non-commercial, the licensing recommendation fl
 ### Reviewer protocol note
 
 When the prep PR lands, reviewer must not be Richards (authored both audit + plan). **Recommend Killian** — product perspective benefits the README/status framing.
+
+---
+
+## v0.1 Foundation Workstreams (2026-05-15T12:51:36-04:00)
+
+# Decision drop: GlassesFrameTransport protocol surface (v0.1)
+
+**Author:** Weiss
+**Date:** 2026-05-15T12:51:36-04:00
+**PR:** https://github.com/jkrilov/AR-Runner/pull/5
+**Status:** Proposed (locks in once Joe merges PR #5)
+
+## Decision
+
+The `GlassesFrameTransport` protocol — the abstraction Amber's mock and Laughlin's `WorkoutSessionManager` consume — is now stabilised at the following surface:
+
+```swift
+public protocol GlassesFrameTransport: Sendable {
+    var connectionState: GlassesConnectionState { get async }
+    func connectionStates() async -> AsyncStream<GlassesConnectionState>
+    func statusEvents() async -> AsyncStream<GlassesStatusEvent>
+    func connect() async throws
+    func disconnect() async throws
+    func selectLayout(id: String) async throws
+    func updateField(_ update: HUDFieldUpdate) async throws
+    func updateFields(_ updates: [HUDFieldUpdate]) async throws  // default impl
+}
+```
+
+Supporting Sendable value types (also in `ARRunnerCore`):
+- `GlassesConnectionState` — `disconnected | scanning | connecting | connected | reconnecting | failed`
+- `GlassesStatusEvent` — `batteryLevel | signalQuality | dropped(reason, at) | reconnected(gap, at) | reconnectAttemptFailed(attempt, nextDelay)`
+- `GlassesDisconnectReason` — `userInitiated | linkLoss | peerPoweredOff | hostUnavailable | unknown(code)`
+- `HUDFieldUpdate(layoutID: String, fieldIndex: UInt8, value: String)`
+- `GlassesTransportError` — `notConnected | unknownLayout(id) | bluetoothUnavailable | writeFailed(reason) | scanTimeout`
+- `ExponentialBackoff` — pure value, default 1s → 8s, multiplier 2.
+- `CuratedLayoutCatalog` — string ID → on-device numeric slot map (placeholder values pending the layout BUILD step).
+
+## Why
+
+- **D8 (Swift 6 strict concurrency):** every method `async`, every type `Sendable`, no `@MainActor` leakage. Streams are `async`-getters so an `actor` conformance is trivial.
+- **D4 (workout never blocks):** `connectionStates()` + `statusEvents()` give the watch UI and run-metadata side store enough signal to render "HUD offline" and log gaps without ever pausing the workout.
+- **D6 (runtime = field-value updates):** `updateField(_:)` is the hot path; bulk `updateFields(_:)` lets adapters coalesce into one BLE write later if profiling demands it.
+- **Vendor-agnostic:** no `CBUUID` / `Data` types in the protocol — Amber can mock and Laughlin can consume without importing CoreBluetooth.
+
+## Reconnect strategy (locked)
+
+Per D4, on unexpected disconnect:
+1. Transition to `.reconnecting`.
+2. Emit `.dropped(reason:, at:)` once.
+3. Run an exponential-backoff loop (`ExponentialBackoff`, default 1s → 8s) calling `beginConnect()`.
+4. Each failed attempt emits `.reconnectAttemptFailed(attempt:, nextDelay:)`.
+5. On success, emit `.reconnected(gap:, at:)`, transition `.connected`, re-apply the active layout.
+6. Loop ends when `disconnect()` is called by the host (sets `userDisconnectRequested`).
+
+The workout MUST NOT pause during any of this; the watch UI shows "HUD offline" off the connection-state stream.
+
+## Encoding / wire format (locked)
+
+ActiveLook GATT frame: `0xFF | cmdID | format | length(1-2) | queryID? | data | 0xAA` — see `ActiveLookCommand` for the encoder. Tested exhaustively for 1- vs 2-byte length promotion and queryID encoding.
+
+GATT UUID constants live in `ActiveLookGATT` as plain strings (not `CBUUID`) so `ARRunnerCore` stays Linux-buildable.
+
+## What this does NOT decide
+
+- Real curated layout binaries (the layout BUILD step) — still deferred per D6.
+- Phone-side BLE — N/A per D1.
+- Run-metadata side store integration with `JSONARMetadataStore` — Laughlin's PR.
+- Any change to D1–D9.
+
+## Files
+
+- `ARRunnerCore/Sources/ARRunnerCore/Protocols/GlassesFrameTransport.swift`
+- `ARRunnerCore/Sources/ARRunnerCore/Glasses/*` (new directory: 6 files)
+- `ARRunnerCore/Tests/ARRunnerCoreTests/Glasses/*` (new test directory: 3 files)
+- `ARRunnerWatch/Glasses/ActiveLookGlassesAdapter.swift` (new)
+- `ARRunnerWatch/Glasses/GlassesService.swift` (rewritten for new surface)
+- `ARRunnerCore/Package.swift` (added `.macOS(.v13)` for local-dev `swift test`)
+
+---
+
+# Laughlin — WorkoutController surface + WorkoutHealthSubstrate seam (v0.1)
+
+**By:** Laughlin
+**Date:** 2026-05-15T12:51:36-04:00
+**PR:** #7 (`feat/workout-controller`)
+
+## Decision
+
+Two team-relevant surfaces locked by the v0.1 WorkoutController implementation:
+
+### 1. WorkoutController public surface (in ARRunnerCore)
+
+```swift
+public actor WorkoutController {
+    public init(substrate: any WorkoutHealthSubstrate, sessionID: UUID = UUID(), clock: @escaping @Sendable () -> Date = { Date() })
+
+    @discardableResult public func start(activityType: SportType = .running) async throws -> WorkoutState
+    public func pause() async throws
+    public func resume() async throws
+    @discardableResult public func end() async throws -> WorkoutSummary
+
+    public func reportGlassesSignal(_ signal: GlassesConnectivitySignal)   // D4: never pauses
+
+    public nonisolated let states: AsyncStream<WorkoutState>
+    public nonisolated let metrics: AsyncStream<WorkoutMetric>
+}
+```
+
+- **Concurrency:** actor; no `@unchecked Sendable`.
+- **State observation:** plain `AsyncStream` (not Combine, not a third-party reactive lib). Continuations are unbounded-buffered; consumers must drain or accept buffer growth during the workout.
+- **Sport default:** `.running` per D3 — running-only feature surface for v0.1; cycling/walking compile but aren't surfaced.
+- **Glasses input:** D4 enforcement is mechanical — `reportGlassesSignal(.disconnected(...))` does **not** call `substrate.pause()`. Only updates `glassesConnected` and increments `glassesDisconnectCount` for the summary.
+
+### 2. HealthKit seam: `WorkoutHealthSubstrate` protocol (in ARRunnerCore)
+
+```swift
+public protocol WorkoutHealthSubstrate: Sendable {
+    var stateEvents: AsyncStream<WorkoutSubstratePhase> { get }
+    var metricEvents: AsyncStream<WorkoutMetric> { get }
+    func begin(sport: SportType, startedAt: Date) async throws
+    func pause(at date: Date) async throws
+    func resume(at date: Date) async throws
+    func end(at date: Date) async throws -> WorkoutHealthResult
+}
+```
+
+Concrete implementations:
+- `HealthKitWorkoutSubstrate` (in `ARRunnerWatch`) — real `HKWorkoutSession` + `HKLiveWorkoutBuilder` wrapper, watchOS-only via `#if os(watchOS)`.
+- `InMemoryWorkoutHealthSubstrate` (public, in `ARRunnerCore`) — reusable mock for unit tests, SwiftUI previews, and Amber's parallel integration mocks. Records lifecycle calls; supports `emit(metric:)`, `queueNextError(_:)`, `queueResult(_:)`, `failSession(reason:)` for driver hooks.
+
+`WorkoutHealthResult` carries `healthKitWorkoutID` (D9 side-store join key), `endedAt`, `activeDuration`, plus optional totals (`distance`, `energy`, `heartRate`, `elevation`).
+
+### 3. AsyncStream over Combine
+
+Standardize on `AsyncStream` (not Combine `Publisher`) for cross-module observation in this codebase. Reasons:
+- Swift 6 strict concurrency support is first-class.
+- Compiles on Linux SPM (Combine doesn't), keeping `ARRunnerCore` portable.
+- Zero external dependencies.
+
+Consumers needing back-pressure or transforms should use `swift-async-algorithms`, not migrate to Combine.
+
+### 4. Package platform floor
+
+Added `.macOS(.v14)` to `ARRunnerCore/Package.swift` so `AsyncStream` resolves on macOS hosts (CI matrix + local `swift test`). watchOS 11 / iOS 18 remain authoritative for app targets via `project.yml`.
+
+## Implication for the team
+
+- **Weiss (BLE):** the only input from your adapter is `GlassesConnectivitySignal` (a 2-case enum). If your adapter publishes a richer state, pipe just connect/disconnect into `controller.reportGlassesSignal(_:)`.
+- **Amber (mocks):** extend `InMemoryWorkoutHealthSubstrate` or wrap it. Don't re-implement the protocol — your tests will diverge from mine.
+- **Future cycling/walking surfaces:** add a new `HKWorkoutActivityType` mapping in `HealthKitWorkoutSubstrate.activityType(for:)` and surface a new picker; the controller is sport-agnostic.
+
+## Operational note (for Squad conventions)
+
+Multi-agent shared-FS hazard hit me hard at the start of this task — Amber's parallel branch silently shifted HEAD between my git calls. **Recommend:** all parallel agents use `git worktree add ../AR-Runner-{task}` from the first command. I'll draft this as a separate skill/convention proposal.
+
+## Out-of-scope (deferred)
+
+- D9 side-store *implementation* (only the join key is emitted).
+- Phone WCSession sync.
+- Glasses HUD rendering (D6 deferred).
+- Action Button / App Intent wiring (D7 deferred — foreground via app icon).
+
+---
+
+# Amber — HealthKitSubstrate seam (v0.1 integration mocks)
+
+**By:** Amber  
+**Date:** 2026-05-15T12:51:36-04:00  
+**PR:** `feat/integration-mocks`
+
+## Decision
+
+Introducing a small platform-neutral protocol in `ARRunnerCore` so the orchestrator can drive HealthKit-backed workouts without importing `HealthKit.framework` (Linux SPM CI requirement):
+
+```swift
+public protocol HealthKitSubstrate: Sendable {
+    var workoutID: UUID { get async }                      // D9 side-store key
+    var currentPhase: HealthKitWorkoutPhase { get async }
+    func start(sport: SportType, at date: Date) async throws
+    func pause(at date: Date) async throws
+    func resume(at date: Date) async throws
+    func end(at date: Date) async throws
+    func metrics() async -> AsyncStream<WorkoutMetric>
+    func phases() async -> AsyncStream<HealthKitWorkoutPhase>
+}
+```
+
+And a sibling `GlassesConnectionObserver` protocol (separate from `GlassesFrameTransport` so Weiss's richer transport surface can subsume it without my PR fighting):
+
+```swift
+public protocol GlassesConnectionObserver: Sendable {
+    var currentConnectionState: GlassesConnectionState { get async }
+    func connectionStates() async -> AsyncStream<GlassesConnectionState>
+}
+```
+
+`GlassesConnectionState` covers `disconnected / connecting / connected / reconnecting / failed(reason:)` — enough to exercise D4 disconnect/reconnect semantics.
+
+## Why
+
+- Brief required mocks runnable on `swift test` Linux CI; HealthKit has no Linux story.
+- Wanted a stable, additive seam Laughlin can adopt for her `WorkoutController` on watchOS, with `HKLiveWorkoutBuilder` behind a thin adapter.
+- Kept the surface deliberately minimal: just the calls a v0.1 orchestrator needs. No live-builder events, no statistics queries — Laughlin can extend.
+
+## Reconciliation expected at merge
+
+If Laughlin's `feat/workout-controller` introduces a richer substrate (e.g., the `WorkoutHealthSubstrate` shape with `WorkoutHealthResult` aggregates I saw in stashed WIP), the merge should:
+- Keep her richer types as canonical.
+- Either delete `HealthKitSubstrate` here or have it conform to her protocol (it's the simpler subset).
+- Update `WorkoutController` and `FakeHealthKitSubstrate` accordingly.
+
+Same pattern for Weiss: if her merged `GlassesFrameTransport` already surfaces a `connectionStates()` async stream, the standalone `GlassesConnectionObserver` protocol can be folded in or deprecated.
+
+Both are additive seams introduced behind a `feat/` branch — `.gitattributes` `merge=union` doesn't help with `.swift` files, but the conflict surface is small and well-documented.
+
+## Mock decisions
+
+- **`MockGlassesFrame.MockGlassesFailureConfig`** — failures are one-shot per call (`failNextConnect` etc) so tests can sequence "fail then succeed" without rebuilding the mock. Simpler than priority queues.
+- **`HealthKitScenario.explicit([WorkoutMetric])`** — escape hatch for snapshot-style tests. Carrying the full metric (with timestamp + unit) keeps determinism end-to-end.
+- **`InMemoryARMetadataStore`** — D9 substrate that lives in the test target so prod `ARMetadataStore` stays filesystem-only.
+
+## Open questions for Joe / team
+
+- Should `WorkoutController` move to a richer state machine (`WorkoutPhase` like the stashed `WorkoutState.swift` model) for v0.1, or is the bool-based `isRunning` enough until Laughlin's controller lands?
+- Should the controller persist the side-store row even when the workout ends with zero metrics (e.g., immediate user cancel)?  Currently it does — feels right but worth confirming.
+
+---
+
+# Decision Drop — CI / Security Workflow Architecture
+
+**Author:** Richards (Lead / Architect)
+**Date:** 2026-05-14T16:51:53-04:00
+**Branch:** `chore/ci-workflows` (off `chore/macos-build-validation`)
+**Status:** Proposed — pending merge of PR
+**Related:** D1–D9, "No Direct Main" directive (2026-05-14T15:44:37-04:00), Amber's macOS build validation (2026-05-14T16:28:08-04:00), XcodeGen tooling decision (2026-05-14T16:09:31-04:00)
+
+## What
+
+Add three CI workflows to `.github/workflows/`, sitting alongside the Squad orchestration workflows but reserved under their own naming prefix (`ci-*.yml` for build/test, `codeql.yml` for security; `squad-*.yml` remains orchestration-only):
+
+1. **`ci-core-tests.yml`** — Linux runner, `swift:6.0-jammy` container, `swift test` on `ARRunnerCore`.
+2. **`ci-build.yml`** — macOS-15 runner, 4-way matrix, `xcodegen generate` + `xcodebuild` for `ARRunnerWatch`, `ARRunnerPhone`, `ARRunnerWidgetsPhone`, `ARRunnerWidgetsWatch`.
+3. **`codeql.yml`** — macOS-15 runner, GitHub CodeQL Swift analysis with `security-extended` queries on PR + weekly schedule.
+
+Full operational documentation is in `docs/dev/ci-workflows.md`.
+
+## Why
+
+Two real-code branches are about to land (Weiss's BLE wrapper, Laughlin's `WorkoutController`). Without CI, those PRs go in on the strength of one local macOS build per author. Amber's validation pass found three real scaffold bugs that would have shipped silently — every subsequent PR has the same exposure. CI is the cheapest insurance we'll ever buy on this project.
+
+## The decisions, with trade-offs
+
+### ADR — Runner mix: Linux for Core, macOS for shells
+
+**Decision:** Split `swift test` (Linux) from `xcodebuild` (macOS).
+
+**Spike result:** `ARRunnerCore` imports only `Foundation` (sources) and `XCTest` + `Foundation` (tests). No HealthKit, CoreBluetooth, WatchKit, WatchConnectivity, UIKit, AppKit. `SwiftPM`'s `platforms:` block is a minimum-Apple-version declaration — it doesn't gate Linux compilation. The pure-Swift Core compiles and tests cleanly on Linux Swift 6.
+
+**Alternatives considered:**
+- **All-macOS.** Simpler — one runner type, one mental model. Costs ~10x per minute. With macOS billed at 10x Linux and core tests being the most-frequently-failing job (every PR exercises model serialization), the rational answer is to keep the fast-iterating job on the cheap runner.
+- **All-Linux.** Impossible — app shells need Apple SDKs (WatchKit, HealthKit, WidgetKit, UIKit).
+
+**Cost of the chosen split:** ARRunnerCore *must* stay platform-agnostic. The moment someone imports HealthKit into Core, this job fails on Linux. **That cost is actually a feature** — it enforces ADR-001 (SPM-shared Core) and ADR-007 (`GlassesFrameProtocol` behind a protocol boundary) mechanically. Trade named, accepted.
+
+### ADR — Trigger strategy: PR + push-to-main only
+
+**Decision:** Workflows run on `pull_request` (any base) and `push` to `main`. Never on branch pushes outside of a PR.
+
+**Alternative:** Run on every branch push. Faster feedback for devs working locally, but Apple-Watch devs already have a Mac on their desk (D-2026-05-14T16:09:31-04:00 dev workflow split) — they get faster feedback running `xcodebuild` directly. Branch-push CI would burn macOS minutes for marginal value.
+
+**Cost:** A dev who pushes a branch without opening a PR gets no signal until they file the PR. Acceptable — opening a PR is one click.
+
+### ADR — Concurrency cancellation on PRs, not on main
+
+**Decision:** All three workflows use `concurrency: { group: ..., cancel-in-progress: ${{ github.event_name == 'pull_request' }} }`. Rapid pushes to a PR branch cancel in-flight runs; pushes to `main` are never cancelled.
+
+**Why:** macOS minutes are the budget. A dev rebasing or force-pushing a PR five times shouldn't cost five full matrix builds. But on `main`, we want a clean, linear, never-cancelled history of green/red. Different audiences, different policies.
+
+### ADR — Caching strategy
+
+**Decision:**
+- Linux: cache `ARRunnerCore/.build` + `~/.cache/org.swift.swiftpm`, keyed on `Package.swift` + `Package.resolved`.
+- macOS: cache `~/Library/Caches/org.swift.swiftpm`, `DerivedData/**/SourcePackages`, and `DerivedData` itself, keyed on `project.yml` + `Package.swift`.
+
+**Trade-off named:** DerivedData caches are large (hundreds of MB) and frequently invalidated by Xcode version drift. They will sometimes miss; that's fine — they're an optimization, not correctness. If cache restore costs ever exceed cache-hit savings, drop the DerivedData cache and keep only the SPM caches.
+
+### ADR — CodeQL builds only ARRunnerWatch
+
+**Decision:** CodeQL drives off a single `xcodebuild` of `ARRunnerWatch` (the largest single dependency closure — pulls Core + watch shell + widget extension). Not the full matrix.
+
+**Alternative:** Build all four schemes under CodeQL. Marginal coverage gain (CodeQL re-analyses the same Swift sources), large minute cost (CodeQL Swift is the slowest of the three workflows).
+
+**Cost:** If a phone-only or widget-only file is somehow never visited by the watch build's compile, CodeQL won't analyze it. In practice, Core is the only shared compile unit and it's visited. Acceptable.
+
+### ADR — `security-extended` queries
+
+**Decision:** Use the `security-extended` CodeQL query suite, not just the default.
+
+**Trade-off:** ~30% more analysis time, broader rule coverage. For a security-sensitive surface (BLE pairing, HealthKit data handling, App Group sharing), the extra signal is worth the minutes.
+
+## Punt list — what we are deferring and why
+
+| Concern | Status | Rationale |
+| --- | --- | --- |
+| Lint (swiftlint vs swift-format) | **Deferred** | Joe + Richards to pick a tool with intent, not under deadline. No code has been written yet that exercises the difference. TODO captured in `docs/dev/ci-workflows.md`. |
+| Code coverage | **Deferred** | Coverage on a scaffold-only test suite (6 Codable round-trips) is theatre. Re-evaluate after Weeks 1–3 of Weiss + Laughlin land real logic. |
+| Release / TestFlight | **Out of scope** | Requires signing identity + secrets management. Separate workflow, separate decision. |
+| Dependabot | **Deferred** | Zero external SPM deps today. Enable when ActiveLook SDK or any other vendor SPM dep lands. |
+| Branch protection / required checks | **Manual** | Joe needs to toggle "Require status checks to pass before merging" on `main` after first green run. Workflows are designed to be the contract. |
+| Linux build of app shells | **Not viable** | App shells depend on WatchKit / UIKit / HealthKit / WidgetKit — Apple-only. |
+
+## What Weiss and Laughlin need to know
+
+1. **Don't import Apple-framework code into `ARRunnerCore`.** It will fail the Linux core-tests job and block your PR. Concrete Apple-framework code lives in the app/extension targets. Use protocol boundaries in Core (ADR-007).
+2. **Your PR must pass three required check sets**: `ci-core-tests`, all 4 `ci-build` matrix jobs, and `codeql`. Plan for ~15 min of CI time per PR after cache warm-up.
+3. **Local validation matches CI 1:1.** See the repro block in `docs/dev/ci-workflows.md`. If it builds locally, it builds in CI — and vice versa.
+4. **`@preconcurrency import` of the ActiveLook SDK stays in the watch/phone targets**, not Core. This was already the D8 plan; it's now mechanically enforced by the Linux core-tests job.
+
+## Verification
+
+This branch (`chore/ci-workflows`) sits on top of `chore/macos-build-validation` (Amber's three scaffold fixes), so the workflows are validated against the post-fix scaffold. When `chore/macos-build-validation` merges to `main`, this branch rebases cleanly.
+
+## Files
+
+- `.github/workflows/ci-core-tests.yml`
+- `.github/workflows/ci-build.yml`
+- `.github/workflows/codeql.yml`
+- `docs/dev/ci-workflows.md`
+- `.squad/skills/swift-linux-macos-runner-split/SKILL.md` (reusable pattern)
