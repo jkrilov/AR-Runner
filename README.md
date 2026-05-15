@@ -9,7 +9,7 @@
 > HealthKit integration are still ahead. Issues for discussion are welcome;
 > outside PRs are paused until v0.1 lands (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
-AR-Runner is a native Apple Watch and iPhone running companion for ActiveLook AR glasses.
+AR-Runner is a native Apple Watch and iPhone running companion for [ActiveLook](https://www.activelook.net) AR glasses.
 The v0.1 foundation centers the workout on the watch, mirrors live state to the phone, and pushes HUD-friendly metrics to the glasses over BLE.
 
 ## What is in this repo

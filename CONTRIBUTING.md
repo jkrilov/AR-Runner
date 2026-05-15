@@ -11,7 +11,8 @@ ideas, report bugs, or ask about direction.
 **Pull requests from outside contributors are paused until v0.1 lands** so the
 architecture (D1–D9 in [`.squad/decisions.md`](.squad/decisions.md)) can settle
 without drive-by churn. Once v0.1 ships, this policy will be revisited and this
-file updated.
+file updated. Watch the [Releases page](https://github.com/jkrilov/AR-Runner/releases) —
+when v0.1 is tagged, this contributor policy will be revisited and updated here.
 
 ## How AR-Runner is built
 
