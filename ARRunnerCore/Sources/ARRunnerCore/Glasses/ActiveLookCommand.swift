@@ -59,12 +59,11 @@ public enum ActiveLookCommand {
     }
 
     /// Activate a baked layout by its on-device numeric ID. (CmdID 0x62)
-    /// `text` is optional initial value for the layout's primary slot.
-    public static func displayLayout(id: UInt8, text: String = "") -> [UInt8] {
-        var payload: [UInt8] = [id]
-        payload.append(contentsOf: Array(text.utf8))
-        payload.append(0x00) // null terminator
-        return encode(id: .layoutDisplay, payload: payload)
+    ///
+    /// Per spec the activation frame carries only the layout ID byte;
+    /// initial slot content is pushed via `updateWidget(...)` afterwards.
+    public static func displayLayout(id: UInt8) -> [UInt8] {
+        encode(id: .layoutDisplay, payload: [id])
     }
 
     /// Update one slot inside the currently displayed layout. (CmdID 0x3A)

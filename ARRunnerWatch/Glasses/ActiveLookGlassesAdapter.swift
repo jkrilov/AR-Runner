@@ -190,22 +190,40 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     }
 
     fileprivate func handleConnected(_ peripheral: CBPeripheral) {
-        peripheral.discoverServices([CBUUID(string: ActiveLookGATT.commandService)])
+        peripheral.discoverServices([
+            CBUUID(string: ActiveLookGATT.commandService),
+            CBUUID(string: ActiveLookGATT.batteryService)
+        ])
     }
 
     fileprivate func handleServicesDiscovered(_ peripheral: CBPeripheral) {
-        guard let service = peripheral.services?.first(where: {
-            $0.uuid == CBUUID(string: ActiveLookGATT.commandService)
-        }) else {
-            failPendingConnect(with: GlassesTransportError.writeFailed(reason: "command service missing"))
+        guard let services = peripheral.services else {
+            failPendingConnect(with: GlassesTransportError.writeFailed(reason: "no services"))
             transition(to: .failed)
             return
         }
-        peripheral.discoverCharacteristics([
-            CBUUID(string: ActiveLookGATT.rxCharacteristic),
-            CBUUID(string: ActiveLookGATT.txCharacteristic),
-            CBUUID(string: ActiveLookGATT.controlChar)
-        ], for: service)
+
+        var sawCommandService = false
+        for service in services {
+            if service.uuid == CBUUID(string: ActiveLookGATT.commandService) {
+                sawCommandService = true
+                peripheral.discoverCharacteristics([
+                    CBUUID(string: ActiveLookGATT.rxCharacteristic),
+                    CBUUID(string: ActiveLookGATT.txCharacteristic),
+                    CBUUID(string: ActiveLookGATT.controlChar)
+                ], for: service)
+            } else if service.uuid == CBUUID(string: ActiveLookGATT.batteryService) {
+                peripheral.discoverCharacteristics(
+                    [CBUUID(string: ActiveLookGATT.batteryLevelChar)],
+                    for: service
+                )
+            }
+        }
+
+        if !sawCommandService {
+            failPendingConnect(with: GlassesTransportError.writeFailed(reason: "command service missing"))
+            transition(to: .failed)
+        }
     }
 
     fileprivate func handleCharacteristicsDiscovered(_ service: CBService) {
@@ -217,10 +235,21 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
             case ActiveLookGATT.txCharacteristic.uppercased(),
                  ActiveLookGATT.controlChar.uppercased():
                 peripheral?.setNotifyValue(true, for: characteristic)
+            case ActiveLookGATT.batteryLevelChar.uppercased():
+                // Subscribe to the standard Battery Service so periodic
+                // level pushes reach `handleBatteryLevel(_:)` via the
+                // coordinator. Without this the battery handler is dead code.
+                peripheral?.setNotifyValue(true, for: characteristic)
+                peripheral?.readValue(for: characteristic)
             default:
                 break
             }
         }
+
+        // Only flip to .connected once the command-service RX characteristic
+        // is in hand. Battery characteristics arrive in a later callback;
+        // we don't gate readiness on them.
+        guard service.uuid == CBUUID(string: ActiveLookGATT.commandService) else { return }
 
         if rxCharacteristic != nil {
             // If we were reconnecting after a drop, emit a `.reconnected` status.

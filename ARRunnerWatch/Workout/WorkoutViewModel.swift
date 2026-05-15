@@ -28,6 +28,7 @@ final class WorkoutViewModel {
     private(set) var glassesConnected: Bool = false
 
     private var controller: WorkoutController?
+    private var transport: (any GlassesFrameTransport)?
     private var stateTask: Task<Void, Never>?
     private var metricTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
@@ -36,9 +37,14 @@ final class WorkoutViewModel {
     private var startedAt: Date?
 
     private let substrateFactory: @Sendable () -> any WorkoutHealthSubstrate
+    private let transportFactory: (@Sendable () -> any GlassesFrameTransport)?
 
-    init(substrateFactory: @escaping @Sendable () -> any WorkoutHealthSubstrate) {
+    init(
+        substrateFactory: @escaping @Sendable () -> any WorkoutHealthSubstrate,
+        transportFactory: (@Sendable () -> any GlassesFrameTransport)? = nil
+    ) {
         self.substrateFactory = substrateFactory
+        self.transportFactory = transportFactory
     }
 
     func start(activity: SportType = .running) async {
@@ -48,6 +54,18 @@ final class WorkoutViewModel {
         let controller = WorkoutController(substrate: substrateFactory())
         self.controller = controller
         attachStreams(to: controller)
+
+        // v0.2 #1: bring up the glasses link alongside the workout. Per D4
+        // the connect attempt is opportunistic — we never block the workout
+        // start on its outcome.
+        if let transportFactory {
+            let transport = transportFactory()
+            self.transport = transport
+            attachGlasses(transport: transport)
+            Task.detached { [transport] in
+                try? await transport.connect()
+            }
+        }
 
         do {
             let state = try await controller.start(activityType: activity)
@@ -86,9 +104,11 @@ final class WorkoutViewModel {
             let summary = try await controller.end()
             launchState = .ended(summary)
             stopTasks()
+            await teardownTransport()
         } catch {
             launchState = .failed(String(describing: error))
             stopTasks()
+            await teardownTransport()
         }
     }
 
@@ -183,5 +203,11 @@ final class WorkoutViewModel {
         elapsedTask?.cancel(); elapsedTask = nil
         glassesStateTask?.cancel(); glassesStateTask = nil
         glassesStatusTask?.cancel(); glassesStatusTask = nil
+    }
+
+    private func teardownTransport() async {
+        guard let transport else { return }
+        try? await transport.disconnect()
+        self.transport = nil
     }
 }

@@ -7,7 +7,8 @@ import SwiftUI
 @MainActor
 struct WorkoutView: View {
     @State private var viewModel = WorkoutViewModel(
-        substrateFactory: { HealthKitWorkoutSubstrate() }
+        substrateFactory: { HealthKitWorkoutSubstrate() },
+        transportFactory: { GlassesTransportFactory.makeDefault() }
     )
 
     var body: some View {
