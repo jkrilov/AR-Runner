@@ -11,11 +11,14 @@ public enum LifecycleEvent: Sendable, Codable, Equatable {
 }
 
 public enum WCMessage: Sendable, Codable, Equatable {
-    public static let currentSchemaVersion = 1
+    /// v1 — layoutConfig / workoutTick (per-metric) / workoutLifecycle.
+    /// v2 — adds workoutSnapshot for the iPhone live mirror (v0.2 #3).
+    public static let currentSchemaVersion = 2
 
     case layoutConfig(HUDLayout)
     case workoutTick(WorkoutMetric)
     case workoutLifecycle(LifecycleEvent)
+    case workoutSnapshot(WorkoutTickMessage)
 
     public var schemaVersion: Int {
         Self.currentSchemaVersion
@@ -27,19 +30,24 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case layout
         case metric
         case lifecycleEvent
+        case snapshot
     }
 
     private enum Kind: String, Codable {
         case layoutConfig
         case workoutTick
         case workoutLifecycle
+        case workoutSnapshot
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
 
-        guard schemaVersion == Self.currentSchemaVersion else {
+        // Accept current and any earlier schema we still know how to decode.
+        // v1 lacked `workoutSnapshot`; older peers will simply never produce
+        // that case so backward compatibility is automatic.
+        guard schemaVersion >= 1, schemaVersion <= Self.currentSchemaVersion else {
             throw WCMessageCodingError.unsupportedSchemaVersion(schemaVersion)
         }
 
@@ -50,6 +58,8 @@ public enum WCMessage: Sendable, Codable, Equatable {
             self = .workoutTick(try container.decode(WorkoutMetric.self, forKey: .metric))
         case .workoutLifecycle:
             self = .workoutLifecycle(try container.decode(LifecycleEvent.self, forKey: .lifecycleEvent))
+        case .workoutSnapshot:
+            self = .workoutSnapshot(try container.decode(WorkoutTickMessage.self, forKey: .snapshot))
         }
     }
 
@@ -67,6 +77,9 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case .workoutLifecycle(let event):
             try container.encode(Kind.workoutLifecycle, forKey: .kind)
             try container.encode(event, forKey: .lifecycleEvent)
+        case .workoutSnapshot(let snapshot):
+            try container.encode(Kind.workoutSnapshot, forKey: .kind)
+            try container.encode(snapshot, forKey: .snapshot)
         }
     }
 }
