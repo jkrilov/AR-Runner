@@ -8,6 +8,7 @@ import SwiftUI
 struct WorkoutView: View {
     @State private var viewModel = WorkoutViewModel(
         substrateFactory: { HealthKitWorkoutSubstrate() },
+        transportFactory: { GlassesTransportFactory.makeDefault() },
         mirror: ARRunnerWatchEnvironment.shared.mirror
     )
 

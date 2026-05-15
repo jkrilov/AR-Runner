@@ -50,14 +50,24 @@ final class WorkoutControllerIntegrationTests: XCTestCase {
         }
     }
 
-    /// Forward substrate metric emissions into the glasses as `HUDFieldUpdate`s
+    /// Forward controller metric emissions into the glasses as `HUDFieldUpdate`s
     /// so D6 traffic is observable on the mock. Returns the task for teardown.
+    ///
+    /// Subscribes to `controller.metrics` (the controller's re-published stream)
+    /// rather than `substrate.metricEvents` directly. The substrate stream is
+    /// single-consumer; the controller already attaches its own iterator inside
+    /// `start()`, so a second test-side iterator races it for each emission.
+    /// On Linux's scheduler the controller's forwarder drains everything before
+    /// the test bridge wakes up, leaving the glasses with zero updates and the
+    /// D4 "metric updates reach glasses before disconnect" assertion firing on
+    /// the 2 s timeout. Fanning out via `controller.metrics` is also the right
+    /// layering — glasses should reflect what the controller accepted.
     private func bridgeMetrics(
-        from substrate: FakeHealthKitSubstrate,
+        from controller: WorkoutController,
         to glasses: MockGlassesFrame,
         layoutID: String
     ) -> Task<Void, Never> {
-        let stream = substrate.metricEvents
+        let stream = controller.metrics
         return Task {
             var fieldIndex: UInt8 = 0
             for await metric in stream {
@@ -107,7 +117,7 @@ extension WorkoutControllerIntegrationTests {
         let controller = WorkoutController(substrate: substrate)
 
         let glassesBridge = await bridgeGlasses(glasses, into: controller)
-        let metricBridge = bridgeMetrics(from: substrate, to: glasses, layoutID: "balanced-run")
+        let metricBridge = bridgeMetrics(from: controller, to: glasses, layoutID: "balanced-run")
         defer {
             glassesBridge.cancel()
             metricBridge.cancel()

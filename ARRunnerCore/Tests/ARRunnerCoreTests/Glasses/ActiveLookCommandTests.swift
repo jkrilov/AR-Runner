@@ -62,6 +62,15 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(frame.last, 0xAA)
     }
 
+    func testDisplayLayoutFrameCarriesOnlyTheLayoutID() {
+        // v0.2 spec compliance: cmd 0x62 takes a single layout-ID byte as
+        // payload. Initial slot content is pushed via widgetUpdate, NOT
+        // appended here. Regression guard for the v0.1 implementation that
+        // appended UTF-8 text + a null terminator.
+        let frame = ActiveLookCommand.displayLayout(id: 0x02)
+        XCTAssertEqual(frame, [0xFF, 0x62, 0x00, 0x06, 0x02, 0xAA])
+    }
+
     func testGATTUUIDsAreCanonical() {
         // Sanity-check the constants against the iOS SDK source — failing this
         // means we typo'd the GATT profile and would fail to discover services.

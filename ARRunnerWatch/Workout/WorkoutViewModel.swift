@@ -87,6 +87,9 @@ final class WorkoutViewModel {
         self.controller = controller
         attachStreams(to: controller)
 
+        // v0.2 #1: bring up the glasses link alongside the workout. Per D4
+        // the connect attempt is opportunistic — we never block the workout
+        // start on its outcome.
         if let transportFactory {
             let transport = transportFactory()
             self.transport = transport
