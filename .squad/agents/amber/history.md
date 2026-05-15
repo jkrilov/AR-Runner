@@ -22,6 +22,19 @@ Both Weiss (#5 `feat/ble-wrapper`) and Laughlin (#7 `feat/workout-controller`) m
 
 47/47 swift tests pass post-rebase, including 6 new integration tests in `WorkoutControllerIntegrationTests`.
 
+### 2026-05-15T14:33:20-04:00 — v0.2 #4 anticipatory D4 resilience tests (PR #8)
+
+Wrote `DisconnectResilienceTests.swift` BEFORE Weiss + Laughlin implement the auto-reconnect / haptic surface. Patterns worth keeping:
+
+- **`XCTSkipIf(true, "EXPECTED-FAILING-UNTIL: ...")` is the right anticipatory-test idiom under XCTest.** It (a) keeps CI green, (b) leaves the test body compiled and live so it doesn't bit-rot, (c) makes the "delete this one line when the impl lands" workflow obvious to the reviewer. Cleaner than commenting tests out, cleaner than skipping the suite. Swift Testing's `.disabled` would be slicker but the rest of the codebase is XCTest, so don't mix.
+- **Contract gaps belong in the test docstring AND in `decisions/inbox/`.** The test docstring tells a code reviewer "here's what's expected"; the inbox entry tells the implementing agent "here's the menu of fixes." Both reference the same test name so they cross-link.
+- **Always wait for the bridge task to forward signals before asserting controller state.** First pass had three real failures (not the expected ones) because I asserted `controller.recordedDisconnectCount() >= 1` immediately after `simulateDisconnect`. The bridge `Task { for await state in stream }` runs on its own scheduler and the test thread races it. Fix: every cross-actor signal forwarding assertion goes inside a `waitUntil { … }` that polls the *consuming* side's observable state, not the *producing* side. Same applied to status-event collection (`statusCollector.droppedCount == N`).
+- **Test the "exactly N" contract on both ends of the stream.** For multi-cycle disconnect/reconnect: assert N drops on the transport's `statusEvents()` AND N count increments on `controller.recordedDisconnectCount()`. Mismatches between those numbers are exactly the kind of bug the haptic-1:1 contract needs to catch.
+- **Don't blindly delete unstaged WIP from another agent's branch.** When I checked out my branch, Weiss's uncommitted v0.2 BLE work travelled with the working tree (it was on `feat/v02-ble-activelook` HEAD). Stashed it with a clearly-labelled message (`weiss-wip-on-ble-activelook`) instead of nuking. Restore it with `git stash apply stash@{N}` after switching back. Skill writeup queued: see `.squad/skills/anticipatory-contract-tests/`.
+- **Resilience contract gaps surfaced (also in inbox entry):** auto-reconnect surface absent on `GlassesFrameTransport` (Weiss); no layout auto-re-apply post-reconnect (Weiss); `glassesDisconnectCount` is global not session-scoped (Laughlin); no dedicated `controller.alerts` stream for haptic triggers (Laughlin); `reportGlassesSignal` mutates state even in `.ended` phase (Laughlin, low pri).
+
+PR #8 ships 7 anchoring tests + 3 expected-failing skip-marked tests. `swift test` → 57 pass / 3 skipped / 0 fail.
+
 ## Archive
 
 See `history-archive.md` for earlier 2026-05-14 learnings (scaffold validation, CI toolchain, integration mocks v0.1, PR #4 nit follow-up).
