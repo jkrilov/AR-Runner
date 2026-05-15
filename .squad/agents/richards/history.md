@@ -69,3 +69,23 @@ Joe approved all 5 of my open audit questions verbatim and asked me to execute. 
 **Pre-flight verified clean:** `swift build` (10/10 modules), `xcodegen generate`, and the post-edit `grep -r  .` returning zero hits across the entire working tree.
 
 **Reviewer protocol enforced:** I did not self-approve. Killian is the designated reviewer per the audit's §9 step 9 recommendation and the reviewer-rejection-protocol spirit. Coordinator should spawn Killian next.
+
+---
+
+### 2026-05-15: Killian Review — PR #4 (Public-Repo Prep) — 🟡 Approved with 3 Nits
+
+**Date:** 2026-05-15T14:35:44Z  
+**Reviewer:** Killian (Product Strategist)  
+**Decision:** Approved to merge
+
+**Verdict:** No blockers. Implementation matches all 5 locked answers from Joe and audit checklist. SPDX headers verified on all 23 files (locked two-line format).  Decision drops are clear and well-reasoned. README hierarchy preserved (Squad footnote in footer, value prop leads).
+
+**Lockout status:** Richards is now fully locked out of follow-up revisions on this branch. Per reviewer-rejection-protocol, if Joe wants the 3 nits folded in pre-merge, either Killian (who raised them) or a fresh agent like Amber must implement. Richards cannot touch chore/public-repo-prep again until merged and closed.
+
+**Non-blocking nits (3) — Joe decides: fold in or punt:**
+1. **Nit A (README):** Add hyperlink to ActiveLook website/GitHub org on first mention (help strangers orient).
+2. **Nit B (CONTRIBUTING.md):** One-liner pointing to Releases page (so outside readers know how to track v0.1 ship date).
+3. **Nit C (governance):** Add minimal CODE_OF_CONDUCT.md (GitHub community profile will flag absence once public).
+
+**Next action:** Joe either (a) merges as-is, or (b) requests nit fold-in via Killian or Amber. Richards will remain locked pending merge.
+
