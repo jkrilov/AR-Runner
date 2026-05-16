@@ -13,14 +13,17 @@ struct WorkoutView: View {
     )
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            hudOfflineBanner
-            metricsSection
-            Divider()
-            controlsSection
-            statusFooter
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                hudOfflineBanner
+                metricsSection
+                Divider()
+                controlsSection
+                statusFooter
+            }
+            .padding(.horizontal)
+            .padding(.bottom)
         }
-        .padding()
         .navigationTitle("Run")
         .confirmationDialog(
             "Finish Run?",

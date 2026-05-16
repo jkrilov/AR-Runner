@@ -88,6 +88,9 @@ targets:
         NSHealthUpdateUsageDescription: AR-Runner stores run summaries and AR metadata alongside HealthKit workouts.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
         UILaunchScreen: {}
     entitlements:
       path: Config/ARRunnerPhone.entitlements

@@ -59,9 +59,54 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         metricContinuation.finish()
     }
 
+    // MARK: - Authorization
+
+    /// Types this substrate writes to HealthKit. Workouts are the canonical
+    /// share target; the rest are the per-sample types `HKLiveWorkoutBuilder`
+    /// persists onto the resulting `HKWorkout`.
+    public static var sharedTypes: Set<HKSampleType> {
+        var types: Set<HKSampleType> = [HKObjectType.workoutType()]
+        if let heartRate = HKQuantityType.quantityType(forIdentifier: .heartRate) { types.insert(heartRate) }
+        if let distance = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning) { types.insert(distance) }
+        if let cycling = HKQuantityType.quantityType(forIdentifier: .distanceCycling) { types.insert(cycling) }
+        if let energy = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) { types.insert(energy) }
+        return types
+    }
+
+    /// Types this substrate reads back from HealthKit (statistics off the
+    /// live builder, plus the workout objects themselves on end).
+    public static var readTypes: Set<HKObjectType> {
+        var types: Set<HKObjectType> = [HKObjectType.workoutType()]
+        if let heartRate = HKQuantityType.quantityType(forIdentifier: .heartRate) { types.insert(heartRate) }
+        if let distance = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning) { types.insert(distance) }
+        if let cycling = HKQuantityType.quantityType(forIdentifier: .distanceCycling) { types.insert(cycling) }
+        if let energy = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) { types.insert(energy) }
+        return types
+    }
+
+    /// Request HealthKit authorization for every type this substrate produces
+    /// or consumes. Must complete successfully **before** `begin(...)` —
+    /// without it, `HKLiveWorkoutBuilder` enters its terminal `Error(7)` state
+    /// the moment `beginCollection` is invoked and refuses all transitions.
+    /// Safe to call repeatedly: HealthKit treats a re-request as a no-op once
+    /// the user has answered, so the watch app calls this on launch *and* the
+    /// substrate calls it again defensively from `begin(...)`.
+    public static func requestAuthorization(healthStore: HKHealthStore = HKHealthStore()) async throws {
+        guard HKHealthStore.isHealthDataAvailable() else {
+            throw WorkoutHealthSubstrateError.notAuthorized
+        }
+        try await healthStore.requestAuthorization(toShare: sharedTypes, read: readTypes)
+    }
+
     // MARK: - WorkoutHealthSubstrate
 
     public func begin(sport: SportType, startedAt: Date) async throws {
+        // Defensive: HK Error(7) on `beginCollection` is almost always a
+        // pre-flight failure (missing entitlement / usage-string / un-granted
+        // auth). Re-requesting here is cheap once the user has answered, and
+        // surfaces a clean `notAuthorized` if HealthKit is unavailable.
+        try await Self.requestAuthorization(healthStore: healthStore)
+
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = Self.activityType(for: sport)
         configuration.locationType = .outdoor
