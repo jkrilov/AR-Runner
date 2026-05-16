@@ -182,3 +182,22 @@ Richards's second fix (commit 079cb73, chore/ci-workflows) resolved ARRunnerWatc
 
 **Out-of-scope finding (separate issue, not fixed in this PR):**
 - After the WidgetKit fix, `simctl install` surfaced a *different* error: "This app's bundle identifier does not start with its parent app's bundle identifier ... WKCompanionAppBundleIdentifier=com.arrunner.phone vs watch app bundle id=com.arrunner.watch". Pre-existing companion-bundle-id mismatch. Documented in PR body so it doesn't get lost; needs a follow-up (likely set watch bundle id to `com.arrunner.phone.watchkitapp` or similar to satisfy the prefix rule).
+
+---
+
+### 2026-05-15T18:15:00-04:00 — PR #18: WKCompanion bundle-ID prefix rename
+
+Followed up on the out-of-scope finding from PR #16/#17. Renamed watch + watch-widget bundle IDs so the watch app's `CFBundleIdentifier` is a strict dotted-prefix descendant of the phone app's:
+
+- `ARRunnerWatch`:        `com.arrunner.watch` → `com.arrunner.phone.watchkitapp`
+- `ARRunnerWidgetsWatch`: `com.arrunner.watch.widgets` → `com.arrunner.phone.watchkitapp.widgets`
+- Phone + phone-widgets unchanged (already prefix-compliant: `com.arrunner.phone` / `com.arrunner.phone.widgets`).
+- `WKCompanionAppBundleIdentifier` already pointed at `com.arrunner.phone` — kept as-is.
+
+**Learnings:**
+
+- **Apple's WKCompanion prefix rule (hard).** A watchOS app's `CFBundleIdentifier` must be a strict dotted-prefix descendant of the iPhone host app's `CFBundleIdentifier` declared in `WKCompanionAppBundleIdentifier`. `com.arrunner.watch` is *not* a descendant of `com.arrunner.phone` regardless of how "obvious" the naming feels. The convention Apple's own templates use is `<phone-id>.watchkitapp`. The same prefix rule cascades to embedded `.appex` plugins — `ARRunnerWidgetsWatch` had to become `com.arrunner.phone.watchkitapp.widgets`, not just `com.arrunner.phone.widgets` (which would belong to the phone app, not the watch).
+- **The error doesn't appear at build time, only at install time.** `xcodebuild` is happy to produce an .app with a non-compliant companion ID. `xcrun simctl install` is the first thing to reject it. SwiftUI Previews fail silently for the same reason. So "build succeeded" is not a sufficient bar for watch-target work — always do at least one `simctl install` per PR that touches watch bundle config.
+- **Audit insight: functional bundle IDs live in exactly one place.** Because Info.plist values are inlined into `project.yml` (no separate `Config/*.plist` files in this repo) and the entitlements files only reference the `group.com.arrunner.shared` app group (which is its own identifier, unrelated to bundle IDs), `project.yml` is the *only* file that carries functional bundle-ID strings. Logger subsystem labels (`Logger(subsystem: "com.arrunner.watch", ...)`) and `DispatchQueue` labels look bundle-ID-shaped by convention but are free-form strings — changing them risks breaking log filters and is out of scope for a bundle-ID rename. Leave them.
+- **Layout decision (locked in):** root = `com.arrunner.phone`; everything watch-side sits under `com.arrunner.phone.watchkitapp.*`. If we ever add a phone-side extension (Share/Notification/etc.), it goes under `com.arrunner.phone.*` directly. App group ID (`group.com.arrunner.shared`) is independent of bundle IDs and does not need to follow the prefix rule.
+- **Verification recipe for any future bundle-ID change:** (1) `xcodegen generate`; (2) build both schemes against sims; (3) `xcrun simctl install <watch-sim-UDID> <built.app>` — if this exits 0 with no stderr, the companion prefix rule is satisfied; (4) `swift test` from `ARRunnerCore/` to catch any test that hardcoded an ID. Step 3 is the actual signal; steps 1, 2, 4 will pass even when the IDs are wrong.

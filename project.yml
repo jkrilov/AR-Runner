@@ -39,7 +39,7 @@ targets:
       - package: ARRunnerCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.watch
+        PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.phone.watchkitapp
         PRODUCT_NAME: ARRunnerWatch
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: '4'
@@ -133,7 +133,7 @@ targets:
       - package: ARRunnerCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.watch.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.phone.watchkitapp.widgets
         PRODUCT_NAME: ARRunnerWidgetsWatch
         SKIP_INSTALL: YES
     info:
