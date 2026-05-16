@@ -16,6 +16,13 @@ settings:
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: 0.1.0
     CODE_SIGN_STYLE: Automatic
+# Project-wide signing config. Config/Signing.xcconfig is gitignored (Config/ is
+# generated). Run `./scripts/bootstrap-signing.sh` once to create it, then edit
+# to add your DEVELOPMENT_TEAM. CI writes it from the APPLE_TEAM_ID secret.
+# See docs/dev/testflight-setup.md.
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
 fileGroups:
   - README.md
   - docs

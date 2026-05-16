@@ -124,3 +124,44 @@ decisions.md now 61442 bytes (merged 4 inbox entries: weiss, laughlin, amber, an
 - Doc PR: small troubleshooting section added to `docs/dev/setup.md` so the next dev who hits this self-serves in one step.
 
 **No code/pbxproj edits made.** pbxproj is gitignored — committing it would create a stale snapshot that fights XcodeGen on every regen.
+
+
+### 2026-05-16: TestFlight CI pipeline (feat/testflight-ci) — native xcodebuild over fastlane
+
+**Mandate:** Wire AR-Runner to TestFlight via GitHub Actions, end-to-end, in one PR — workflow + project.yml signing config + docs. Joe has an Apple Developer account but no bundle IDs / certs / API keys / secrets set up yet.
+
+**Architecture decision — `xcodebuild -allowProvisioningUpdates` + ASC API key over fastlane `match`:**
+- Single workflow file, no Ruby/gem manifest, no second repo for encrypted profiles. Apple's first-party automation is good enough for a one-developer Apple team.
+- Trade-off named: the API key has team-wide profile-mutation rights. Fine at our scale; revisit if the Apple team grows or compliance needs an audit trail of which profile signed which build.
+- `xcrun altool --upload-app` is on slow-deprecation watch but remains the documented path in Xcode 16. Migration plan: ASC REST API when Apple yanks altool.
+
+**Signing config pattern — xcconfig + bootstrap script:**
+- `project.yml` now declares `configFiles: { Debug, Release: Config/Signing.xcconfig }`.
+- `Config/` is already gitignored (xcodegen writes plists/entitlements there) so the team ID never lands in git.
+- `scripts/bootstrap-signing.sh` is idempotent: env-less call creates the file with empty `DEVELOPMENT_TEAM =` for local Joe to fill in; `APPLE_TEAM_ID=$X ./scripts/bootstrap-signing.sh` writes the team in (used by CI).
+- Local Joe experience: run script once, edit one line, `xcodegen generate`, open Xcode — Team auto-populates. No CI secrets needed locally.
+
+**Tag → release pattern:**
+- `v*.*.*-*` (pre-release suffix required) triggers `release-testflight.yml`. Pure `v*.*.*` tags are intentionally reserved for a future `release-appstore.yml` so the two paths don't share one overloaded workflow.
+- `MARKETING_VERSION` derived from tag (strip leading `v`); `CURRENT_PROJECT_VERSION` = `$GITHUB_RUN_NUMBER`. The run number guarantees monotonically-increasing build numbers across retries without us tracking state.
+- `concurrency: { group: release-testflight, cancel-in-progress: false }` — ASC doesn't recover gracefully from cancelled mid-uploads; serialize and queue, never cancel.
+
+**Seven-secret layout (documented in `docs/dev/testflight-setup.md` Part B):**
+- `APPLE_TEAM_ID`, `APP_STORE_CONNECT_API_KEY_ID`, `APP_STORE_CONNECT_API_ISSUER_ID`, `APP_STORE_CONNECT_API_KEY_P8`, `BUILD_CERTIFICATE_P12_BASE64`, `BUILD_CERTIFICATE_P12_PASSWORD`, `KEYCHAIN_PASSWORD`. ASC API key role: **App Manager** (least privilege for "create profiles + upload builds"; Admin would also let it mutate team membership).
+
+**Joe's irreducible manual prereqs (cannot be automated — Apple portal UI):**
+- Register 4 App IDs (`com.arrunner.phone`, `.phone.watchkitapp`, `.phone.widgets`, `.phone.watchkitapp.widgets`) with HealthKit + App Groups capabilities.
+- Create the App Store Connect app record.
+- Export an Apple Distribution cert as `.p12` from Keychain.
+- Create an App Store Connect API key, download the `.p8` (Apple shows it ONCE).
+- Add the 7 secrets to GitHub.
+
+**Captured SKILL:** `.squad/skills/ios-testflight-ci-via-actions/SKILL.md` — full reusable pattern for next iOS/watchOS app needing tag-triggered TestFlight CI.
+
+**Verification done locally (in worktree):**
+- `xcodegen generate` succeeds with the new `configFiles` declaration.
+- `xcodebuild -showBuildSettings -configuration Release` resolves `DEVELOPMENT_TEAM` correctly when the xcconfig has a value, gracefully when empty.
+- `swift test` on ARRunnerCore: 78 passed.
+- `actionlint` clean on the new workflow.
+
+**Cannot verify until Joe adds secrets:** Triggering a real archive/upload. Documented the first-run smoke test (`git tag v0.0.0-rc-test`) + common failure modes (cert decode, MAC verification, profile-not-found on first run) in Part E of the docs so Joe can self-serve when he flips the switch.
