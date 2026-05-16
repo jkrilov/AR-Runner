@@ -156,3 +156,29 @@ Richards's second fix (commit 079cb73, chore/ci-workflows) resolved ARRunnerWatc
 
 **Coordination with Weiss:**
 - He's working `RunningHUDPreset` + BLE auto-reconnect in parallel. No file overlap (his work is `ARRunnerCore/Glasses/` adapters; mine is `ARRunnerWatch/`). Worktrees made this trivial — he flips the two BLE-owned skip gates when his loop lands.
+
+---
+
+### 2026-05-15 — WidgetKit Info.plist constraints (PR #17, fix/watch-widgets-extension-keys)
+
+**The bug:** `xcodebuild build` succeeded for `ARRunnerWatch`, but `simctl install` (and SwiftUI Preview host install) failed with "Appex bundle ... defines either an NSExtensionMainStoryboard or NSExtensionPrincipalClass key, which is not allowed for the extension point com.apple.widgetkit-extension". Both `ARRunnerWidgetsWatch` and `ARRunnerWidgetsPhone` had the same misconfig in `project.yml`.
+
+**WidgetKit Info.plist constraint:**
+- For extension point `com.apple.widgetkit-extension`, the `NSExtension` dict MUST contain only `NSExtensionPointIdentifier`. `NSExtensionMainStoryboard` and `NSExtensionPrincipalClass` are forbidden — the runtime entry point is the Swift `@main WidgetBundle` type, not a plist-declared principal class. Specifying a principal class in the plist conflicts with `@main` resolution and the install-time validator rejects it.
+- The `$(PRODUCT_MODULE_NAME).WidgetBundle` style of `NSExtensionPrincipalClass` is a holdover from pre-WidgetKit `NSExtension`-style extensions (Today widgets, share extensions, etc.). When converting/scaffolding a WidgetKit target, those keys must be stripped.
+
+**xcodebuild-vs-install validation gap:**
+- `xcodebuild build` only validates code compilation, code signing, and basic bundle structure. It does NOT validate extension-point-specific Info.plist constraints (allowed/forbidden keys per extension point).
+- `simctl install` runs the device-side installer (`installd` / `IXUserPresentableErrorDomain`), which DOES enforce these constraints. SwiftUI Preview host install hits the same path — that's why Joe saw it from the Preview, not from a plain build.
+- **Implication:** CI that only runs `xcodebuild build` cannot catch this class of bug. Two CI legs were green while the local install was broken.
+
+**Rule for future PRs touching extension targets in `project.yml`:**
+- After any change to an extension target's Info.plist (inline `info.properties` in `project.yml` or an explicit Info.plist file), run a `simctl install` smoke test on the resulting `.app` before pushing. Build success is necessary but not sufficient.
+- Quickest verification: `/usr/libexec/PlistBuddy -c "Print :NSExtension" path/to/Foo.appex/Info.plist` — eyeball that only the keys allowed by the extension point's contract are present.
+
+**XcodeGen layout for this repo (worth recording):**
+- Widget targets use inline `info.properties` in `project.yml` (NOT a checked-in Info.plist file). XcodeGen synthesizes the plist into `Config/ARRunnerWidgets{Phone,Watch}-Info.plist` at generate time. So the source of truth for plist content is `project.yml`, not any file on disk.
+- `xcodegen generate` is required after any `project.yml` edit; the `.xcodeproj` is gitignored.
+
+**Out-of-scope finding (separate issue, not fixed in this PR):**
+- After the WidgetKit fix, `simctl install` surfaced a *different* error: "This app's bundle identifier does not start with its parent app's bundle identifier ... WKCompanionAppBundleIdentifier=com.arrunner.phone vs watch app bundle id=com.arrunner.watch". Pre-existing companion-bundle-id mismatch. Documented in PR body so it doesn't get lost; needs a follow-up (likely set watch bundle id to `com.arrunner.phone.watchkitapp` or similar to satisfy the prefix rule).

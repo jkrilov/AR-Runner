@@ -116,7 +116,6 @@ targets:
         CFBundleDisplayName: AR-Runner Widgets
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ARRunnerWidgetsBundle
     entitlements:
       path: Config/ARRunnerWidgetsPhone.entitlements
       properties:
@@ -143,7 +142,6 @@ targets:
         CFBundleDisplayName: AR-Runner Widgets
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ARRunnerWidgetsBundle
     entitlements:
       path: Config/ARRunnerWidgetsWatch.entitlements
       properties:
