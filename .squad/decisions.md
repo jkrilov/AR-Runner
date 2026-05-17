@@ -1,6 +1,7 @@
 # Squad Decisions
 
 ## Active Decisions (Locked — D1–D9)
+## Active Decisions (Locked — D1–D9)
 
 ### 2026-05-14T15:12:57-04:00: AR-Runner v0.1 architecture decisions (D1–D9)
 
@@ -1718,3 +1719,88 @@ No need to manually create or download provisioning profiles. Once the App IDs d
 **Re-amplifies:** D-RICHARDS-TF-8 (PR-time Release-config probe). A `-showBuildSettings` probe wouldn't have caught this one — portal capability state is genuinely external — but a documented "before-rc-tag" runbook step ("confirm App ID capabilities match entitlements files") would have. Adding that to the TestFlight runbook.
 
 — Richards, 2026-05-17T21:54Z
+---
+
+## D-RICHARDS-TF-12 — rc6 stale-profile-reuse: `-allowProvisioningUpdates` does not re-mint existing profiles after a capability is added to the App ID
+
+**Date:** 2026-05-17T23:09Z
+**Author:** Richards (Lead / Architect)
+**Status:** Proposed — portal action required from Joe; no code change
+**Supersedes (partially):** D-RICHARDS-TF-11 ("portal capability fix is sufficient" — true but incomplete; this decision adds the missing step)
+**Context tag:** TestFlight CI hardening — rc6 (run 26005442467)
+
+### Context
+
+After D-RICHARDS-TF-11, Joe enabled the missing capabilities on all four App IDs in the Apple Developer portal:
+
+- `com.arrunner.phone` → App Groups + HealthKit ✅
+- `com.arrunner.phone.widgets` → App Groups ✅
+- `com.arrunner.phone.watchkitapp` → App Groups + HealthKit ✅
+- `com.arrunner.phone.watchkitapp.widgets` → App Groups ✅
+
+He retagged `v0.2.0-rc6` (no code change). Archive failed with the **identical** two errors as rc5:
+
+```
+error: "ARRunnerPhone" requires a provisioning profile with the App Groups and HealthKit features.
+error: "ARRunnerWidgetsPhone" requires a provisioning profile with the App Groups feature.
+```
+
+Critically: **the two Watch targets did not error.** Same workflow, same API key, same `-allowProvisioningUpdates`, but only the iOS targets failed.
+
+### Root cause (confidence: high)
+
+`xcodebuild -allowProvisioningUpdates` resolves a provisioning profile for each signed target by querying App Store Connect for an *existing* App Store distribution profile matching the bundle ID + team + cert. If one exists, **it is reused as-is.** Apple does not reconcile the existing profile's entitlements against the current target's `.entitlements` file. A new profile is only minted when no matching profile exists at all.
+
+During rc1–rc5 we burned multiple archive attempts. Each successful "signing-resolution" step (rc4 onwards, after Manual signing was wired up correctly) caused Apple to mint and persist an "iOS App Store" / "Apple Distribution" profile for `com.arrunner.phone` and `com.arrunner.phone.widgets` **before** the App Groups + HealthKit capabilities were enabled on those App IDs. Those profiles are now cached server-side at Apple. When rc6 ran:
+
+- iOS targets → matching profile found → reused → lacks App Groups/HealthKit → archive rejects it. ❌
+- Watch targets → **no pre-existing profile** (Watch-target signing first reached this code path only after the rc5 capability fix) → freshly minted profile inherits current App ID capabilities → archive accepts. ✅
+
+The asymmetric pass/fail by target type is the diagnostic fingerprint and disconfirms hypotheses (b) API-key scope (would fail all four targets equally), (c) `-allowProvisioningUpdates` never re-mints with new entitlements (it does — for first mints — as the Watch targets prove), and (d) Apple propagation delay (hours have passed).
+
+### Web research corroboration
+
+1. **Stack Overflow / community guidance (multiple sources):** "`xcodebuild -allowProvisioningUpdates` will not re-mint your provisioning profile unless… the profile itself is regenerated. Apple sometimes doesn't allow certain changes to be made to existing profiles; instead, the profile must be deleted and recreated." Recommended fix: delete the profile in the Developer Portal and let the tooling mint a fresh one, or run `fastlane sigh --force`. (Cited via web search 2026-05-17.)
+2. **Fastlane `sigh` docs / behavior:** the explicit `--force` flag exists precisely because the default path is to reuse existing matching profiles. `sigh --force` deletes then recreates. The fact that this flag was added to fastlane is itself evidence that the underlying Apple API reuses-by-default, including via `-allowProvisioningUpdates`.
+3. **App Store Connect API key role:** minimum role for provisioning operations is **Developer**; App Manager and Admin also suffice. Marketing and Access roles cannot mint profiles. (Confirmed via Apple's API key documentation.) Joe's key is clearly above the floor — it has minted the four Watch-side profiles and the original iOS profiles already.
+
+### Decision
+
+**Portal action by Joe — three steps, in order:**
+
+1. Open <https://developer.apple.com/account/resources/profiles/list>.
+2. Filter to **Distribution** profiles. **Revoke (delete)** the two profiles matching:
+   - `com.arrunner.phone` (any "iOS App Store" / "Apple Distribution" profile bound to this bundle ID — there may be one or two; revoke all)
+   - `com.arrunner.phone.widgets` (same — revoke all)
+   - **Do NOT revoke** the two Watch profiles (`...watchkitapp` and `...watchkitapp.widgets`) — those are minted correctly and reusing them is fine.
+3. Confirm in the same UI that the App ID capability state from D-RICHARDS-TF-11 is still intact (App Groups + HealthKit on the two iOS App IDs, App Groups on the widget App ID).
+
+Then I retag `v0.2.0-rc7` from `main` (no code change). On rc7, `-allowProvisioningUpdates` will see no matching profile for the two iOS bundle IDs and mint fresh ones that inherit the current (full) App ID capabilities.
+
+**No code/CI change in this decision.** A future-proofing CI change (e.g., calling `fastlane sigh --force` per bundle ID before archive whenever an entitlements file changes) is deferred — it adds a fastlane dependency for a problem that should occur at most once per entitlement change. See "Follow-up" below for the lightweight alternative.
+
+### Trade-off named
+
+| Option | Pros | Cons |
+|---|---|---|
+| **Portal revoke + retag** (chosen) | Zero code change; uses existing `-allowProvisioningUpdates` plumbing; surgical | Manual portal step; same trap recurs if a future entitlement is added |
+| Switch to `fastlane sigh --force` in CI | Automated re-mint on every entitlement change | Adds fastlane to runner; another moving part to maintain; per-bundle-ID invocation needed for the 4 targets; couples release pipeline to fastlane gem versioning |
+| Switch to `fastlane match` | Profiles version-controlled in a private repo (full reproducibility) | Requires a second private repo + match-encryption key as a new secret; significant setup; over-engineering for a 4-bundle-ID solo project right now |
+| Add `PROVISIONING_PROFILE_SPECIFIER` to xcconfig + manually download profiles | Explicit, deterministic | Couples CI to portal profile names; every cert rotation breaks it; loses the "automation" of `-allowProvisioningUpdates` |
+
+I'm choosing the surgical portal action because the trap only triggers when entitlements are mutated mid-stream, which should be a quarterly event at most. If it recurs more than once more, we re-open the trade-off and pick fastlane sigh.
+
+### Why this didn't surface in D-RICHARDS-TF-11
+
+The rc5 diagnosis correctly identified that App ID capability state was misaligned with entitlements. It implicitly assumed `-allowProvisioningUpdates` would re-mint on next archive because that's how the flag is colloquially described in Apple's release notes. The flag's actual semantics — "create-if-missing, reuse-if-present" — were not researched. The Watch targets propagating correctly (per the rc6 error pattern) is the empirical test that proves the create-if-missing path works; the iOS targets' failure is the empirical proof of the reuse-if-present trap.
+
+### Follow-up (not in this decision; tracked as TF-13 candidate)
+
+- Add a pre-flight script `scripts/preflight-entitlements-vs-portal.sh` that uses the ASC API to fetch each App ID's capability set and diff it against `Config/*.entitlements`. Run as a non-blocking PR CI job and as a manual `gh workflow run preflight.yml` before tagging an rc.
+- When (not if) we add a new entitlement, the runbook must include "revoke any pre-existing distribution profiles for the affected bundle IDs in the portal" as Step 0 of the rc tag. Update `docs/dev/testflight-setup.md` accordingly (Scribe or Amber, on next docs sweep).
+
+### Confidence
+
+**High.** The asymmetric Watch-pass / iOS-fail pattern is a textbook fingerprint for the "reuse cached profile" path. Web-research corroboration is consistent across multiple independent sources (Apple docs, Stack Overflow, fastlane documentation). The fix is reversible (worst case: re-tag rc8 with `fastlane sigh --force` if revoke-and-mint doesn't work).
+
+— Richards, 2026-05-17T23:09Z
