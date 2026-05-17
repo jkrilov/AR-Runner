@@ -37,12 +37,49 @@ public struct ExponentialBackoff: Sendable, Equatable {
 /// agree on the mapping.
 public enum CuratedLayoutCatalog {
     public static let mapping: [String: UInt8] = [
+        // TODO(P1.4 from .squad/audits/2026-05-16-weiss-ar-ble.md):
+        // these are pre-bake placeholders. Replace with the real numeric
+        // layout slots emitted by the Config-Generator bake step before any
+        // hardware test or TestFlight build — otherwise the glasses will
+        // activate the wrong layout. `assertNotPlaceholder` below traps in
+        // debug so hardware bring-up fails fast on this.
         "minimal-run":   0x01,
         "balanced-run":  0x02,
         "telemetry-run": 0x03
     ]
 
+    /// Numeric slots known to be **pre-bake placeholders** (v0.1 / v0.2). Any
+    /// real Config-Generator output starts well above this range; if we ever
+    /// hand one of these to the adapter on hardware, we'd activate the wrong
+    /// on-device layout silently.
+    public static let placeholderDeviceIDs: Set<UInt8> = [0x01, 0x02, 0x03]
+
     public static func deviceID(for layoutID: String) -> UInt8? {
         mapping[layoutID]
+    }
+
+    /// Traps in debug builds (incl. hardware-test builds running on watch)
+    /// when a placeholder slot would be activated. Release builds get a
+    /// silent return — the goal is to fail loudly during bring-up, not to
+    /// brick a user's run if a stale build somehow shipped with placeholders.
+    /// Pair with the `mapping` TODO above; remove this guard once Config-
+    /// Generator output replaces the placeholders.
+    @inlinable
+    public static func assertNotPlaceholder(
+        _ deviceID: UInt8,
+        layoutID: String,
+        file: StaticString = #fileID,
+        line: UInt = #line
+    ) {
+        assert(
+            !placeholderDeviceIDs.contains(deviceID),
+            """
+            CuratedLayoutCatalog returned placeholder device ID \
+            0x\(String(deviceID, radix: 16)) for layout "\(layoutID)". \
+            Run the Config-Generator bake step before hardware test. \
+            See .squad/audits/2026-05-16-weiss-ar-ble.md (P1.4).
+            """,
+            file: file, line: line
+        )
     }
 }
