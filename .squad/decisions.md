@@ -1308,3 +1308,73 @@ Born from the v0.1 foundation batch shared-filesystem collision documented in `.
 ### Trade-off (named)
 
 Each worktree costs a duplicate working directory on disk (full file checkout per agent) and one extra `git worktree remove` step at PR-merge time. In exchange we get hard isolation of `HEAD`/index/working dir per agent — eliminating an entire class of mid-flight collision bugs that are otherwise non-deterministic and painful to diagnose. Worth it.
+
+## 2026-05-16T20:32:00Z: TestFlight CI Architecture (Richards)
+
+**Status:** Proposed (will be locked when Joe merges PR #21).  
+**PR:** #21 — feat(ci): TestFlight release pipeline via GitHub Actions  
+**Charter ref:** Richards (Lead / Architect)
+
+### Context
+
+v0.2 is functionally complete in the simulator. Joe needs builds on his real Apple Watch but his iPhone is not in developer mode — so the path is TestFlight, not direct Xcode device install. He also wants CI-driven releases, secrets in GitHub (not local), and a tag-based release flow.
+
+### Decisions
+
+#### D-RICHARDS-TF-1: Native `xcodebuild` + ASC API key over fastlane `match`
+
+We use `xcodebuild -allowProvisioningUpdates` with an App Store Connect API key for provisioning, not `fastlane match`. **Trade-off:** match would give us a private repo of pinned, audited profiles (better for big teams) at the cost of a second repo, Ruby tooling, and an extra encryption key to manage. For a one-developer Apple team this is overkill — Apple's first-party provisioning automation is good enough. Revisit if/when the Apple team grows past one human or we need profile-audit trails for compliance.
+
+#### D-RICHARDS-TF-2: Tag pattern `v*.*.*-*` triggers TestFlight; `v*.*.*` is reserved for a future App Store workflow
+
+Pre-release tags like `v0.2.0-rc1`, `v0.2.0-beta3` push to TestFlight via the new `release-testflight.yml`. A pure tag `v0.2.0` does **not** trigger this workflow — that path will be `release-appstore.yml` when we're ready to ship to the App Store. Keeping the two flows separate avoids one workflow needing two modes (review-submission vs. testing) and makes each one auditable on its own terms.
+
+#### D-RICHARDS-TF-3: Version from tag, build number from `$GITHUB_RUN_NUMBER`
+
+`MARKETING_VERSION = ${TAG#v}` (so `v0.2.0-rc1` → `0.2.0-rc1`). `CURRENT_PROJECT_VERSION = $GITHUB_RUN_NUMBER`. App Store Connect requires monotonically-increasing build numbers; the run number satisfies that without us tracking state. Both values are passed as `xcodebuild` build settings; the defaults in `project.yml` (`MARKETING_VERSION: 0.1.0`, `CURRENT_PROJECT_VERSION: 1`) are placeholders for local builds only.
+
+#### D-RICHARDS-TF-4: `DEVELOPMENT_TEAM` lives in `Config/Signing.xcconfig` (gitignored), bootstrapped by `scripts/bootstrap-signing.sh`
+
+`project.yml` references the xcconfig via `configFiles:`. The xcconfig is gitignored (Config/ already is, since xcodegen writes plists+entitlements there). `scripts/bootstrap-signing.sh` is idempotent: with no env, it creates the file with an empty `DEVELOPMENT_TEAM =` for Joe to fill in; with `APPLE_TEAM_ID=<id>` in env, it writes the team in (used by CI). This means: local Joe path (run script once, edit one line, `xcodegen generate`, open Xcode — Team auto-populates); CI path (workflow runs script with `APPLE_TEAM_ID` secret before every `xcodegen generate`); the team ID is never committed.
+
+#### D-RICHARDS-TF-5: Seven-secret layout in GitHub
+
+The minimum secrets required by the workflow:
+1. `APPLE_TEAM_ID`
+2. `APP_STORE_CONNECT_API_KEY_ID`
+3. `APP_STORE_CONNECT_API_ISSUER_ID`
+4. `APP_STORE_CONNECT_API_KEY_P8`
+5. `BUILD_CERTIFICATE_P12_BASE64`
+6. `BUILD_CERTIFICATE_P12_PASSWORD`
+7. `KEYCHAIN_PASSWORD`
+
+Documented exhaustively in `docs/dev/testflight-setup.md` Part B with copy/paste CLI for the encoded values. The API key role is **App Manager** (not Admin — least privilege for "create profiles + upload builds").
+
+#### D-RICHARDS-TF-6: Workflow runs serially via `concurrency: { group: release-testflight, cancel-in-progress: false }`
+
+App Store Connect doesn't tolerate concurrent uploads racing for the same build number, and cancelling a mid-upload is worse than queueing the next one. The PR-cancellation pattern from `ci-build.yml` is **explicitly not** copied here.
+
+#### D-RICHARDS-TF-7: Pin Xcode 16.4 on `macos-15` (same rationale as `ci-build.yml`)
+
+Reproducibility of signing/SDK behavior. Inherits the simulator-runtime trade-off documented in `docs/dev/ci-workflows.md`. Archiving doesn't need simulator runtimes, but pinning keeps the Release config behaviorally identical to the Debug-build matrix on the same OS image.
+
+### Joe's manual prerequisites (one-time)
+
+These are NOT in the PR; Joe must do them in the Apple portals before the first workflow run can succeed. Fully scripted in `docs/dev/testflight-setup.md` Parts A and B. Summary:
+
+- Register the 4 bundle IDs at developer.apple.com (HealthKit + App Groups on the hosts; App Groups on the widget extensions).
+- Create the App Store Connect app record for `com.arrunner.phone`.
+- Create + export an **Apple Distribution** cert from Keychain Access.
+- Create an App Store Connect API key (role: App Manager), download the `.p8`.
+- Add the 7 secrets to the repo.
+
+### Out of scope
+
+- App Store submission flow (`release-appstore.yml`) — separate PR when v1 is ready.
+- Notarization (Mac-only; not applicable to iOS/watchOS).
+- fastlane / match adoption.
+- Beta-tester management automation (still done manually in App Store Connect).
+
+### Approval
+
+Joe approves this design by merging PR #21. Once merged, this decision is locked.
