@@ -87,6 +87,10 @@ targets:
         PRODUCT_NAME: ARRunnerPhone
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SUPPORTS_MACCATALYST: NO
+        # Prevent xcodegen from injecting CODE_SIGN_IDENTITY="iPhone Developer"
+        # at target level, which would override the project-level xcconfig pin.
+        # $(inherited) defers to the xcconfig where CI sets Apple Distribution.
+        CODE_SIGN_IDENTITY: $(inherited)
     info:
       path: Config/ARRunnerPhone-Info.plist
       properties:

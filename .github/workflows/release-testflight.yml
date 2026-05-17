@@ -234,16 +234,29 @@ jobs:
       # --- Archive & export -------------------------------------------------
 
       - name: Archive (xcodebuild)
-        # Why CODE_SIGN_IDENTITY="Apple Distribution" is forced here:
-        # With CODE_SIGN_STYLE=Automatic + `xcodebuild archive` from the CLI,
-        # Xcode 16 honors the Release config's CODE_SIGN_IDENTITY (which
-        # defaults to "Apple Development" in xcodegen-generated projects).
-        # That causes -allowProvisioningUpdates to try to mint an *iOS App
-        # Development* profile, which then fails with "Your team has no
-        # devices…" on a headless CI runner. Pinning the identity to
-        # "Apple Distribution" tells automatic signing to request an App
-        # Store profile against the distribution cert we just imported.
-        # See run 25989849479 for the failure mode. — Richards, 2026-05-17.
+        # Signing strategy (rc3 fix — Richards, 2026-05-17):
+        #
+        # CODE_SIGN_STYLE and CODE_SIGN_IDENTITY both live in the xcconfig
+        # (Config/Signing.xcconfig, written by the step above). They are NOT
+        # passed on the CLI. This is deliberate:
+        #
+        #   rc1: bare CODE_SIGN_IDENTITY on CLI → Xcode treated it as
+        #        "manually specified", conflicting with Automatic style.
+        #   rc2: conditional CODE_SIGN_IDENTITY[sdk=...] on CLI → xcodebuild
+        #        mis-parsed the bracket syntax.
+        #   rc3: identity in xcconfig BUT CODE_SIGN_STYLE=Automatic on CLI →
+        #        CLI override elevated style to highest precedence, making the
+        #        xcconfig identity appear as a conflicting manual override.
+        #
+        # Fix: remove CODE_SIGN_STYLE from the CLI entirely. Both settings
+        # now come from the xcconfig at project-config level — Xcode treats
+        # them as consistent project configuration, not a manual override.
+        # Automatic signing + CODE_SIGN_IDENTITY="Apple Distribution" (from
+        # xcconfig) tells Xcode to fetch Distribution profiles via ASC API,
+        # avoiding the "no devices" Development-profile trap on headless CI.
+        #
+        # DEVELOPMENT_TEAM stays on the CLI because it's a secret injected at
+        # runtime and applies uniformly to all targets.
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
@@ -263,7 +276,6 @@ jobs:
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_API_ISSUER_ID" \
             -authenticationKeyPath "$API_KEY_PATH" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
             MARKETING_VERSION="$MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$CURRENT_PROJECT_VERSION" \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \

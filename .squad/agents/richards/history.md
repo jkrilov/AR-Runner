@@ -140,5 +140,23 @@ Both forms are needed — the bare `CODE_SIGN_IDENTITY` covers the generic case;
 
 ## Archive
 
+### 2026-05-17: v0.2.0-rc3 signing fix — CLI CODE_SIGN_STYLE shadow effect
+
+**Root cause (rc3, run 25991312727):** `CODE_SIGN_STYLE=Automatic` on the `xcodebuild archive` CLI has highest precedence. This made Xcode treat the xcconfig's `CODE_SIGN_IDENTITY=Apple Distribution` (project-config level) as a "conflicting manual override" on extension targets (ARRunnerWidgetsPhone), and the main target (ARRunnerPhone) fell through to the Development-profile pathway ("no devices" error).
+
+**Fix:** Removed `CODE_SIGN_STYLE=Automatic` from the archive CLI entirely. Both CODE_SIGN_STYLE and CODE_SIGN_IDENTITY now live exclusively in Config/Signing.xcconfig at the same precedence level. Xcode treats them as consistent project configuration. Also discovered xcodegen injects `CODE_SIGN_IDENTITY = "iPhone Developer"` at the **target level** for iOS app targets, overriding the project-level xcconfig — fixed by setting `CODE_SIGN_IDENTITY: $(inherited)` in project.yml for ARRunnerPhone.
+
+**Durable learning — three rc failures confirm one rule:** Never put `CODE_SIGN_STYLE` or `CODE_SIGN_IDENTITY` on the xcodebuild CLI for archive. xcconfig is the only safe location. The CLI's highest-precedence semantics create unavoidable conflicts with project-level signing configuration. Specifically:
+- rc1: missing identity → Development default → "no devices"
+- rc2: CLI `[sdk=...]` mis-parsed by xcodebuild CLI parser
+- rc3: CLI CODE_SIGN_STYLE at override level → xcconfig identity treated as conflict
+
+**Key file paths:** `.github/workflows/release-testflight.yml` (archive step), `scripts/bootstrap-signing.sh` (base xcconfig), `Config/Signing.xcconfig` (gitignored, written at CI time), `project.yml` (configFiles reference).
+
+**Decision:** D-RICHARDS-TF-9 (proposed, `.squad/decisions/inbox/richards-tf-rc3-signing-fix.md`).
+**Skill updated:** `.squad/skills/ios-testflight-ci-via-actions/SKILL.md` — new trap section, incident log, confidence bump.
+
+## Archive
+
 See `history-archive.md` for learnings from 2026-05-14 and early 2026-05-15 (GitHub remote setup, CI/simulator architecture, Swift 6 toolchain, system architecture ADRs, parallel workstream coordination, XcodeGen stale-project incident).
 
