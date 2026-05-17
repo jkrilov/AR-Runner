@@ -1378,3 +1378,95 @@ These are NOT in the PR; Joe must do them in the Apple portals before the first 
 ### Approval
 
 Joe approves this design by merging PR #21. Once merged, this decision is locked.
+
+---
+
+## 2026-05-17T00:19:11Z: User directive — Opus 4.7 (1M context) for any code-touching agent
+
+**By:** Joe Krilov (via Copilot)  
+**What:** Going forward, any agent that touches code must run on `claude-opus-4.7-1m-internal` (Opus 4.7, 1M context). Re-affirms an existing preference already persisted in `.squad/config.json`.  
+**Why:** User directive — captured for team memory. Code quality / context-window upgrade.
+
+**Scope:**
+- Applies to: Richards (Lead — code review/architecture), Laughlin (watchOS dev), Weiss (AR/BLE dev), Amber (QA — writes test code), and any new code-writing agent added later.
+- Does NOT apply to: Scribe (mechanical file ops), Ralph (monitoring), Killian (product strategy).
+
+**Implementation:** `.squad/config.json` `agentModelOverrides` block — Layer 0 persistent override. Coordinator MUST read this file on every session start.
+
+**Coordinator lesson:** Squad failed to read `.squad/config.json` at the start of this session and spawned three audits on `claude-sonnet-4.6` in violation of the existing override. Re-spawned correctly after Joe re-flagged the directive. Going forward: read `.squad/config.json` as part of the standard parallel-read block on session start (alongside team.md / routing.md / registry.json).
+
+**Fallback:** If `claude-opus-4.7-1m-internal` is unavailable, chain through `claude-opus-4.6-1m` → `claude-opus-4.6` → `claude-opus-4.5` → omit param. Never fall back DOWN to Sonnet or Haiku for a code task.
+
+---
+
+## 2026-05-16: HealthKit deprecated aggregate properties → statistics(for:)
+
+**Date:** 2026-05-16  
+**Agent:** Laughlin  
+**Context:** watchOS code-health audit
+
+### Issue
+
+`HealthKitWorkoutSubstrate.swift:193–194` uses `HKWorkout.totalDistance` and `HKWorkout.totalEnergyBurned`, both deprecated since iOS 17 / watchOS 10. These are nil-returning stubs in current SDKs and will be removed in a future HealthKit version.
+
+### Decision
+
+Migrate to `HKWorkout.statistics(for:)` for both distance and energy on workout end. The builder collects per-type statistics which are available on the finished `HKWorkout` object.
+
+```swift
+// Replace:
+workout?.totalDistance?.doubleValue(for: .meter())
+workout?.totalEnergyBurned?.doubleValue(for: .kilocalorie())
+
+// With:
+workout?.statistics(for: HKQuantityType(.distanceWalkingRunning))?
+    .sumQuantity()?.doubleValue(for: .meter())
+workout?.statistics(for: HKQuantityType(.activeEnergyBurned))?
+    .sumQuantity()?.doubleValue(for: .kilocalorie())
+```
+
+### Also needed
+
+Add `case energy` to `MetricKind` in `ARRunnerCore/Sources/ARRunnerCore/Models/WorkoutMetric.swift` and update `HealthKitWorkoutSubstrate.swift:272` to emit `kind: .energy` for `activeEnergyBurned` samples.
+
+### Effort
+
+S — two-line change in `HealthKitWorkoutSubstrate.swift` for the deprecated API; two-line change for the MetricKind bug.
+
+---
+
+## 2026-05-16: Layout Bake Step is Blocking Hardware Use
+
+**Agent:** Weiss  
+**Date:** 2026-05-16T20:13:46-04:00  
+**Related:** D6 (curated layout presets baked at build time)
+
+### Issue
+
+`CuratedLayoutCatalog` in `ARRunnerCore/Sources/ARRunnerCore/Glasses/ReconnectPolicy.swift:39–43`
+maps string layout IDs to on-device numeric slots using **placeholder values**:
+
+```swift
+public static let mapping: [String: UInt8] = [
+    "minimal-run":   0x01,
+    "balanced-run":  0x02,
+    "telemetry-run": 0x03
+]
+```
+
+The in-code comment says: *"PLACEHOLDERS for v0.1: the real numbers come out of the layout BUILD step (deferred per task scope)."*
+
+The adapter sends `ActiveLookCommand.displayLayout(id: deviceID)` using these slot numbers every time it connects or reconnects. If the glasses don't actually have layouts at slots 0x01–0x03, the `0x62 displayLayout` command will either do nothing or activate a different layout.
+
+### Impact
+
+- **Blocking for any real-hardware end-to-end test.** The glasses will not show the intended HUD.
+- Affects `ActiveLookGlassesAdapter` (connect + reconnect), `RunningHUDPreset.layoutDescriptor()`, and the hardware test scaffold in `ActiveLookGlassesAdapterHardwareTests.swift`.
+
+### Recommended Decision
+
+**Before any hardware integration test:** run the ActiveLook Config-Generator against the three curated `HUDLayout` definitions (`minimalRun`, `balancedRun`, `telemetryRun`), flash the resulting binary to the glasses, and update `CuratedLayoutCatalog.mapping` with the real slot numbers the generator assigns. Record the generator inputs/outputs somewhere in `docs/` so they can be reproduced when glasses are re-flashed.
+
+The Config-Generator outputs and any generated binary configs must **not** be committed to the repo (see permanent decision: ActiveLook visual-assets hard rule covers Config-Generator outputs, CC BY-NC-ND 4.0). Only the numeric slot constants belong in Swift source.
+
+**Owner:** Weiss (integration) + Joe (hardware, Config-Generator access).
