@@ -12,6 +12,13 @@ struct WorkoutView: View {
         mirror: ARRunnerWatchEnvironment.shared.mirror
     )
 
+    /// v0.2 audit P1.1: cross-process handoff from
+    /// `StartWorkoutIntent.perform()` (widget extension) to the
+    /// foregrounded host. Consumed below on `scenePhase == .active`.
+    private let pendingStartStore: any PendingWorkoutStartStore = AppGroupPendingWorkoutStartStore()
+
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
@@ -25,6 +32,16 @@ struct WorkoutView: View {
             .padding(.bottom)
         }
         .navigationTitle("Run")
+        .task {
+            // First-launch path — `openAppWhenRun` lands here before the
+            // scene phase change fires on a cold start.
+            await maybeAutoStartFromIntent()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                Task { await maybeAutoStartFromIntent() }
+            }
+        }
         .confirmationDialog(
             "Finish Run?",
             isPresented: finishMenuBinding,
@@ -35,6 +52,23 @@ struct WorkoutView: View {
             Button("Resume", role: .cancel) { Task { await viewModel.resumeFromFinish() } }
         } message: {
             Text("Saving writes the workout to Health. Discard removes it from this view (it remains in Health and can be deleted there).")
+        }
+    }
+
+    /// Consume any pending-start flag dropped by the widget AppIntent
+    /// and, if fresh, kick off the workout flow automatically. Only
+    /// runs from `.idle` / terminal states so an already-running
+    /// workout isn't disturbed by a stray foregrounding.
+    private func maybeAutoStartFromIntent() async {
+        guard pendingStartStore.consumePending(
+            now: Date(),
+            freshness: pendingWorkoutStartDefaultFreshnessSeconds
+        ) else { return }
+        switch viewModel.launchState {
+        case .idle, .ended, .cancelled, .failed:
+            await viewModel.start()
+        default:
+            break
         }
     }
 
