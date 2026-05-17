@@ -185,6 +185,37 @@ jobs:
             exit 1
           fi
           APPLE_TEAM_ID="$APPLE_TEAM_ID" ./scripts/bootstrap-signing.sh
+
+          # Pin "Apple Distribution" as the codesign identity for device
+          # builds (iOS + watchOS). Why here and not on the xcodebuild CLI?
+          #
+          # 1) xcodebuild's command-line setting parser does NOT support the
+          #    `SETTING[sdk=...]=value` conditional syntax — it mis-parses
+          #    `CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution` into
+          #    a literal value of `iphoneos*]=Apple Distribution`. That
+          #    blew up rc2 (run 25990326363).
+          # 2) Pinning bare `CODE_SIGN_IDENTITY=...` on the CLI while also
+          #    using `CODE_SIGN_STYLE=Automatic` makes Xcode error with
+          #    "conflicting provisioning settings ... has been manually
+          #    specified" on every target. xcconfig values are treated as
+          #    project config, not manual overrides, so the conflict goes
+          #    away.
+          # 3) The conditional `[sdk=...]` form IS valid in xcconfig, so we
+          #    can scope the override to device builds and leave simulator
+          #    builds alone.
+          #
+          # This pin is only applied in the release workflow — local dev
+          # bootstrap doesn't write these lines, so personal-team device
+          # debugging with Apple Development identity continues to work.
+          cat >> Config/Signing.xcconfig <<'EOF'
+
+          // Release CI: force Apple Distribution on device archives so
+          // automatic signing fetches a Distribution profile (not Dev).
+          // See release-testflight.yml for the full rationale.
+          CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+          CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
+          EOF
+
           cat Config/Signing.xcconfig
 
       - name: Generate Xcode project
@@ -233,8 +264,6 @@ jobs:
             -authenticationKeyPath "$API_KEY_PATH" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
-            "CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution" \
             MARKETING_VERSION="$MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$CURRENT_PROJECT_VERSION" \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
