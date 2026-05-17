@@ -45,3 +45,22 @@ Joe asked all three of us (Richards/me/Weiss) for a fresh 2026 look. Re-spawn on
 - No `ObservableObject`, no `@Published`, no `NavigationView`, zero force-unwraps in production — SwiftUI / concurrency fundamentals are clean.
 - Decision drop: `.squad/decisions/inbox/laughlin-audit-hk-deprecated-api.md` (deprecated HK API + MetricKind.energy).
 - Audit deliverable: `.squad/audits/2026-05-16-laughlin-watchos.md`.
+
+## 2026-05-16T20:50:00-04:00 — v0.2 P1.1 + P1.3 bugfix execution
+
+Shipped two fixes on `fix/v02-p1-audit-bugs`:
+
+- **2a31b84** `fix(widgets): implement StartWorkoutIntent.perform()` — Smart Stack handoff via App Group shared state.
+- **2ca0d22** `fix(healthkit): map activeEnergyBurned to WorkoutMetric.energy` — HK kcal now flows live (uses Amber's MetricKind.energy from 9571e23).
+
+Tests: 101 passing in `swift test` from `ARRunnerCore/`, 0 failures, 1 pre-existing skip. Watch build: `xcodebuild -scheme ARRunnerWatch -destination 'generic/platform=watchOS' CODE_SIGNING_ALLOWED=NO` BUILD SUCCEEDED.
+
+### Learnings
+
+- **AppIntent → host-app handoff via App Group `UserDefaults` flag.** `AppIntent.perform()` runs in the WidgetKit extension process and cannot touch the host's `WorkoutController` directly. The handoff pattern: intent calls `pendingStartStore.markPending(at: now())` (writes `pendingWorkoutStartTimestamp` Double to `UserDefaults(suiteName: "group.com.arrunner.shared")`); `openAppWhenRun = true` foregrounds the host; the host reads `scenePhase == .active` in `WorkoutView.onChange(of:)` (plus a first-launch `.task`) and calls `pendingStartStore.consumePending(now: Date(), freshness: 60)`. Returns `true` exactly once per fresh flag — atomic clear-on-read. The 60s freshness window matters: a forgotten widget tap from yesterday must not auto-start a workout tomorrow. The store lives in Core (`ARRunnerCore/Sources/.../Workout/PendingWorkoutStart.swift`) so both the widget extension and the watch host can import it via the SPM package dependency they already share. Skill drop: `.squad/skills/app-intent-shared-state-handoff/SKILL.md` (low confidence — first observation, but the shape is generic).
+
+- **"Enum case missing → silent default-case drop" gotcha confirmed (P1.3).** When the substrate didn't have an `.energy` case to emit, `HealthKitWorkoutSubstrate.metric(for:)` routed kcal through `.duration`. Both `WorkoutController.ingest` AND `WorkoutViewModel.apply(metric:)` had `default: break` / `case .pace, .duration: break` arms that swallowed every sample silently. The saved `HKWorkout` still carried the total (read directly in `end()`), so post-session reconciliation worked — masking the live-display bug. **Lesson:** when adding a new MetricKind, audit every `switch metric.kind` in the codebase for `default: break` and consider whether the new case needs an explicit no-op vs. real handling. Amber's commit 9571e23 already folded `.energy` into the controller's no-op arm; mine added the viewmodel display arm. Defense-in-depth idea for the future: an `os_log` warning in any `default:` arm of a `MetricKind` switch (debug builds only) would surface this class of bug instantly.
+
+- **Mapping-helper-in-Core pattern for testing watch-only adapters.** The project has no watchOS or widget test target (only `ARRunnerCoreTests`). To test the HK substrate's kcal-mapping fix I extracted the pure mapping into `Core/Workout/HealthKitMetricMapping.swift` (a thin static function taking `Double` kcal + `Date`) and call it from the substrate. The contract is now lockable from Core tests (`HealthKitMetricMappingTests`) without needing an HKHealthStore on the test runner. Useful pattern any time a watchOS-only or widget-only file has a pure-data transformation worth testing.
+
+- **Local working-tree gets passively updated when teammates push.** Started the session with `git pull --rebase` saying "Already up to date" (HEAD was 9571e23). By the time I went to commit, Weiss's 7dd784e and 4f2947b had landed on HEAD — and her 7dd784e already contained the WorkoutViewModel `hasLiveHKEnergy` latch I'd planned to add. Net effect: my "viewmodel changes" diffed to zero because they were already there. Lesson: re-check `git log --oneline -5` before committing, not just before pulling. Worst case I would've overwritten Weiss's work with an identical-but-conflict-prone duplicate edit.
