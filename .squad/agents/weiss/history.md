@@ -65,3 +65,22 @@ file. If Joe asks for a v0.3 plan I'll re-evaluate.
 8. **Concurrency is clean.** `@preconcurrency import CoreBluetooth`, Swift 6 language mode, no `StrictConcurrency` upcoming-feature flag, `Coordinator: @unchecked Sendable` with `weak var adapter` — all correct.
 
 9. **Disconnect reason code mapping** (`case 6, 7: .linkLoss; case 10: .peerPoweredOff`) uses raw integers. Should verify against `CBError` cases in Xcode 26 SDK rather than raw codes to guard against OS-version shifts.
+
+### 2026-05-16: P1.2 + P1.4 audit follow-up (HUD wire + ID guard)
+
+Joe spawned me to fix the two AR P1 audit findings on `fix/v02-p1-audit-bugs`. Both landed in two separate commits (`7dd784e` wire, `4f2947b` ID guard) on top of Amber's `9571e23` energy MetricKind commit. All 93 Core tests pass; ARRunnerWatch + ARRunnerPhone builds clean under Xcode 16 / Swift 6.
+
+**P1.2 — dead-code-after-connect pattern.** Classic shape: `GlassesService.update(...)` was implemented and unit-test-exercised in StubGlassesTransportTests but `WorkoutViewModel` only constructed the transport and called `.connect()` — the service itself was never instantiated, so no callsite wired `controller.metrics → updateField`. Wire was a 4-line change in `apply(metric:)` once `GlassesService` was held on the view model. The non-obvious bits: (a) `selectLayout(preset:)` has to happen at the `.connected` state edge in the connection-state task (not in `start()`, because the transport may still be `.scanning`); (b) throttle must be `reset()` on both layout-change AND every (re)connect so the first post-reconnect tick lands immediately for each fieldIndex.
+
+**Rate-limit cadence.** Landed at **1Hz per fieldIndex** (`HUDFieldThrottle.defaultMinimumInterval = 1.0`) — matches the controller's emission rate so no metric is ever dropped under steady-state operation, but a misbehaving emitter or a future ≥5Hz source can't saturate the BLE link. Strict `<` comparison at the boundary (test pins this). Per-field independence means a 4-slot balanced-run burst within the same millisecond all passes on the first tick.
+
+**P1.4 — debug-assert on placeholder IDs.** Tried the "assert inside `CuratedLayoutCatalog.deviceID(for:)`" approach first; backed out because Linux Core tests legitimately exercise the accessor with the placeholder IDs (`ExponentialBackoffTests:24-27`, `RunningHUDPresetTests:82,96,203`). Correct layering: keep the catalog accessor assert-free (pure lookup), expose `placeholderDeviceIDs` + `assertNotPlaceholder()` helpers, and call the assert at the actual wire-write sites in `ActiveLookGlassesAdapter` (`selectLayout`, `updateField`, and the reconnect re-apply at line 291). Release-build fault log via `logger.fault(...)` so a leaked build is at least visible in the side store, never silent UX.
+
+**Test placement note.** Task said "place in the existing watch test target" — there is no watch test target in `project.yml` (only the four app/extension targets). Wrote three Core-side tests instead: throttle behavior (`HUDFieldThrottleTests`), placeholder catalog surface (`CuratedLayoutCatalogPlaceholderTests`), and metric → slot mapping against StubGlassesTransport (`WorkoutMetricFanoutTests`). The fan-out test deliberately reproduces `GlassesService.apply(metric:)`'s mapping rule so a future divergence fails CI loudly with a clear hint to update both.
+
+**Learnings.**
+- "Dead code after connect" smells like missing instantiation, not missing implementation — grep for `Service.update`/`adapter.updateField` callsites in the connecting layer before assuming the helper itself is broken.
+- 1Hz default + per-key throttle gate that "denies-without-advancing" is the safe shape: a flapping emitter can't push the next-allowed-send point forward past the gate.
+- Debug-trap on known-bad lookup *values* belongs at the wire boundary, not in the lookup function — same lookup is exercised by Linux tests with known-bad-on-hardware values that are fine in Core.
+
+**Skill candidate:** yes — wrote `.squad/skills/dead-code-after-connect/SKILL.md` capturing the "instantiated but unwired" pattern + how to backstop it with a per-key throttle and connected-state guard. Generalises beyond BLE: WCSession, network sockets, any async transport with a `connect()` → `send()` shape.
