@@ -10,6 +10,7 @@ public enum MetricKind: String, Sendable, Codable, CaseIterable, Equatable {
     case duration
     case cadence
     case elevation
+    case energy
 }
 
 public struct WorkoutMetric: Sendable, Codable, Equatable {

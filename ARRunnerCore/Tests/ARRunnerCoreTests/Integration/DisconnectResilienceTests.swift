@@ -103,6 +103,8 @@ private func formatMetricForResilience(_ metric: WorkoutMetric) -> String {
     case .pace, .duration:
         let total = Int(metric.value.rounded())
         return "\(total / 60):\(String(format: "%02d", total % 60))"
+    case .energy:
+        return String(Int(metric.value.rounded()))
     }
 }
 
