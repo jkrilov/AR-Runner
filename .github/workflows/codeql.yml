@@ -50,6 +50,13 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
+      # project.yml references Config/Signing.xcconfig (gitignored). Running the
+      # bootstrap script with no env creates a placeholder xcconfig so xcodegen
+      # doesn't fail with "Invalid config file". This job builds with
+      # CODE_SIGNING_ALLOWED=NO so the empty DEVELOPMENT_TEAM is harmless.
+      - name: Bootstrap signing xcconfig
+        run: ./scripts/bootstrap-signing.sh
+
       - name: Generate Xcode project
         run: xcodegen generate
 
