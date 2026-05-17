@@ -103,7 +103,58 @@ This applies even if the consuming workflow builds with `CODE_SIGNING_ALLOWED=NO
 | Date | Issue | Root Cause | Fix |
 |---|---|---|---|
 | 2026-05-16 | PR #21: all 4 macOS builds + CodeQL red | `ci-build.yml` and `codeql.yml` missing bootstrap step | Added `Bootstrap signing xcconfig` step to both (commit d8339d0) |
-| 2026-05-17 | v0.2.0-rc1 first TestFlight archive failed | Xcode 16 CLI automatic-signing defaults `CODE_SIGN_IDENTITY` to `"Apple Development"`; archive then tried to mint a *development* profile and failed with "team has no devices" | Pin `CODE_SIGN_IDENTITY="Apple Distribution"` (and the `[sdk=iphoneos*]` variant) on the archive `xcodebuild` command (PR `fix/v02-rc1-archive-failure`, run 25989849479) |
+| 2026-05-17 | rc1 (run 25989849479): archive failed with "no devices" / "no profiles for com.arrunner.phone" | xcodegen-generated pbxproj inherits Xcode's project-template default `CODE_SIGN_IDENTITY = "Apple Development"`. With `CODE_SIGN_STYLE=Automatic` + `xcodebuild ... archive`, that default wins and `-allowProvisioningUpdates` tries to mint a *Development* profile, which needs registered devices (CI has none). | PR #23: attempted CLI pin `CODE_SIGN_IDENTITY="Apple Distribution"` + conditional. Wrong fix — see next row. |
+| 2026-05-17 | rc2 (run 25990326363): archive failed with "conflicting provisioning settings ... code signing identity iphoneos*]=Apple Distribution has been manually specified" | Two compounding bugs: (a) xcodebuild's CLI setting parser does NOT support `SETTING[sdk=...]=value` conditional syntax — it mis-parses into a literal value of `iphoneos*]=Apple Distribution` that overwrites the bare key; (b) pinning bare `CODE_SIGN_IDENTITY=...` on the CLI is rejected by Xcode as "manually specified" when `CODE_SIGN_STYLE=Automatic`, even though it's the *correct* identity. | PR #24: removed both CLI args from `release-testflight.yml`; instead append `CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution` and `[sdk=watchos*]` to `Config/Signing.xcconfig` after `bootstrap-signing.sh` and before `xcodegen generate`. xcconfig accepts the conditional syntax; xcconfig values are project config, so Xcode doesn't flag them as "manually specified". |
+
+---
+
+## ⚠️ CRITICAL TRAP: xcodebuild CLI doesn't parse `SETTING[sdk=...]=value`
+
+### What happens
+
+You learn (rightly) that the project default `CODE_SIGN_IDENTITY = "Apple Development"` is wrong for an archive build and try to override it on the xcodebuild command line:
+
+```bash
+xcodebuild ... \
+  CODE_SIGN_IDENTITY="Apple Distribution" \
+  "CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution" \
+  archive
+```
+
+xcodebuild echoes back:
+
+```
+Build settings from command line:
+    CODE_SIGN_IDENTITY = iphoneos*]=Apple Distribution
+```
+
+The conditional form **silently mis-parses and overwrites the bare value** with garbage. Then Xcode fails the archive with:
+
+```
+error: <target> has conflicting provisioning settings. <target> is automatically
+signed, but code signing identity iphoneos*]=Apple Distribution has been
+manually specified.
+```
+
+### Two separate things going wrong
+
+1. **`SETTING[sdk=...]=value` is xcconfig-only syntax.** It works in `.xcconfig` files and in the Build Settings editor — never on the xcodebuild command line. There is no error or warning; xcodebuild treats `CODE_SIGN_IDENTITY[sdk` as the setting name and `iphoneos*]=Apple Distribution` as the value.
+2. **`CODE_SIGN_IDENTITY` + `CODE_SIGN_STYLE=Automatic` on the CLI = "conflicting provisioning settings".** Xcode treats *any* CLI-set `CODE_SIGN_IDENTITY` as a manual override that conflicts with automatic signing, regardless of whether the value is correct. This applies to every signed target (app, watch app, widgets, watch widgets) — they all fail.
+
+### The fix
+
+Put the identity override in `Config/Signing.xcconfig` (or whatever xcconfig your `configFiles:` references). xcconfig values are treated as project config, so Xcode does NOT flag them as "manually specified". Use the conditional form to keep simulator builds unaffected:
+
+```
+CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
+```
+
+In CI, append these lines after `bootstrap-signing.sh` and before `xcodegen generate`. Don't put them in the script itself — local dev with a Personal Team needs `Apple Development` for device debugging.
+
+### Rule (durable)
+
+> **Never set `CODE_SIGN_IDENTITY` on the xcodebuild command line** when `CODE_SIGN_STYLE=Automatic`. Put it in an xcconfig — that's the only place where the `[sdk=...]` conditional syntax is honored and where it doesn't trip the "manually specified" check.
 
 ---
 
@@ -120,10 +171,10 @@ error: No profiles for 'com.example.app' were found: Xcode couldn't find any iOS
 ### Why it happens
 From the CLI (unlike Xcode.app's Product → Archive), automatic signing honors the build setting `CODE_SIGN_IDENTITY` literally. xcodegen-generated projects don't set it, so it inherits Xcode's project template default: `"Apple Development"`. Once that's in effect, `-allowProvisioningUpdates` tries to provision a Development profile, which requires registered devices on the team — CI runners have none.
 
-### The fix (durable)
-> **Whenever `xcodebuild archive` runs in CI with `CODE_SIGN_STYLE=Automatic`, also pass `CODE_SIGN_IDENTITY="Apple Distribution"` AND `"CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution"` on the same command line.**
+### The fix (durable) — REVISED after rc2
+> **Put `CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution` (and `[sdk=watchos*]`) in an xcconfig, NOT on the xcodebuild command line.**
 
-Both forms are needed: the bare key sets the default; the sdk-scoped key wins on actual iOS device builds when both are present in the resolved build settings.
+Earlier guidance suggested pinning these on the `xcodebuild` CLI. That breaks two ways (see the trap section above): (a) xcodebuild's CLI parser mis-parses the `[sdk=...]` conditional syntax, and (b) any CLI-set `CODE_SIGN_IDENTITY` is rejected as a "manually specified" conflict with `CODE_SIGN_STYLE=Automatic`. xcconfig is the only place where both problems go away.
 
 ### Why GUI archives "just work"
 Xcode.app's archive action internally promotes the signing identity to Distribution based on the action type. The CLI does not.
@@ -132,6 +183,6 @@ Xcode.app's archive action internally promotes the signing identity to Distribut
 
 ## Open Question: Should PR CI probe-build Release?
 
-`ci-build.yml` only builds Debug for the simulator. Release config differs in `-O` optimization level and sometimes in warnings-as-errors behavior — meaning a Release-only build error (or a Release-only signing misconfig like the one above) won't surface until the TestFlight workflow runs, by which point the version tag is already burned. Decision-worthy: add a `xcodebuild build -configuration Release CODE_SIGNING_ALLOWED=NO` job to PR CI? Trade-off: ~3-4 extra minutes per PR vs. catching this class of bug at PR time. See `decisions/inbox/richards-first-tf-run-postmortem.md`.
+`ci-build.yml` only builds Debug for the simulator. Release config differs in `-O` optimization level and sometimes in warnings-as-errors behavior — meaning a Release-only build error (or a Release-only signing misconfig like the rc1/rc2 traps) won't surface until the TestFlight workflow runs, by which point the version tag is already burned. **Two data points now** support adding a `xcodebuild build -configuration Release CODE_SIGNING_ALLOWED=NO` job (or even an `archive` without signing) to PR CI. Trade-off: ~3-4 extra minutes per PR vs. catching this class of bug at PR time. See `decisions/inbox/richards-first-tf-run-postmortem.md` (rc1) and `decisions/inbox/richards-rc2-postmortem.md` (rc2).
 
 

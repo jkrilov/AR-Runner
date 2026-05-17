@@ -8,6 +8,50 @@
 
 ## Active Learnings
 
+### 2026-05-17: rc2 archive trap — xcodebuild CLI mis-parses `SETTING[sdk=...]=value`, and CLI-set `CODE_SIGN_IDENTITY` conflicts with `CODE_SIGN_STYLE=Automatic`
+
+**Context:** PR #23 pinned `CODE_SIGN_IDENTITY="Apple Distribution"` plus `"CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution"` on the xcodebuild archive command line, fixing rc1's "no devices" error in principle. rc2 (run 25990326363) failed differently:
+
+```
+Build settings from command line:
+    CODE_SIGN_IDENTITY = iphoneos*]=Apple Distribution
+...
+error: ARRunnerWidgetsPhone has conflicting provisioning settings.
+ARRunnerWidgetsPhone is automatically signed, but code signing identity
+iphoneos*]=Apple Distribution has been manually specified.
+```
+
+**Two compounding bugs:**
+
+1. **xcodebuild's command-line setting parser does not support `SETTING[sdk=...]=value` conditional syntax.** That syntax is xcconfig-only (and Build Settings editor). On the CLI, xcodebuild silently mis-parses `CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution` into setting name = `CODE_SIGN_IDENTITY` (somehow stripping the `[sdk=` prefix) and value = literally `iphoneos*]=Apple Distribution`. The bare `CODE_SIGN_IDENTITY="Apple Distribution"` that preceded it gets overwritten. No warning. No diagnostic.
+2. **CLI-set `CODE_SIGN_IDENTITY` + `CODE_SIGN_STYLE=Automatic` is treated as a "conflicting provisioning setting"** by Xcode 16, per target. Even if (1) hadn't garbled the value, the bare pin alone would have failed every signed target with the same error. The pin works fine when set in the project / xcconfig — but on the CLI it's always rejected as a manual override.
+
+**Resolution (PR #24, branch `fix/v02-rc2-archive-failure`):**
+
+Removed both `CODE_SIGN_IDENTITY` args from the `xcodebuild ... archive` invocation in `release-testflight.yml`. Instead, after `bootstrap-signing.sh` runs (which writes `Config/Signing.xcconfig` with `DEVELOPMENT_TEAM` + `CODE_SIGN_STYLE=Automatic`), the workflow appends:
+
+```
+CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
+```
+
+xcconfig accepts the conditional syntax. Project-level xcconfig values are treated as project config, not manual overrides, so the "conflicting provisioning settings" check passes. Scoped by sdk so simulator builds and local Personal-Team device debugging (which uses `Apple Development`) are unaffected — the bootstrap script itself does NOT write these lines; only the release workflow appends them.
+
+**Why this slipped past rc1's fix (meta-observation):**
+
+rc1's PR (#23) was reasoned through correctly: project default of `Apple Development` → needs to be `Apple Distribution` for archive → pin it on the CLI. But the fix was *only validated by reasoning*, not by an actual archive build, because the release workflow only fires on tag push and tag push is "the test". There is no Release-config probe build in PR CI. We're now two-for-two on first-real-archive-run learnings (rc1: wrong identity inherited; rc2: right identity, wrong place to set it). Decision inbox entry `richards-rc2-postmortem.md` proposes a Release-config archive smoke step in PR CI — second data point for the same recommendation already filed at rc1.
+
+**Durable rules added to skill:**
+
+- Never set `CODE_SIGN_IDENTITY` on the xcodebuild command line with `CODE_SIGN_STYLE=Automatic` — always go through xcconfig.
+- `SETTING[sdk=...]=value` conditional syntax is xcconfig-only. xcodebuild's CLI parser will silently mis-parse it.
+
+**Artifacts:**
+- PR #24 (branch `fix/v02-rc2-archive-failure`).
+- Skill update: new "⚠️ CRITICAL TRAP: xcodebuild CLI doesn't parse `SETTING[sdk=...]=value`" section + new incident-log row. Confidence bumped Medium → Medium-High.
+- Doc update: `docs/dev/testflight-setup.md` troubleshooting table — refined the "no devices" row to reference the xcconfig fix and added a new row for the "conflicting provisioning settings" symptom.
+- Decision inbox: `richards-rc2-postmortem.md` re-amplifying the Release-config probe-build proposal.
+
 ### 2026-05-16: Architecture & Best-Practices Audit (read-only)
 
 Delivered `.squad/audits/2026-05-16-richards-architecture.md`. Parallel-run with Laughlin and Weiss on their domains.
