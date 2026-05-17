@@ -1470,3 +1470,156 @@ The adapter sends `ActiveLookCommand.displayLayout(id: deviceID)` using these sl
 The Config-Generator outputs and any generated binary configs must **not** be committed to the repo (see permanent decision: ActiveLook visual-assets hard rule covers Config-Generator outputs, CC BY-NC-ND 4.0). Only the numeric slot constants belong in Swift source.
 
 **Owner:** Weiss (integration) + Joe (hardware, Config-Generator access).
+
+---
+
+## P1 Audit Fixes — May 16 Turn (v0.2 release-candidate bugfixes)
+
+### 2026-05-17T00:48:29Z: D-AMBER — Add `MetricKind.energy` for active kcal
+
+**Author:** Amber (QA & Fitness Domain)  
+**Branch / commit:** `fix/v02-p1-audit-bugs` @ `9571e23`  
+**Audit ref:** `.squad/audits/2026-05-16-laughlin-watchos.md` (P1.3)
+
+#### Context
+
+`HealthKitWorkoutSubstrate.metric(for:)` mapped `HKQuantityType.activeEnergyBurned` to `WorkoutMetric(kind: .duration, …)` because Core's `MetricKind` enum had no kcal case. Both `WorkoutController.ingest` and the HUD formatters dropped the value silently. The saved `HKWorkout` still carried it, but live on-watch/on-glasses "flame" readings only ever reflected the local `EnergyAccumulator` estimate.
+
+#### Decision
+
+Added `case energy` to `MetricKind` in `ARRunnerCore/Sources/ARRunnerCore/Models/WorkoutMetric.swift`.
+
+- **Unit:** kcal (matches HealthKit's `HKUnit.kilocalorie()`, no conversion at boundary).
+- **rawValue:** `"energy"` (string-stable for WC payloads and persisted JSON).
+- **Conformances unchanged:** `String, Sendable, Codable, CaseIterable, Equatable`.
+- **Controller behaviour:** `WorkoutController.ingest(metric:)` folds `.energy` into the existing no-op `.pace, .duration` arm. The controller does not own kcal accumulation — that's substrate / `EnergyAccumulator` territory.
+
+#### Required follow-up (Laughlin, Phase B)
+
+- Update `HealthKitWorkoutSubstrate.metric(for:)` to return `MetricKind.energy` (unit `"kcal"`) when the sample's quantity type is `activeEnergyBurned`, instead of `.duration`.
+- HUD / phone consumers that want the live flame value can now subscribe to `metric.kind == .energy` rather than reading the post-session `HKWorkout`.
+
+Until that lands, the new case is dormant.
+
+#### Test status
+
+`ARRunnerCore/Tests/ARRunnerCoreTests/WorkoutMetricTests.swift`: **80 executed, 1 skipped, 0 failures**.
+
+- `testEnergyKindExistsAndRoundTrips` — `.energy` ∈ `allCases`, Codable round-trip with kcal unit.
+- `testMetricKindRawValueStable` — `.energy.rawValue == "energy"` (locks cross-process key).
+
+#### Scope discipline
+
+- Did NOT touch `HealthKitWorkoutSubstrate.swift` (Laughlin / watchOS-owned, Phase B).
+- Did NOT touch the watch or phone apps. Core-only change.
+- Touched two integration test helpers (`formatMetricImpl`, `formatMetricForResilience`) to handle the new case.
+
+---
+
+### 2026-05-17T00:48:29Z: D-WEISS — HUD per-tick wire + placeholder-ID hardware guard
+
+**Author:** Weiss (AR/BLE Integration)  
+**Branch / commits:** `fix/v02-p1-audit-bugs` @ `7dd784e` (P1.2 wire), `4f2947b` (P1.4 ID guard)  
+**Audit ref:** `.squad/audits/2026-05-16-weiss-ar-ble.md` (P1.2, P1.4)
+
+#### Context
+
+The 2026-05-16 AR/BLE audit identified two P1 hardware-blocking gaps:
+
+1. **P1.2** — `GlassesService.update(...)` was implemented but never instantiated. `WorkoutViewModel` constructed the transport and called `.connect()` only; the metric stream was never fanned out. Real glasses received the initial layout activation on connect and then nothing for the rest of the workout.
+2. **P1.4** — `CuratedLayoutCatalog.mapping` returns placeholder slot bytes (`0x01–0x03`). Real values await the Config-Generator bake step. Hardware tests would silently activate the wrong on-device layout.
+
+Both block TestFlight + bench bring-up.
+
+#### Decision — P1.2: wire the per-tick HUD path
+
+- `WorkoutViewModel.start(...)` now constructs a `GlassesService` alongside the transport and retains it.
+- `attachGlasses(transport:service:)` selects the default curated preset (`RunningHUDPreset.default`, i.e. `balanced-run`) on every `.connected` edge, and calls `resetThrottle()` on `.disconnected` / `.reconnecting` / `.failed` edges so the first post-reconnect tick lands immediately per fieldIndex.
+- `apply(metric:)` in the view model schedules `Task { await glasses.apply(metric:) }` on every metric tick. Fire-and-forget — BLE state never back-pressures the workout pipeline.
+- `GlassesService.apply(metric:)` (new) maps `MetricKind → fieldIndex` via the active `HUDLayout.slots` ordering, guards on `transport.connectionState == .connected`, and consults a 1Hz-per-fieldIndex `HUDFieldThrottle` (new value type in Core). Unknown metric kinds (e.g. `.energy`, not yet addressed by curated presets) are dropped silently.
+- `HUDFieldThrottle` uses strict `<` at the boundary, denies-without-advancing, and is per-`fieldIndex` independent.
+
+#### Decision — P1.4: debug-assert on placeholder slot writes
+
+- Kept `CuratedLayoutCatalog.deviceID(for:)` assert-free (pure lookup, exercised by Linux Core tests with placeholders).
+- New `CuratedLayoutCatalog.placeholderDeviceIDs: Set<UInt8> = [0x01, 0x02, 0x03]` and `assertNotPlaceholder(_:layoutID:)` helper.
+- `ActiveLookGlassesAdapter` calls the assert at three wire-write sites: `selectLayout`, `updateField`, and the reconnect re-apply. Debug builds trap; release builds log `.fault` for side-store visibility.
+- Catalog `mapping` entries annotated with `TODO(P1.4 from .squad/audits/2026-05-16-weiss-ar-ble.md)`.
+
+#### Rationale
+
+- Metric fan-out **inside** `GlassesService` (vs. expanding `WorkoutViewModel.apply`) keeps `WorkoutViewModel` layout-agnostic and backs any future Mirror code path.
+- Pure-Swift `HUDFieldThrottle` value type lives in Core so Linux CI exercises the contract; the actor-owned mutation lives in `GlassesService`.
+- Debug-trap-on-placeholder + release-fault-log mirrors the existing `assertionFailure` / `os_log` pattern and avoids release-build crashes.
+- Two separate commits — easy to revert P1.4's assert independently if Config-Generator bake lands a non-trivial slot range.
+
+#### Test status
+
+- **Core SPM:** 93/93 pass (1 skipped, pre-existing). New: `HUDFieldThrottleTests` (6), `WorkoutMetricFanoutTests` (3), `CuratedLayoutCatalogPlaceholderTests` (3).
+- **watchOS build:** `xcodebuild ARRunnerWatch` succeeds (Swift 6 / Xcode 16, no warnings).
+- **iOS build:** `xcodebuild ARRunnerPhone` succeeds.
+
+#### Out of scope
+
+- Hoisting `CBCentralManager` out of per-`beginConnect()` construction (audit debt #3).
+- Scan-timeout `Task` retention + cancel-on-state-exit (audit debt #5).
+- Real Config-Generator bake → replace `mapping` placeholders.
+- Watch XCTest target.
+
+---
+
+### 2026-05-17T00:48:29Z: D-LAUGHLIN — P1.1 + P1.3 bugfixes — Smart Stack handoff + HK energy mapping
+
+**Author:** Laughlin (watchOS Dev)  
+**Branch / commits:** `fix/v02-p1-audit-bugs` @ `2a31b84` (P1.1), `2ca0d22` (P1.3)  
+**Audit refs:** `.squad/audits/2026-05-16-laughlin-watchos.md` (P1.1, P1.3)  
+**Related:** Amber's D-AMBER (commit 9571e23), Weiss's `7dd784e` (added `hasLiveHKEnergy` latch in `WorkoutViewModel`).
+
+#### Context — P1.1: Smart Stack Start was a TODO
+
+`ARRunnerWidgets/StartWorkoutIntent.swift:11-14` returned `.result()` and did nothing. `openAppWhenRun = true` foregrounded the host app, but the user landed on idle `WorkoutView` and still had to tap Start. v0.2 Story 1 acceptance ("user can start workout from Smart Stack widget") was failing.
+
+#### Context — P1.3: HealthKit active energy mis-routed
+
+`HealthKitWorkoutSubstrate.metric(for:)` mapped `HKQuantityType(.activeEnergyBurned)` to `WorkoutMetric(kind: .duration, …)` because Core's `MetricKind` had no kcal case. Both `WorkoutController.ingest` and `WorkoutViewModel.apply(metric:)` dropped every sample silently. The saved `HKWorkout.totalEnergyBurned` worked (read directly in `end()`), so the post-session summary was correct — but the on-watch and on-HUD live "flame" reading only ever reflected the local `EnergyAccumulator` HR-based estimate, never HK truth.
+
+#### Decision — P1.1: App Group `UserDefaults` flag as the AppIntent → host handoff
+
+Added a Core protocol `PendingWorkoutStartStore` + concrete `AppGroupPendingWorkoutStartStore` in `ARRunnerCore/Sources/ARRunnerCore/Workout/PendingWorkoutStart.swift`. Two methods: `markPending(at: Date)` (intent side) and `consumePending(now: Date, freshness: TimeInterval) -> Bool` (host side, atomic clear-on-read). Backed by `UserDefaults(suiteName: "group.com.arrunner.shared")` — the same App Group already declared on every relevant target's entitlements.
+
+`StartWorkoutIntent.perform()` calls `pendingStartStore.markPending(at: now())`. `WorkoutView` reads `scenePhase` via `@Environment` and, on `.active` (plus a first-launch `.task`), calls `pendingStartStore.consumePending(now: Date(), freshness: 60)`. If `true` and `viewModel.launchState` is `idle/ended/cancelled/failed`, it calls `viewModel.start()`.
+
+**Why a flag instead of URL / NotificationCenter?**
+- Intent runs in widget-extension process; no equivalent of `UIApplication.openURL` round-trip on watchOS.
+- `NotificationCenter` doesn't cross processes.
+- App Group `UserDefaults` is documented, atomic, and already provisioned.
+- Freshness window (60s) makes a stale tap safe.
+
+#### Decision — P1.3: Pure mapping helper in Core, called by the watch substrate
+
+Added `ARRunnerCore/Sources/ARRunnerCore/Workout/HealthKitMetricMapping.swift` with `static func activeEnergy(kilocalories:timestamp:) -> WorkoutMetric` returning `WorkoutMetric(kind: .energy, value: kcal, unit: "kcal", …)`. Substrate's switch case now calls through. Why a helper instead of inlining? The project has no watchOS test target — only `ARRunnerCoreTests`. The Core helper is the contract surface we can lock without needing HKHealthStore on the test runner.
+
+Downstream display: Weiss's `7dd784e` already extended `WorkoutViewModel.apply(metric:)` with a `case .energy` arm + `hasLiveHKEnergy` latch (prevents subsequent heart-rate ticks from overwriting HK truth with the local estimate). Laughlin's was a no-op duplicate — confirmed her impl matches the intent.
+
+#### Required follow-up
+
+- v0.2 Story 4 (lock-screen complication) is planned separate work.
+- Phone-side widget intent (same `StartWorkoutIntent`, runs in `ARRunnerWidgetsPhone`) will also drop the flag — but the phone app currently has no equivalent of `WorkoutView` and won't auto-start. Expected behaviour for v0.2 (watch is workout-authoritative per D1); the phone widget's value is launching the companion app for the live mirror.
+- The latent bug noted in the audit (HealthKit identifier optional-pattern match in `metric(for:)` switch) was NOT addressed in this fix — out of scope per Joe's task framing. File as P2 for the next sweep.
+
+#### Test status
+
+- `ARRunnerCore/Tests/ARRunnerCoreTests/HealthKitMetricMappingTests.swift` — `testActiveEnergyMapsToEnergyKindWithKilocalorieUnit` locks the substrate's kcal contract; `testActiveEnergyPreservesValueAcrossRange` exercises the realistic sample range.
+- `ARRunnerCore/Tests/ARRunnerCoreTests/PendingWorkoutStartStoreTests.swift` — covers empty/marked/consumed/stale/clock-skew/cross-instance flows. `StartWorkoutIntentContractTests` mirrors the intent's `perform()` flow.
+- Watch target build: `xcodebuild -project AR-Runner.xcodeproj -scheme ARRunnerWatch -destination 'generic/platform=watchOS' CODE_SIGNING_ALLOWED=NO build` → **BUILD SUCCEEDED**.
+
+**Test count:** `swift test` from `ARRunnerCore/`: **101 executed, 1 skipped (pre-existing v0.2 #5 anticipatory), 0 failures**.
+
+#### Scope discipline
+
+- Did NOT touch `WorkoutViewModel` — Weiss's `7dd784e` had already landed the `.energy` arm + `hasLiveHKEnergy` latch by the time Laughlin staged.
+- Did NOT touch `GlassesService` — Weiss-owned, P1.2.
+- Did NOT touch curated device IDs — Weiss-owned, P1.4.
+- Did NOT touch `MetricKind` enum — Amber-owned, shipped 9571e23.
+- Did NOT fix the latent optional-pattern-match in the substrate switch — out of scope per Joe.
+
