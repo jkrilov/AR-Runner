@@ -66,3 +66,11 @@ Tests: 101 passing in `swift test` from `ARRunnerCore/`, 0 failures, 1 pre-exist
 - **Local working-tree gets passively updated when teammates push.** Started the session with `git pull --rebase` saying "Already up to date" (HEAD was 9571e23). By the time I went to commit, Weiss's 7dd784e and 4f2947b had landed on HEAD — and her 7dd784e already contained the WorkoutViewModel `hasLiveHKEnergy` latch I'd planned to add. Net effect: my "viewmodel changes" diffed to zero because they were already there. Lesson: re-check `git log --oneline -5` before committing, not just before pulling. Worst case I would've overwritten Weiss's work with an identical-but-conflict-prone duplicate edit.
 
 - **Cross-agent P1 coordination: Amber → Weiss → Laughlin handoff.** Amber's commit 9571e23 added the `MetricKind.energy` case Laughlin needed for the P1.3 HealthKit mapping. Before Laughlin could stage, Weiss's 7dd784e arrived with the `hasLiveHKEnergy` latch already present in `WorkoutViewModel.apply(metric:)` — a workaround Weiss invented to prevent downstream HR-estimate updates from overwriting the live HK kcal truth once the substrate emits `.energy`. Laughlin's mapping simply wired the `.energy` emission. The latch made sense given the live-metric-overwrite risk (HK updates tick asynchronously vs. controller accumulation) and proved a valuable defence-in-depth. Rebase-before-push pattern ensured no conflicts when both Weiss + Laughlin touched `WorkoutViewModel`.
+
+## 2026-05-17T21:56:30Z — Cross-agent note from Scribe (D-RICHARDS-TF-11 trap)
+
+**From Richards' rc5 diagnostics:** When using `-allowProvisioningUpdates` + manual signing (Xcode CLI), the provisioning profiles minted by the ASC API can only declare capabilities that are already enabled on the App ID itself in developer.apple.com. If your code entitlements declare HealthKit but the App ID doesn't have HealthKit enabled in the portal, the minted profile won't satisfy Xcode's entitlement checker, and the archive will fail with a "missing capability" error.
+
+**Canonical rule:** "App ID capabilities must mirror entitlements when using -allowProvisioningUpdates + manual signing."
+
+This is portal-side state, not code-fixable, and is a new trap class in SKILL.md. Relevant during any future release campaign / signing fix work.

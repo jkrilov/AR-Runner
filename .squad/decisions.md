@@ -1623,3 +1623,98 @@ Downstream display: Weiss's `7dd784e` already extended `WorkoutViewModel.apply(m
 - Did NOT touch `MetricKind` enum — Amber-owned, shipped 9571e23.
 - Did NOT fix the latent optional-pattern-match in the substrate switch — out of scope per Joe.
 
+# D-RICHARDS-TF-9 — Remove all signing build settings from xcodebuild CLI; xcconfig is single source of truth
+
+**Date:** 2026-05-17
+**Author:** Richards
+**Status:** Proposed
+**Supersedes / refines:** D-RICHARDS-TF-8 remains valid (probe-build is orthogonal). This decision completes the signing-pathway fix that D-RICHARDS-TF-1 through TF-7 established and rc1/rc2/rc3 exposed gaps in.
+
+## Context
+
+Three consecutive rc failures (rc1, rc2, rc3) all trace to the same root: signing-related build settings placed on the `xcodebuild archive` command line instead of in the project-level xcconfig.
+
+| RC | CLI setting | Failure |
+|---|---|---|
+| rc1 | (none — inherited default `Apple Development`) | "no devices" — automatic signing tried Development profile path |
+| rc2 | `CODE_SIGN_IDENTITY="Apple Distribution"` + `"CODE_SIGN_IDENTITY[sdk=iphoneos*]=..."` | xcodebuild mis-parsed `[sdk=...]` conditional; bare identity flagged as "manually specified" |
+| rc3 | `CODE_SIGN_STYLE=Automatic` (with identity moved to xcconfig) | CLI override elevated style to highest precedence, making xcconfig identity appear as conflicting manual override on widget targets; main target fell back to Development path |
+
+## Decision
+
+**All signing-related build settings (`CODE_SIGN_STYLE`, `CODE_SIGN_IDENTITY`) live exclusively in `Config/Signing.xcconfig`.** They are never passed on the `xcodebuild` command line.
+
+The only signing-adjacent setting allowed on the CLI is `DEVELOPMENT_TEAM` (a runtime secret, not a mode selector).
+
+The release workflow appends Distribution identity pins to the xcconfig after `bootstrap-signing.sh`:
+```
+CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
+```
+
+**Additional fix:** xcodegen injects `CODE_SIGN_IDENTITY = "iPhone Developer"` at the target level for iOS application targets. This overrides the project-level xcconfig (target settings > project xcconfig in Xcode's precedence). Fixed by setting `CODE_SIGN_IDENTITY: $(inherited)` in `project.yml` for ARRunnerPhone, which defers to the xcconfig.
+
+## Options considered
+
+| Option | Verdict | Trade-off |
+|---|---|---|
+| **A: Manual signing for archive** (`CODE_SIGN_STYLE=Manual` on CLI + per-target profile specifiers) | Rejected | Defeats `-allowProvisioningUpdates` profile creation; requires portal pre-provisioning for every bundle ID; adds maintenance when adding new targets/extensions. Overkill given that xcconfig-only automatic signing should work. |
+| **B: xcconfig-only automatic signing** (remove `CODE_SIGN_STYLE` from CLI, keep xcconfig pins) | **Chosen** | Both CODE_SIGN_STYLE and CODE_SIGN_IDENTITY at project-config level — consistent precedence, no conflict. `-allowProvisioningUpdates` creates Distribution profiles via ASC API. Trade-off: first archive after adding a new bundle ID may take 1-2 extra minutes while Xcode creates the profile. |
+| **C: Keep automatic signing, override everything on CLI** | Rejected | xcodebuild's CLI parser doesn't support `[sdk=...]` conditionals, and any CLI identity conflicts with CLI `CODE_SIGN_STYLE=Automatic`. Three rc failures prove this approach is fundamentally broken. |
+
+## Consequences
+
+1. `release-testflight.yml` archive step passes `DEVELOPMENT_TEAM`, `MARKETING_VERSION`, `CURRENT_PROJECT_VERSION`, and `OTHER_CODE_SIGN_FLAGS` on CLI — nothing else signing-related.
+2. Distribution profiles for all 4 bundle IDs must exist in the portal OR be mintable by the ASC API key (App Manager role).
+3. Local dev is unaffected — `bootstrap-signing.sh` writes `CODE_SIGN_STYLE = Automatic` with no identity pin; Xcode.app uses the developer's personal Apple Development cert.
+
+## Owner if accepted
+
+Richards (Lead / Architect)
+
+### D-RICHARDS-TF-11: rc5 archive fails on portal-side App ID capabilities — fix is portal action, not code (2026-05-17)
+
+**Context.** v0.2.0-rc5 (run [26004285341](https://github.com/jkrilov/AR-Runner/actions/runs/26004285341)) confirmed the rc4 manual-signing fix worked: no more "automatically signed for development" conflict. Archive now fails one layer deeper, with two errors specific to provisioning-profile capability content:
+
+> `"ARRunnerWidgetsPhone" requires a provisioning profile with the App Groups feature. Select a provisioning profile in the Signing & Capabilities editor.`
+>
+> `"ARRunnerPhone" requires a provisioning profile with the App Groups and HealthKit features. Select a provisioning profile in the Signing & Capabilities editor.`
+
+The entitlements in the repo are correct and unambiguous:
+
+| Target | Bundle ID | Entitlements declared |
+|---|---|---|
+| `ARRunnerPhone` | `com.arrunner.phone` | App Groups (`group.com.arrunner.shared`) + HealthKit |
+| `ARRunnerWidgetsPhone` | `com.arrunner.phone.widgets` | App Groups (`group.com.arrunner.shared`) |
+
+`Config/ARRunnerPhone.entitlements` declares both keys; `Config/ARRunnerWidgetsPhone.entitlements` declares App Groups. `project.yml` `ARRunnerPhone-Info.plist` has both `NSHealthShareUsageDescription` and `NSHealthUpdateUsageDescription`. Nothing on the repo side is missing.
+
+**Root cause (portal-side).** `-allowProvisioningUpdates` + the ASC API key can mint an Apple Distribution provisioning profile on demand, **but only for capabilities already enabled on the App ID itself in the Apple Developer portal.** The error message is Xcode's way of saying "the profile I just minted doesn't satisfy your entitlements file because the App ID doesn't declare those capabilities." This is not something the CI can fix — App ID capability registration is a one-time portal action by an Account Holder / Admin.
+
+**Decision: Path (a) — Joe enables capabilities on the App IDs in the developer portal. No code change. Retag rc6 after confirmation.**
+
+Considered and rejected:
+
+- **Path (b)** — pass `PROVISIONING_PROFILE_SPECIFIER` per target with hand-created profiles. Rejected: requires Joe to do portal work *and* a code change, couples the workflow to profile names, and breaks the ergonomic of `-allowProvisioningUpdates` minting profiles on demand. Reconsider only if path (a) reveals a portal-side blocker (e.g., HealthKit requires extra approval on this team).
+- **Path (c)** — adopt fastlane `match`. Rejected per scope discipline: it's a larger architectural commitment (new dependency, private profiles repo, new secret rotation story) that would only be justified if (a) and (b) both failed. They haven't.
+
+**Trade-off named.** Path (a) puts the source of truth for capability registration *outside* the repo — in the developer portal — which is invisible to code review and CI assertions. The mitigation is the runbook entry below (and SKILL.md update) that names this as a class of failure and tells future-us exactly which portal pages to check first.
+
+**Required portal actions (for Joe — Account Holder).**
+
+Go to <https://developer.apple.com/account/resources/identifiers/list> on the AR-Runner team and:
+
+1. **App Group** — Identifiers → "App Groups" filter → confirm `group.com.arrunner.shared` exists. If not, create it (name: `AR-Runner Shared`, identifier: `group.com.arrunner.shared`).
+2. **`com.arrunner.phone`** — open the App ID → enable **App Groups** capability → "Edit" → check `group.com.arrunner.shared` → Continue. Then enable **HealthKit** capability → Continue. Save.
+3. **`com.arrunner.phone.widgets`** — open the App ID → enable **App Groups** capability → "Edit" → check `group.com.arrunner.shared` → Continue. Save.
+4. *(Optional sanity, not required for this iteration)* — repeat the App Groups enable for the watchOS App IDs `com.arrunner.phone.watchkitapp` (App Groups + HealthKit) and `com.arrunner.phone.watchkitapp.widgets` (App Groups). The rc5 archive only signs the iOS scheme so they're not blocking, but they will be when the watch scheme starts shipping.
+
+No need to manually create or download provisioning profiles. Once the App IDs declare the capabilities, `-allowProvisioningUpdates` + the ASC API key will mint matching Apple Distribution profiles on the next archive run.
+
+**Validation plan.** After Joe confirms portal state, retag `v0.2.0-rc6` from `main`. Expected outcome: archive succeeds, IPA exports, altool upload reaches App Store Connect. If it still fails, capture the exact error and revisit — likely either a HealthKit approval requirement on the team or a stale cached profile, both of which have known fixes that do not require code changes.
+
+**Supersedes:** none. **Extends:** D-RICHARDS-TF-10 (rc4 manual-signing fix); without that fix this error class would have been invisible behind the earlier identity conflict.
+
+**Re-amplifies:** D-RICHARDS-TF-8 (PR-time Release-config probe). A `-showBuildSettings` probe wouldn't have caught this one — portal capability state is genuinely external — but a documented "before-rc-tag" runbook step ("confirm App ID capabilities match entitlements files") would have. Adding that to the TestFlight runbook.
+
+— Richards, 2026-05-17T21:54Z

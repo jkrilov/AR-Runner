@@ -85,3 +85,11 @@ Joe spawned me to fix the two AR P1 audit findings on `fix/v02-p1-audit-bugs`. B
 - **Cross-agent P1 coordination: Amber → Weiss → Laughlin.** Amber's MetricKind.energy case enabled Weiss to wire the HUD updater and add the `hasLiveHKEnergy` latch in `WorkoutViewModel.apply(metric:)` — a defensive pattern to prevent HK kcal truth from being overwritten by subsequent HR-estimate ticks (HK updates tick asynchronously). Laughlin's HealthKit mapping simply flipped the switch to emit `.energy`. The latch proved a valuable cross-agent coordination point: both Weiss and Laughlin touched `WorkoutViewModel` late-game, but the rebase-before-push discipline ensured no conflicts.
 
 **Skill candidate:** yes — wrote `.squad/skills/dead-code-after-connect/SKILL.md` capturing the "instantiated but unwired" pattern + how to backstop it with a per-key throttle and connected-state guard. Generalises beyond BLE: WCSession, network sockets, any async transport with a `connect()` → `send()` shape.
+
+## 2026-05-17T21:56:30Z — Cross-agent note from Scribe (D-RICHARDS-TF-11 trap)
+
+**From Richards' rc5 diagnostics:** When using `-allowProvisioningUpdates` + manual signing (Xcode CLI), the provisioning profiles minted by the ASC API can only declare capabilities that are already enabled on the App ID itself in developer.apple.com. If your code entitlements declare App Groups but the App ID doesn't have App Groups enabled in the portal, the minted profile won't satisfy Xcode's entitlement checker, and the archive will fail with a "missing capability" error.
+
+**Canonical rule:** "App ID capabilities must mirror entitlements when using -allowProvisioningUpdates + manual signing."
+
+This is portal-side state, not code-fixable, and is a new trap class in SKILL.md. Relevant during any future release campaign / signing fix work.
