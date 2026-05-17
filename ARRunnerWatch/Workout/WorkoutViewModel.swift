@@ -53,10 +53,19 @@ final class WorkoutViewModel {
     private(set) var hudOffline: Bool = false
     /// Live local kcal estimate (decision #4 hybrid). Replaced by the
     /// HealthKit-official figure inside `WorkoutSummary` on Save.
+    ///
+    /// v0.2 audit P1.3: once HK starts emitting a live `.energy` metric
+    /// (which it does as soon as the user has authorized active energy
+    /// share/read), the substrate's value overrides the local
+    /// `EnergyAccumulator` estimate. The `hasLiveHKEnergy` latch below
+    /// prevents subsequent `.heartRate` samples from clobbering the
+    /// authoritative HK reading back to the estimate.
     private(set) var estimatedActiveKilocalories: Double?
+    private var hasLiveHKEnergy: Bool = false
 
     private var controller: WorkoutController?
     private var transport: (any GlassesFrameTransport)?
+    private var glasses: GlassesService?
     private var stateTask: Task<Void, Never>?
     private var metricTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
@@ -120,7 +129,9 @@ final class WorkoutViewModel {
         if let transportFactory {
             let transport = transportFactory()
             self.transport = transport
-            attachGlasses(transport: transport)
+            let glasses = GlassesService(transport: transport)
+            self.glasses = glasses
+            attachGlasses(transport: transport, service: glasses)
             Task.detached { [transport] in
                 try? await transport.connect()
             }
@@ -226,14 +237,29 @@ final class WorkoutViewModel {
         await controller.reportGlassesSignal(signal)
     }
 
-    func attachGlasses(transport: any GlassesFrameTransport) {
+    func attachGlasses(transport: any GlassesFrameTransport, service: GlassesService? = nil) {
         glassesStateTask?.cancel()
         glassesStatusTask?.cancel()
+
+        // If the caller didn't bring their own service (the default `start()`
+        // path always does), build one so the per-tick fan-out still works.
+        let resolvedService = service ?? GlassesService(transport: transport)
+        if self.glasses == nil { self.glasses = resolvedService }
 
         glassesStateTask = Task { [weak self] in
             let stream = await transport.connectionStates()
             for await state in stream {
                 await self?.reportGlasses(.from(state))
+                // P1.2 (audit 2026-05-16): activate the default curated preset
+                // the moment we transition to `.connected` so subsequent
+                // per-tick `apply(metric:)` calls have a layout to address.
+                // Reset the throttle on every (re)connect so the first
+                // update for each field lands immediately.
+                if state == .connected {
+                    try? await resolvedService.selectLayout(preset: .default)
+                } else if state == .disconnected || state == .reconnecting || state == .failed {
+                    await resolvedService.resetThrottle()
+                }
             }
         }
         glassesStatusTask = Task { [weak self] in
@@ -302,6 +328,7 @@ final class WorkoutViewModel {
         distanceMeters = nil
         elapsed = 0
         estimatedActiveKilocalories = nil
+        hasLiveHKEnergy = false
         hudOffline = false
         lastHapticAt = nil
         if let bodyProfile {
@@ -350,10 +377,28 @@ final class WorkoutViewModel {
         case .heartRate:
             heartRate = metric.value
             energy?.ingest(heartRate: metric.value, at: metric.timestamp)
-            estimatedActiveKilocalories = energy?.totalKilocalories
+            // Only use the local estimate while HK hasn't started
+            // emitting live `.energy` samples. Once HK is the source of
+            // truth we stop overwriting its reading with the estimate.
+            if !hasLiveHKEnergy {
+                estimatedActiveKilocalories = energy?.totalKilocalories
+            }
         case .distance:
             distanceMeters = metric.value
+        case .energy:
+            // v0.2 audit P1.3: live HK kcal now reaches the UI. Latch
+            // so subsequent heart-rate ticks don't overwrite the HK
+            // value with the local estimator.
+            hasLiveHKEnergy = true
+            estimatedActiveKilocalories = metric.value
         default: break
+        }
+        // P1.2 (audit 2026-05-16): fan the controller's metric stream out to
+        // the glasses adapter. The service itself enforces connected-state +
+        // 1Hz-per-field throttle, so this is a fire-and-forget hop and never
+        // back-pressures the workout pipeline.
+        if let glasses {
+            Task { await glasses.apply(metric: metric) }
         }
     }
 
@@ -430,6 +475,7 @@ final class WorkoutViewModel {
         guard let transport else { return }
         try? await transport.disconnect()
         self.transport = nil
+        self.glasses = nil
     }
 }
 

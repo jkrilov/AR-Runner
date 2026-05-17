@@ -130,6 +130,14 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         guard let deviceID = CuratedLayoutCatalog.deviceID(for: id) else {
             throw GlassesTransportError.unknownLayout(id: id)
         }
+        // P1.4 (audit 2026-05-16): trap in debug if we're about to ship a
+        // pre-bake placeholder slot to real hardware. Release builds get a
+        // silent fault log via the adapter logger below so a leaked build
+        // is at least observable in the side store, never silent UX.
+        CuratedLayoutCatalog.assertNotPlaceholder(deviceID, layoutID: id)
+        if CuratedLayoutCatalog.placeholderDeviceIDs.contains(deviceID) {
+            logger.fault("Activating placeholder layout slot 0x\(String(deviceID, radix: 16), privacy: .public) for \(id, privacy: .public) — Config-Generator bake step has not run. See .squad/audits/2026-05-16-weiss-ar-ble.md (P1.4).")
+        }
         activeLayoutDeviceID = deviceID
         try await write(ActiveLookCommand.displayLayout(id: deviceID))
     }
@@ -141,6 +149,8 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         guard let deviceID = CuratedLayoutCatalog.deviceID(for: update.layoutID) else {
             throw GlassesTransportError.unknownLayout(id: update.layoutID)
         }
+        // P1.4 — same guard at the per-tick write site.
+        CuratedLayoutCatalog.assertNotPlaceholder(deviceID, layoutID: update.layoutID)
         let frame = ActiveLookCommand.updateWidget(
             layoutID: deviceID,
             fieldIndex: update.fieldIndex,
@@ -279,6 +289,15 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
             transition(to: .connected)
             // Re-apply layout if we had one selected before the drop.
             if let activeLayoutDeviceID {
+                // P1.4 (audit 2026-05-16): guard the reconnect re-apply path
+                // too — the placeholder slot was pre-seeded from
+                // `RunningHUDPreset.default` in init, so without this trap
+                // the very first hardware reconnect would activate the
+                // wrong on-device layout silently.
+                CuratedLayoutCatalog.assertNotPlaceholder(
+                    activeLayoutDeviceID,
+                    layoutID: "(re-apply)"
+                )
                 let frame = ActiveLookCommand.displayLayout(id: activeLayoutDeviceID)
                 _ = try? sendRaw(frame)
             }

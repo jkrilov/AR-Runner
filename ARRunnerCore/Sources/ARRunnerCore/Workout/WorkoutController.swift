@@ -229,7 +229,7 @@ public actor WorkoutController {
             lastCadenceStepsPerMinute = metric.value
         case .elevation:
             lastElevationGainMeters = metric.value
-        case .pace, .duration:
+        case .pace, .duration, .energy:
             break
         }
 

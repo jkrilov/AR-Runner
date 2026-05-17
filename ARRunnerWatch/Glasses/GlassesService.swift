@@ -13,9 +13,18 @@ import Foundation
 actor GlassesService {
     private let transport: any GlassesFrameTransport
     private(set) var activeLayoutID: String?
+    private(set) var activeLayout: HUDLayout?
+    private var throttle: HUDFieldThrottle
+    private let now: @Sendable () -> Date
 
-    init(transport: any GlassesFrameTransport) {
+    init(
+        transport: any GlassesFrameTransport,
+        throttle: HUDFieldThrottle = HUDFieldThrottle(),
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.transport = transport
+        self.throttle = throttle
+        self.now = now
     }
 
     var connectionState: GlassesConnectionState {
@@ -43,10 +52,49 @@ actor GlassesService {
     func selectLayout(id: String) async throws {
         try await transport.selectLayout(id: id)
         activeLayoutID = id
+        activeLayout = HUDLayout.curatedPresets().first { $0.id == id }
+        throttle.reset()
+    }
+
+    /// Convenience: activate the layout that backs a `RunningHUDPreset` so
+    /// metric routing (`apply(metric:)`) can resolve `MetricKind → fieldIndex`
+    /// against the same source of truth.
+    func selectLayout(preset: RunningHUDPreset) async throws {
+        try await transport.selectLayout(id: preset.layoutID)
+        activeLayoutID = preset.layoutID
+        activeLayout = preset.layout
+        throttle.reset()
+    }
+
+    /// Fan-out entry point (P1.2 fix): map a `WorkoutMetric` into the active
+    /// layout's slot index and push it as a `HUDFieldUpdate`. Silently drops
+    /// when no layout is active, when the metric is not in the active layout,
+    /// when the adapter is not connected, or when the throttle says wait.
+    /// Never throws to the workout pipeline — BLE noise stays in BLE.
+    func apply(metric: WorkoutMetric) async {
+        guard let activeLayout, let activeLayoutID else { return }
+        guard let slot = activeLayout.slots.firstIndex(where: { $0 == metric.kind }) else { return }
+        guard let fieldIndex = UInt8(exactly: slot) else { return }
+        guard await transport.connectionState == .connected else { return }
+        guard throttle.shouldSend(fieldIndex: fieldIndex, now: now()) else { return }
+        let update = HUDFieldUpdate(
+            layoutID: activeLayoutID,
+            fieldIndex: fieldIndex,
+            value: Self.format(metric)
+        )
+        try? await transport.updateField(update)
     }
 
     func update(metric: WorkoutMetric, fieldIndex: UInt8, formatter: (WorkoutMetric) -> String) async throws {
         guard let activeLayoutID else { return }
+        // P1.2 (audit 2026-05-16): no-op when the adapter is not connected —
+        // calling `updateField` would throw `.notConnected`, but more
+        // importantly we want the hot path silently absorbed so the workout
+        // pipeline never sees BLE state.
+        guard await transport.connectionState == .connected else { return }
+        // P1.2 throttle: protect the BLE link from the controller's per-tick
+        // burst. Last-write-wins per fieldIndex at 1Hz.
+        guard throttle.shouldSend(fieldIndex: fieldIndex, now: now()) else { return }
         let update = HUDFieldUpdate(
             layoutID: activeLayoutID,
             fieldIndex: fieldIndex,
@@ -56,6 +104,40 @@ actor GlassesService {
     }
 
     func update(_ update: HUDFieldUpdate) async throws {
+        guard await transport.connectionState == .connected else { return }
+        guard throttle.shouldSend(fieldIndex: update.fieldIndex, now: now()) else { return }
         try await transport.updateField(update)
+    }
+
+    /// Reset throttle state — called by the watch app on disconnect /
+    /// reconnect so the next live update is delivered immediately.
+    func resetThrottle() {
+        throttle.reset()
+    }
+
+    /// Glanceable formatter for the HUD. Lives here so the watch UI's
+    /// SwiftUI formatters and the glasses' field strings never drift.
+    private static func format(_ metric: WorkoutMetric) -> String {
+        switch metric.kind {
+        case .heartRate:
+            return String(Int(metric.value.rounded()))
+        case .pace:
+            // pace is sec/km — render as M:SS.
+            let total = Int(metric.value.rounded())
+            guard total > 0 else { return "--:--" }
+            return String(format: "%d:%02d", total / 60, total % 60)
+        case .distance:
+            // metres → km, 2dp.
+            return String(format: "%.2f", metric.value / 1000.0)
+        case .duration:
+            let total = Int(metric.value.rounded())
+            return String(format: "%d:%02d", total / 60, total % 60)
+        case .cadence:
+            return String(Int(metric.value.rounded()))
+        case .elevation:
+            return String(Int(metric.value.rounded()))
+        case .energy:
+            return String(Int(metric.value.rounded()))
+        }
     }
 }
