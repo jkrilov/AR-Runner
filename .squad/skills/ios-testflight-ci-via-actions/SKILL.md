@@ -2,7 +2,7 @@
 
 **Owner:** Richards
 **Created:** 2026-05-15
-**Last updated:** 2026-05-17T11:00:33-04:00
+**Last updated:** 2026-05-17T17:44:28-04:00
 
 ---
 
@@ -105,7 +105,8 @@ This applies even if the consuming workflow builds with `CODE_SIGNING_ALLOWED=NO
 | 2026-05-16 | PR #21: all 4 macOS builds + CodeQL red | `ci-build.yml` and `codeql.yml` missing bootstrap step | Added `Bootstrap signing xcconfig` step to both (commit d8339d0) |
 | 2026-05-17 | rc1 (run 25989849479): archive failed with "no devices" / "no profiles for com.arrunner.phone" | xcodegen-generated pbxproj inherits Xcode's project-template default `CODE_SIGN_IDENTITY = "Apple Development"`. With `CODE_SIGN_STYLE=Automatic` + `xcodebuild ... archive`, that default wins and `-allowProvisioningUpdates` tries to mint a *Development* profile, which needs registered devices (CI has none). | PR #23: attempted CLI pin `CODE_SIGN_IDENTITY="Apple Distribution"` + conditional. Wrong fix — see next row. |
 | 2026-05-17 | rc2 (run 25990326363): archive failed with "conflicting provisioning settings ... code signing identity iphoneos*]=Apple Distribution has been manually specified" | Two compounding bugs: (a) xcodebuild's CLI setting parser does NOT support `SETTING[sdk=...]=value` conditional syntax — it mis-parses into a literal value of `iphoneos*]=Apple Distribution` that overwrites the bare key; (b) pinning bare `CODE_SIGN_IDENTITY=...` on the CLI is rejected by Xcode as "manually specified" when `CODE_SIGN_STYLE=Automatic`, even though it's the *correct* identity. | PR #24: removed both CLI args from `release-testflight.yml`; instead append `CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution` and `[sdk=watchos*]` to `Config/Signing.xcconfig` after `bootstrap-signing.sh` and before `xcodegen generate`. xcconfig accepts the conditional syntax; xcconfig values are project config, so Xcode doesn't flag them as "manually specified". Partial fix — still left `CODE_SIGN_STYLE=Automatic` on CLI, causing rc3. |
-| 2026-05-17 | rc3 (run 25991312727): TWO errors — (1) ARRunnerWidgetsPhone "conflicting provisioning settings … automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified"; (2) ARRunnerPhone "Your team has no devices" + "No iOS App Development provisioning profiles" | `CODE_SIGN_STYLE=Automatic` still on the `xcodebuild` CLI (highest precedence) while `CODE_SIGN_IDENTITY=Apple Distribution` was correctly placed in xcconfig (project-config level). The CLI override elevated signing style above the xcconfig identity, making Xcode treat the identity as a conflicting manual override on extension targets (widget) and falling back to Development-profile resolution on the main target (no devices). | PR #25: removed `CODE_SIGN_STYLE=Automatic` from the `xcodebuild archive` CLI entirely. Both `CODE_SIGN_STYLE` and `CODE_SIGN_IDENTITY` now live exclusively in the xcconfig at the same precedence level — Xcode treats them as consistent project configuration. |
+| 2026-05-17 | rc3 (run 25991312727): TWO errors — (1) ARRunnerWidgetsPhone "conflicting provisioning settings … automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified"; (2) ARRunnerPhone "Your team has no devices" + "No iOS App Development provisioning profiles" | `CODE_SIGN_STYLE=Automatic` still on the `xcodebuild` CLI (highest precedence) while `CODE_SIGN_IDENTITY=Apple Distribution` was correctly placed in xcconfig (project-config level). The CLI override elevated signing style above the xcconfig identity, making Xcode treat the identity as a conflicting manual override on extension targets (widget) and falling back to Development-profile resolution on the main target (no devices). | PR #25: removed `CODE_SIGN_STYLE=Automatic` from the `xcodebuild archive` CLI entirely. Both `CODE_SIGN_STYLE` and `CODE_SIGN_IDENTITY` now live exclusively in the xcconfig at the same precedence level — Xcode treats them as consistent project configuration. **Insufficient — see rc4 row below.** |
+| 2026-05-17 | rc4 (run 26003539754): TWO errors — both ARRunnerPhone and ARRunnerWidgetsPhone fail with "automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified" | Two compounding bugs surfaced after rc3 cleared the CLI: (1) `xcodebuild archive` from the CLI with `CODE_SIGN_STYLE=Automatic` **always** resolves to `Apple Development` identity by default — the GUI archive action auto-promotes to Distribution, the CLI does not. The xcconfig's `Apple Distribution` pin is then treated as a conflicting "manually specified" override. (2) `project.yml settings.base.CODE_SIGN_STYLE: Automatic` causes xcodegen to bake `CODE_SIGN_STYLE = Automatic` into the project-level `pbxproj`, which has **higher precedence than xcconfig** — so simply appending `CODE_SIGN_STYLE = Manual` to xcconfig has no effect until the project-base pin is removed. The widget extension is hit by the same conflict because xcconfig identity applies project-wide. | PR #26: (a) replaced `CODE_SIGN_STYLE: Automatic` with `CODE_SIGN_STYLE: $(inherited)` in `project.yml settings.base` so xcconfig drives style; (b) changed `release-testflight.yml` xcconfig append from "identity-only" to `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution` + `[sdk=watchos*]`. Manual makes the archive intent explicit; `-allowProvisioningUpdates` + ASC API key fetches/creates the App Store distribution profile for each bundle ID on demand. |
 
 ---
 
@@ -242,8 +243,75 @@ Xcode.app's archive action internally promotes the signing identity to Distribut
 
 ---
 
+## ⚠️ CRITICAL TRAP (rc4): CLI Archive + Automatic Style → Development Identity → xcconfig Distribution Pin Conflicts
+
+### Symptom (rc4 — run 26003539754)
+
+Every signed iOS target — main app AND widget extension AND any other extension — fails archive with:
+
+```
+error: <target> has conflicting provisioning settings. <target> is automatically
+signed for development, but a conflicting code signing identity Apple
+Distribution has been manually specified. Set the code signing identity value
+to "Apple Development" in the build settings editor, or switch to manual
+signing in the Signing & Capabilities editor.
+```
+
+…even when `CODE_SIGN_STYLE` is NOT on the xcodebuild CLI (rc3's fix), and even when `CODE_SIGN_IDENTITY = Apple Distribution` lives in xcconfig (the supposed-safe location).
+
+### Why it happens — two compounding precedence bugs
+
+1. **CLI `xcodebuild archive` + Automatic style always resolves to Apple Development identity.** The Xcode.app GUI archive action promotes automatic signing to Distribution because it knows "this is an archive intended for App Store / Ad Hoc". The CLI has no such promotion logic. With automatic style on the CLI, Xcode resolves identity = `Apple Development` and then sees the xcconfig's `Apple Distribution` pin as a conflicting manual override.
+
+2. **xcodegen bakes `CODE_SIGN_STYLE = Automatic` into the project-level pbxproj when `project.yml settings.base.CODE_SIGN_STYLE: Automatic` is set.** Project-level pbxproj has **higher precedence than xcconfig** in Xcode's build settings hierarchy. So even if you append `CODE_SIGN_STYLE = Manual` to xcconfig, the project-level Automatic still wins. xcconfig changes are silently ignored.
+
+The combination is invisible from xcconfig alone — `cat Config/Signing.xcconfig` shows the Manual line; `xcodebuild -showBuildSettings` shows `CODE_SIGN_STYLE = Automatic`. You have to grep the generated pbxproj or use `-showBuildSettings` to see the actual resolved value.
+
+### The fix — both layers must change together
+
+**Layer 1 — project.yml** (so xcconfig style is allowed to win):
+
+```yaml
+settings:
+  base:
+    # CODE_SIGN_STYLE intentionally NOT pinned. $(inherited) makes xcconfig
+    # the source of truth; if you pin Automatic here, xcodegen bakes it into
+    # the project-level pbxproj and shadows any xcconfig CODE_SIGN_STYLE.
+    CODE_SIGN_STYLE: $(inherited)
+```
+
+**Layer 2 — CI's xcconfig append** (so the Release archive uses Manual):
+
+```bash
+cat >> Config/Signing.xcconfig <<'EOF'
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
+EOF
+```
+
+Manual signing + `-allowProvisioningUpdates` + ASC API key tells Xcode: "use exactly this identity, and fetch or create the matching App Store distribution profile from the developer portal on demand". No more Development-identity fallback, no more conflict.
+
+### Why Manual is the right answer (not "try harder with Automatic")
+
+Three rc failures in a row tried to make Automatic work for CLI archive. Each one revealed a new shadowing/precedence trap. The root cause is structural: **automatic signing's identity decision depends on the action's intent (build vs archive vs export), and the xcodebuild CLI can't communicate "this is for App Store distribution" to automatic-signing resolution.** The GUI does. The CLI doesn't. Manual signing sidesteps the inference entirely — you state the identity, Xcode honors it.
+
+### Local dev unaffected
+
+`bootstrap-signing.sh` writes only `CODE_SIGN_STYLE = Automatic` (Debug + local dev). The `Manual` + `Apple Distribution` lines are appended **only by `release-testflight.yml` at CI time**, on a fresh CI-owned xcconfig. Joe's local Personal Team + Apple Development device debugging keeps working — verified by `xcodebuild -showBuildSettings -configuration Debug -sdk iphoneos` resolving to `Apple Development` + `Automatic` after the project.yml change.
+
+### Rule (durable, confidence: high)
+
+> **For CLI `xcodebuild archive` to App Store: use Manual signing with Apple Distribution identity, both set in xcconfig. Do NOT pin `CODE_SIGN_STYLE: Automatic` at `project.yml settings.base` — leave it `$(inherited)` so xcconfig wins.** Automatic signing for CLI archive is a four-iteration trap; Manual is one line of xcconfig and works on the first run.
+
+### Confidence
+
+**High** — fourth iteration (rc1 → rc2 → rc3 → rc4) on the same problem, with three independent root causes (CLI parser, CLI precedence shadow, project-base precedence shadow + CLI archive identity default). The xcconfig-only-Manual approach eliminates the entire class.
+
+---
+
 ## Open Question: Should PR CI probe-build Release?
 
-`ci-build.yml` only builds Debug for the simulator. Release config differs in `-O` optimization level and sometimes in warnings-as-errors behavior — meaning a Release-only build error (or a Release-only signing misconfig like the rc1/rc2/rc3 traps) won't surface until the TestFlight workflow runs, by which point the version tag is already burned. **Three data points now** (rc1 signing identity, rc2 CLI parsing, rc3 precedence shadow) support adding a `xcodebuild build -configuration Release CODE_SIGNING_ALLOWED=NO` job (or even an `archive` without signing) to PR CI. Trade-off: ~3-4 extra minutes per PR vs. catching this class of bug at PR time. See D-RICHARDS-TF-8 (proposed).
+`ci-build.yml` only builds Debug for the simulator. Release config differs in `-O` optimization level, signing config, and sometimes in warnings-as-errors behavior — meaning a Release-only build error (or a Release-only signing misconfig like the rc1/rc2/rc3/rc4 traps) won't surface until the TestFlight workflow runs, by which point the version tag is already burned. **Four data points now** (rc1 signing identity, rc2 CLI parsing, rc3 CLI-precedence shadow, rc4 project-base-precedence shadow + CLI archive identity default) support adding a `xcodebuild archive -configuration Release CODE_SIGNING_ALLOWED=NO` job to PR CI — or at minimum a `-showBuildSettings | grep CODE_SIGN` assertion that catches precedence regressions at PR time. Trade-off: ~3-4 extra minutes per PR vs. burning a version tag per signing iteration. See D-RICHARDS-TF-8 (proposed); re-amplified by D-RICHARDS-TF-10 (rc4).
 
 

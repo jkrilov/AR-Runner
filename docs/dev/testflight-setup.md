@@ -1,6 +1,6 @@
 # TestFlight Release Setup
 
-**Last updated:** 2026-05-16T16:11:23-04:00
+**Last updated:** 2026-05-17T17:44:28-04:00
 **Owner:** Richards (Lead / Architect)
 **Workflow:** `.github/workflows/release-testflight.yml`
 
@@ -16,14 +16,20 @@ secrets; consult Part C every time you cut a build.
   App Store submission path will live in a future `release-appstore.yml`.
 - **Build:** `macos-15` runner, Xcode 16.4, `xcodegen generate` → `xcodebuild
   archive` → `xcodebuild -exportArchive` → `xcrun altool --upload-app`.
-- **Signing:** automatic, with Xcode pulling provisioning profiles via the App
+- **Signing:** **manual**, with Xcode pulling provisioning profiles via the App
   Store Connect API key (`-allowProvisioningUpdates`). `CODE_SIGN_STYLE` and
   `CODE_SIGN_IDENTITY` are set exclusively in the xcconfig — never on the
   `xcodebuild` CLI — to avoid precedence conflicts between CLI overrides and
-  project-level configuration. The release workflow appends
-  `CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution` to the xcconfig so
-  automatic signing fetches Distribution (not Development) profiles. No
-  fastlane, no `match`, no manual profile management.
+  project-level configuration. The release workflow appends three lines to the
+  xcconfig: `CODE_SIGN_STYLE = Manual` and `CODE_SIGN_IDENTITY[sdk=iphoneos*]
+  = Apple Distribution` (and `watchos*`). Manual is required because CLI
+  `xcodebuild archive` with Automatic signing defaults to Apple Development
+  identity — unlike the Xcode.app GUI archive action which auto-promotes to
+  Distribution — and treats any xcconfig Distribution pin as a conflicting
+  manual override (rc4 trap). No fastlane, no `match`, no manual profile
+  management — Apple Developer portal profiles for both bundle IDs
+  (`com.arrunner.phone`, `com.arrunner.phone.widgets`) are created on demand
+  by `-allowProvisioningUpdates` + the ASC API key.
 - **Versioning:** `MARKETING_VERSION` comes from the tag (strip the `v`),
   `CURRENT_PROJECT_VERSION` comes from `github.run_number` — monotonically
   increasing per Actions run, which satisfies App Store Connect's "build number
@@ -243,8 +249,7 @@ these — fix the secret and retry by deleting + re-pushing the tag:
 | `MAC verification failed during PKCS12 import` | Wrong `BUILD_CERTIFICATE_P12_PASSWORD` | Re-export the `.p12` from Keychain (A.3), set a fresh password, update the secret. |
 | `Authentication credentials are missing or invalid` (during archive or upload) | Wrong API Key ID, wrong Issuer ID, or `.p8` body missing `BEGIN`/`END` lines | Re-check all three ASC secrets against the integrations page. |
 | `No profiles for 'com.arrunner.phone' were found` + `Your team has no devices…` | Xcode's automatic signing tried to mint an *iOS App Development* profile (which needs registered devices) instead of an App Store Distribution profile. Root cause: `CODE_SIGN_IDENTITY` defaults to "Apple Development" in xcodegen projects; without an explicit "Apple Distribution" pin, `-allowProvisioningUpdates` walks the Development path. **Fixed** by pinning `CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution` (and `watchos*`) in `Config/Signing.xcconfig` (written by the release workflow). If you see this again, confirm those lines are still appended in `release-testflight.yml` → "Write Config/Signing.xcconfig" step. | Workflow fix — no portal action needed. |
-| `has conflicting provisioning settings ... automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified` (on widget or extension targets) | `CODE_SIGN_STYLE=Automatic` was passed on the `xcodebuild` **command line** while `CODE_SIGN_IDENTITY=Apple Distribution` lived in the xcconfig. CLI build settings have highest precedence; the CLI-level `CODE_SIGN_STYLE` made Xcode treat the lower-precedence xcconfig identity as a "manually specified" conflict — for **every** target (main app AND extensions like ARRunnerWidgetsPhone). **Fixed** by removing `CODE_SIGN_STYLE=Automatic` from the CLI entirely. Both settings now come from the xcconfig at project-config level, which Xcode treats as consistent configuration. See rc3 failure run 25991312727. | Remove any `CODE_SIGN_STYLE=…` from the `xcodebuild archive` command. The xcconfig is the single source of truth for signing settings. |
-| **Both errors at once** (widget "conflicting" + main app "no devices") | The CLI `CODE_SIGN_STYLE=Automatic` override caused a cascade: widget targets hit the conflict error first; the main app target fell through to automatic-Development signing (which can't mint profiles without registered devices). This is the rc3 failure pattern. | Same as above — remove `CODE_SIGN_STYLE` from the CLI. |
+| `has conflicting provisioning settings ... automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified` (on **any** signed target — main app, widget extension, or both at once) | This is the rc4 pattern (run 26003539754). Two distinct precedence bugs collapse to the same symptom: (1) `CODE_SIGN_STYLE=Automatic` on the `xcodebuild` CLI shadows xcconfig identity (rc3); (2) `CODE_SIGN_STYLE=Automatic` baked into project-level pbxproj (via `project.yml settings.base.CODE_SIGN_STYLE`) outranks xcconfig (rc4). In **both** cases, CLI archive + Automatic style resolves to Apple Development by default and treats the xcconfig's `Apple Distribution` pin as a manual conflict. **Fixed** by (a) removing `CODE_SIGN_STYLE` from `project.yml` base settings (set to `$(inherited)` so xcconfig wins), and (b) appending `CODE_SIGN_STYLE = Manual` to the xcconfig in the release workflow alongside the Distribution identity pin. Manual signing makes the archive's intent explicit; `-allowProvisioningUpdates` + ASC API key still fetches/creates profiles. | Confirm `project.yml` does NOT pin `CODE_SIGN_STYLE: Automatic` at base, and that `release-testflight.yml` appends `CODE_SIGN_STYLE = Manual` to `Config/Signing.xcconfig`. |
 | `No profiles for 'com.arrunner.phone' were found` (without the "no devices" line) | First archive can take 60–120s while Xcode talks to ASC to create profiles — sometimes it times out the first time | Re-run the workflow (Actions tab → re-run job). On the second run the profiles already exist and the archive completes quickly. |
 | `The bundle identifier cannot be registered to your team` | App ID not yet created in the developer portal | Go back to A.1 and create the missing bundle ID. |
 | `Build number X has already been used` | Re-uploading the same `run_number` (unlikely — would need a manual tag delete + workflow rerun *and* the previous attempt actually uploaded) | Push a new pre-release tag. Don't try to overwrite an accepted build. |

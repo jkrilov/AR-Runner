@@ -15,7 +15,14 @@ settings:
     # SWIFT_STRICT_CONCURRENCY=complete is implicit under Swift 6 language mode — D8 still in effect.
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: 0.1.0
-    CODE_SIGN_STYLE: Automatic
+    # CODE_SIGN_STYLE is intentionally NOT pinned here. xcodegen would otherwise
+    # bake Automatic into the project-level pbxproj, which has higher precedence
+    # than xcconfig and prevents CI from switching to Manual signing for the
+    # archive (rc4 trap — see .squad/skills/ios-testflight-ci-via-actions/SKILL.md).
+    # Style is driven entirely by Config/Signing.xcconfig: bootstrap-signing.sh
+    # writes Automatic for local dev; release-testflight.yml overrides to Manual
+    # for the Release archive only.
+    CODE_SIGN_STYLE: $(inherited)
 # Project-wide signing config. Config/Signing.xcconfig is gitignored (Config/ is
 # generated). Run `./scripts/bootstrap-signing.sh` once to create it, then edit
 # to add your DEVELOPMENT_TEAM. CI writes it from the APPLE_TEAM_ID secret.

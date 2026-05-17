@@ -8,6 +8,55 @@
 
 ## Active Learnings
 
+### 2026-05-17 — rc4 archive trap: CLI archive + Automatic style → Apple Development identity → xcconfig Distribution pin is treated as conflicting manual override; project.yml `CODE_SIGN_STYLE: Automatic` also shadows xcconfig style at project-base precedence
+
+**Context:** PR #25 (rc3 fix) successfully removed `CODE_SIGN_STYLE` from the xcodebuild CLI. v0.2.0-rc4 was tagged from main. Run [26003539754](https://github.com/jkrilov/AR-Runner/actions/runs/26003539754) failed the Archive step with TWO errors, one per iOS target:
+
+> `ARRunnerPhone has conflicting provisioning settings. ARRunnerPhone is automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified.`
+>
+> `ARRunnerWidgetsPhone has conflicting provisioning settings. ARRunnerWidgetsPhone is automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified.`
+
+CLI was clean (rc3 fix held). Both targets carried the conflict — not just the widget. The pre-work hypothesis ("xcconfig identity + automatic style is fundamentally OK at project-config level") was wrong. Two compounding precedence bugs surfaced:
+
+**Bug A — CLI `xcodebuild archive` + `CODE_SIGN_STYLE=Automatic` always resolves to `Apple Development` identity.** Xcode.app's GUI archive action auto-promotes automatic signing to Distribution because it knows the action's intent. The CLI does not. With Automatic style on the CLI, Xcode resolves identity = `Apple Development` and treats the xcconfig's `Apple Distribution` pin as a conflicting manual override. No amount of xcconfig-level pinning fixes this — it's a CLI archive limitation.
+
+**Bug B — xcodegen bakes `CODE_SIGN_STYLE = Automatic` into the project-level pbxproj** when `project.yml settings.base.CODE_SIGN_STYLE: Automatic` is set. Project-level pbxproj has **higher precedence than xcconfig** in Xcode's settings hierarchy. So even appending `CODE_SIGN_STYLE = Manual` to xcconfig is silently ignored until the project-base pin is removed. Verified empirically: `xcodebuild -showBuildSettings` returned `CODE_SIGN_STYLE = Automatic` even with `Manual` written into xcconfig — until I removed the project-base pin, after which Manual resolved correctly.
+
+**Per-target widget gotcha confirmed but re-explained:** rc4 hitting both targets isn't because the widget needs its own `$(inherited)` injection — the widget doesn't get xcodegen's iPhone-Developer target-level inject (that's an iOS application-target-only behavior, per rc3 learning). The widget fails for the same root reason as the main app: project-wide xcconfig identity + project-base Automatic style → conflict on every signed target. The fix at the project-base + xcconfig layer covers both targets in one shot.
+
+**Resolution (PR #26 forthcoming, branch `fix/v02-rc4-signing-pathway`):**
+
+Two coordinated layer changes:
+
+1. **`project.yml`** — `settings.base.CODE_SIGN_STYLE: Automatic` → `CODE_SIGN_STYLE: $(inherited)`. xcodegen now writes `CODE_SIGN_STYLE = "$(inherited)"` to project-level pbxproj, deferring to xcconfig. Local dev still resolves to Automatic because `bootstrap-signing.sh` writes `CODE_SIGN_STYLE = Automatic` to xcconfig.
+2. **`release-testflight.yml`** — xcconfig append changed from identity-only to:
+   ```
+   CODE_SIGN_STYLE = Manual
+   CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+   CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
+   ```
+   Manual signing makes the archive intent explicit; `-allowProvisioningUpdates` + ASC API key fetches/creates the App Store distribution profile for each bundle ID on demand.
+
+**Strategy:** Option A (Manual signing for the archive). Rejected Option B (try harder with Automatic — three iterations of evidence say it can't work for CLI archive), Option C (hybrid `[config=Release]` conditional — doesn't address the identity-default root cause), Option D (Manual + explicit `PROVISIONING_PROFILE_SPECIFIER` per target — reserved as a fallback if rc5 fails; specifier coupling is fragile).
+
+**Trade-off named:** Distribution profiles must be creatable for both bundle IDs via the ASC API key. Joe's key has Admin scope, so this is automatic on first archive. If the key is ever scoped down to read-only, we'd add explicit specifiers — at which point we revisit.
+
+**Local dev verified intact:** `xcodebuild -showBuildSettings -configuration Debug` for all four targets resolves to `Automatic` + `Apple Development` after the project.yml change. Personal Team device debugging keeps working — the project.yml change is `$(inherited)`, not `Manual`, so local xcconfig (`Automatic`) wins for non-CI scenarios.
+
+**Durable rules added to skill:**
+
+- Never pin `CODE_SIGN_STYLE` at `project.yml settings.base` if you want xcconfig to drive style — xcodegen bakes it into project-level pbxproj at higher precedence than xcconfig. Use `$(inherited)` if you need an entry there at all.
+- For CLI `xcodebuild archive` to App Store: **use Manual signing with Apple Distribution identity, both set in xcconfig.** Automatic signing for CLI archive is a four-iteration trap (rc1 → rc4); Manual is one line of xcconfig and works on the first try.
+- Symptom "automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified" on **every** signed target → check both layers: project.yml CODE_SIGN_STYLE pin (remove if present) AND xcconfig style (must be Manual, not Automatic).
+
+**Artifacts:**
+- PR (forthcoming): `fix/v02-rc4-signing-pathway`.
+- Skill update: new rc4 CRITICAL TRAP section + incident log row + updated Open Question. Confidence bumped to **High** (four independent rc burns, all on the same signing-pathway pattern, all fixed by Manual-in-xcconfig).
+- Doc update: `docs/dev/testflight-setup.md` Architecture summary now says "manual" not "automatic"; troubleshooting table replaces rc3 row with rc4-final row that names both layers.
+- Decision inbox: `richards-tf-rc4-signing-pathway.md` (D-RICHARDS-TF-10) — supersedes D-RICHARDS-TF-9 in part. Re-amplifies D-RICHARDS-TF-8 (PR-time Release-config probe) for the fourth time.
+
+**Meta-observation (fourth iteration):** Every rc fix to date has been reasoned correctly *for the failure mode visible at the time*, and validated only by tag-and-pray. The real validation surface is `xcodebuild -showBuildSettings -configuration Release -sdk iphoneos | grep CODE_SIGN`, which I now run locally before every signing-related PR. Adding this assertion to PR CI (D-RICHARDS-TF-8) would catch the precedence regression class at PR time instead of burning rc tags. Four signal points in two days is well past anecdote; this should ship.
+
 ### 2026-05-17: rc2 archive trap — xcodebuild CLI mis-parses `SETTING[sdk=...]=value`, and CLI-set `CODE_SIGN_IDENTITY` conflicts with `CODE_SIGN_STYLE=Automatic`
 
 **Context:** PR #23 pinned `CODE_SIGN_IDENTITY="Apple Distribution"` plus `"CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution"` on the xcodebuild archive command line, fixing rc1's "no devices" error in principle. rc2 (run 25990326363) failed differently:
