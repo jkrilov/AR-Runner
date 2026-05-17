@@ -6,6 +6,25 @@
 - **Role:** Lead
 - **Joined:** 2026-05-14T18:30:31.650Z
 
+## Session Summary — 2026-05-16
+
+**Architecture & Best-Practices Audit** — read-only pass across the full codebase.
+
+- Full audit at `.squad/audits/2026-05-16-richards-architecture.md`.
+- Top findings: (1) `swift:6.0-jammy` container is 18 months stale — bump to 6.2-noble; (2) `xcrun altool --upload-app` in release-testflight.yml is Apple-deprecated and will eventually break the release path; (3) WorkoutController (the central orchestrator) has zero trace points — needs an injectable logging pattern.
+- ADR drift check: D2, D8, ADR-001, ADR-002, ADR-007 all confirmed clean. No drift found.
+- No decision drops required — findings are hygiene/debt, not new architectural decisions.
+
+## Learnings
+
+### 2026-05-16: Audit patterns — what to check on a Swift Apple-platform project
+
+- **Linux CI as boundary enforcement:** The `swift:6.0-jammy` container in `ci-core-tests.yml` is the best architectural guard in this project. Any Apple-framework leak into ARRunnerCore fails the build. This pattern (Linux job = architecture police) is worth capturing for any future Swift SPM project with a platform-agnostic core.
+- **`xcrun altool --upload-app` is deprecated:** As of Xcode 15, Apple deprecated `altool` for App Store Connect uploads in favor of the REST API. The feature still works in 2026 but is on borrowed time. Any TestFlight CI workflow authored in 2025–2026 should track this and plan migration before WWDC when Apple may drop it.
+- **xcodegen version pinning:** `brew install xcodegen` in CI is unversioned and uncached. When xcodegen releases a breaking change to `project.yml` format (e.g., moving from xcode16_0 to xcode17_0 project format), CI will fail unpredictably. Always pin: either `brew install xcodegen@X.Y` or fetch from a GitHub release binary and cache.
+- **`@unchecked Sendable` audit pattern:** The right questions are (a) is the `@unchecked` site an NSObject delegate bridge? (b) is all mutation guarded by an actor context or explicit serialization? In this codebase, all 3 `@unchecked` sites in production code are NSObject + delegate conformances. This is the canonical correct pattern.
+- **WCMessage forward-compat gap:** A typed Codable message with a `schemaVersion` guard of the form `>= minVersion && <= currentVersion` is backward-compatible but NOT forward-compatible. A peer on an older schema will fail to decode a newer message. For solo-developer TestFlight apps this is fine; for multi-user distribution it needs a negotiation step.
+
 ## Session Summary — 2026-05-15
 
 **Archive (v1 deep-dive condensed):** 17.5 KB → 2.5 KB. Full entries remain in decisions.md and skill docs.
@@ -115,6 +134,24 @@ All three PRs now open and awaiting Joe's review/coordination. Cross-agent proto
 
 decisions.md now 61442 bytes (merged 4 inbox entries: weiss, laughlin, amber, and CI architecture).
 
+
+### 2026-05-16: Architecture & Best-Practices Audit (read-only)
+
+Delivered `.squad/audits/2026-05-16-richards-architecture.md`. Parallel-run with Laughlin and Weiss on their domains.
+
+**Top 3 findings:**
+1. **`.github/copilot-instructions.md:5` is grossly stale** — declares repo "greenfield, no source code yet" while ~30 production files + 16 test files exist. Every new agent's first-read mental model is wrong. Highest-leverage, lowest-effort fix.
+2. **Toolchain pins ~12 months stale** — Xcode 16.4 / Swift 6.0 / macos-15. Xcode 17 + Swift 6.2 are GA. No CVE pressure yet but every month makes catch-up costlier. Recommend probe-PR bump in next 30 days.
+3. **`ActiveLookGlassesAdapterHardwareTests.swift` lives inside the production app target** behind `#if AR_RUNNER_HARDWARE_TESTS`. Compile-guarded so safe, but XCTest shipping in app source is a smell — will trip App Store static analysis eventually. Move to dedicated test target in `project.yml`.
+
+**ADR drift caught:**
+- **D8** technically only sanctions `@preconcurrency import` for the ActiveLook *vendor SDK*; we're using it for *CoreBluetooth* (system framework) at `ActiveLookGlassesAdapter.swift:5`. Justified (CB delegates aren't `Sendable`) but D8 wording should be amended. Filed as decision-inbox candidate? — minor enough to fold into a later D8 revision rather than a standalone inbox drop.
+
+**Layering verdict:** ✅ ARRunnerCore is genuinely platform-pure (Foundation-only across 22 source files); Linux CI enforces it for free; ADR-001/D1/D2/D4 all hold.
+
+**CodeQL coverage gap:** only `ARRunnerWatch` is built for analysis; Phone target's WCSession + UI unscanned. Cheap to fix.
+
+**No code changes made** (read-only audit per task scope).
 
 ### 2026-05-15: pbxproj target-membership "bug" was actually stale-generated-project (XcodeGen)
 
