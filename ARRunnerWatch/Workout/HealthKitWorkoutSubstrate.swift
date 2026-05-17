@@ -269,7 +269,16 @@ extension HealthKitWorkoutSubstrate: HKLiveWorkoutBuilderDelegate {
         case HKQuantityType.quantityType(forIdentifier: .distanceCycling):
             return WorkoutMetric(kind: .distance, value: quantity.doubleValue(for: .meter()), unit: "m", timestamp: timestamp)
         case HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned):
-            return WorkoutMetric(kind: .duration, value: quantity.doubleValue(for: .kilocalorie()), unit: "kcal", timestamp: timestamp)
+            // v0.2 audit P1.3: previously routed to `.duration`, which
+            // downstream consumers default-cased to nothing — live HK
+            // kcal was silently dropped. Now uses the dedicated
+            // `.energy` case (Amber's Core change, commit 9571e23) via
+            // the Core-side mapping helper so the contract is testable
+            // without a watchOS test host.
+            return HealthKitMetricMapping.activeEnergy(
+                kilocalories: quantity.doubleValue(for: .kilocalorie()),
+                timestamp: timestamp
+            )
         default:
             return nil
         }
