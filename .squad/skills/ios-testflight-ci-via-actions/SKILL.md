@@ -2,7 +2,7 @@
 
 **Owner:** Richards
 **Created:** 2026-05-15
-**Last updated:** 2026-05-16T20:09:22-04:00
+**Last updated:** 2026-05-17T07:44:23-04:00
 
 ---
 
@@ -103,3 +103,35 @@ This applies even if the consuming workflow builds with `CODE_SIGNING_ALLOWED=NO
 | Date | Issue | Root Cause | Fix |
 |---|---|---|---|
 | 2026-05-16 | PR #21: all 4 macOS builds + CodeQL red | `ci-build.yml` and `codeql.yml` missing bootstrap step | Added `Bootstrap signing xcconfig` step to both (commit d8339d0) |
+| 2026-05-17 | v0.2.0-rc1 first TestFlight archive failed | Xcode 16 CLI automatic-signing defaults `CODE_SIGN_IDENTITY` to `"Apple Development"`; archive then tried to mint a *development* profile and failed with "team has no devices" | Pin `CODE_SIGN_IDENTITY="Apple Distribution"` (and the `[sdk=iphoneos*]` variant) on the archive `xcodebuild` command (PR `fix/v02-rc1-archive-failure`, run 25989849479) |
+
+---
+
+## ⚠️ CRITICAL TRAP: Automatic Signing Picks Development Identity on CLI Archive
+
+### Symptom
+`xcodebuild ... archive` with `CODE_SIGN_STYLE=Automatic` + `-allowProvisioningUpdates` fails with:
+```
+error: Communication with Apple failed: Your team has no devices from which to generate a provisioning profile.
+error: No profiles for 'com.example.app' were found: Xcode couldn't find any iOS App Development provisioning profiles matching 'com.example.app'.
+```
+…even though the keychain has a valid **Apple Distribution** cert and `-configuration Release` is set.
+
+### Why it happens
+From the CLI (unlike Xcode.app's Product → Archive), automatic signing honors the build setting `CODE_SIGN_IDENTITY` literally. xcodegen-generated projects don't set it, so it inherits Xcode's project template default: `"Apple Development"`. Once that's in effect, `-allowProvisioningUpdates` tries to provision a Development profile, which requires registered devices on the team — CI runners have none.
+
+### The fix (durable)
+> **Whenever `xcodebuild archive` runs in CI with `CODE_SIGN_STYLE=Automatic`, also pass `CODE_SIGN_IDENTITY="Apple Distribution"` AND `"CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution"` on the same command line.**
+
+Both forms are needed: the bare key sets the default; the sdk-scoped key wins on actual iOS device builds when both are present in the resolved build settings.
+
+### Why GUI archives "just work"
+Xcode.app's archive action internally promotes the signing identity to Distribution based on the action type. The CLI does not.
+
+---
+
+## Open Question: Should PR CI probe-build Release?
+
+`ci-build.yml` only builds Debug for the simulator. Release config differs in `-O` optimization level and sometimes in warnings-as-errors behavior — meaning a Release-only build error (or a Release-only signing misconfig like the one above) won't surface until the TestFlight workflow runs, by which point the version tag is already burned. Decision-worthy: add a `xcodebuild build -configuration Release CODE_SIGNING_ALLOWED=NO` job to PR CI? Trade-off: ~3-4 extra minutes per PR vs. catching this class of bug at PR time. See `decisions/inbox/richards-first-tf-run-postmortem.md`.
+
+
