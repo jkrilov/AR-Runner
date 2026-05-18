@@ -230,3 +230,19 @@ instead of cumulative, avg pace missing.
   agent gets its own checkout — but in this session the right move was
   to just batch-recreate and commit fast.
 
+
+### 2026-05-18 — Version-bump trap: literal `1.0`/`1` in external Info.plist
+
+**Symptom:** rc1 (build 16) and rc2 (build 17) of v0.3.0 both shipped IPAs labelled `1.0 (3)` to App Store Connect. Apple's "ready to test" email never came for rc1, and rc1/rc2 didn't appear in TestFlight at all — Apple silently bound the upload to its first-ever record (`1.0 (3)` from an early v0.2.0 rc) and deduplicated everything after.
+
+**Root cause:** xcodegen generates `Config/*-Info.plist` from `project.yml`'s `info.properties` block. The four targets did NOT list `CFBundleShortVersionString` or `CFBundleVersion`, so xcodegen wrote its built-in defaults `1.0` / `1`. The CI workflow passed `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` to xcodebuild as build settings, but those keys only flow into the Info.plist when (a) `GENERATE_INFOPLIST_FILE = YES` — we use an external `INFOPLIST_FILE`, so it is `NO` — OR (b) the plist values are `$(VAR)` placeholders. Neither was true, so the literals always won and the build settings were silently dropped.
+
+**Why it looked like a CI bug:** The workflow's own logs proudly print `MARKETING_VERSION=0.3.0  CURRENT_PROJECT_VERSION=17` and the GitHub artifact gets a name like `ARRunnerPhone-0.3.0-rc2-17.ipa` — that's a Workflow-output string, NOT what's inside the binary. The actual Info.plist embedded in the IPA was `1.0/1`.
+
+**Fix pattern (recommended).** Set the plist values to `$(MARKETING_VERSION)` and `$(CURRENT_PROJECT_VERSION)` in every target's `info.properties`. xcodegen writes the literal `$(VAR)` string into the plist, and Xcode's "Process Info.plist" build phase substitutes the current build settings — which CI can override via the xcodebuild CLI. Confirm post-fix with `plutil -p Config/*-Info.plist | grep Bundle` (must show `$(MARKETING_VERSION)`, NOT `0.3.0`).
+
+**Secondary trap unmasked by the fix.** Once `$(MARKETING_VERSION)` actually reached the binary, the workflow's habit of setting `MARKETING_VERSION = "${TAG#v}"` (so `v0.3.0-rc3` → `0.3.0-rc3`) became fatal: `CFBundleShortVersionString` must be numeric (`N.N.N`) or App Store Connect hard-rejects with ITMS errors. Split the version resolution into `raw_version` (full tag-minus-v, used only for artifact filenames and logs) and `marketing_version` (`${RAW%%-*}`, used for xcodebuild). Build number stays `${GITHUB_RUN_NUMBER}` — it's already an integer.
+
+**Lesson.** When the CI tooling claims a version was set, verify ground truth by inspecting either (a) the source Info.plist that xcodegen emits, or (b) the post-archive `Info.plist` inside `*.xcarchive/Products/Applications/*.app/`. Workflow-output strings and `-showBuildSettings` dumps are necessary but not sufficient evidence — they reflect intent, not what landed in the binary.
+
+**Verified end-to-end:** rc3 (run 26057636278, build 18) — workflow logs read `Resolved RAW=0.3.0-rc3  MARKETING_VERSION=0.3.0  CURRENT_PROJECT_VERSION=18`, archive xcodebuild dump shows the same, altool reports `UPLOAD SUCCEEDED with no errors`. Cross-check with the Apple "ready to test" email — must name `AR-Runner 0.3.0 (18)` to fully close.

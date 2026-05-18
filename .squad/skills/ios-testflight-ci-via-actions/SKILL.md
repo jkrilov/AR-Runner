@@ -878,3 +878,49 @@ Diff the output against what the previous runner image produced. Any destination
 **Companion trap.** Comment text that documents which runtimes are preinstalled tends to lag the reality. After a fix, also update inline `# Pin Xcode …` comments that claim a runtime is preinstalled when it no longer is — stale comments are how the next runner-image migration repeats this trap.
 
 **Cross-reference.** Other watch-companion traps in this skill (bundle ID, embed phase). The through-line: watch-companion validation chains have several thin links, and only one needs to break to look like everything is broken.
+
+## Trap class — "Version bumps don't take" (rc1/rc2 of v0.3.0)
+
+**Symptom.** Every release tag bumps `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in `project.yml`, the workflow logs proudly print the new values, the GitHub artifact gets a filename like `ARRunnerPhone-0.3.0-rc2-17.ipa` — and Apple's TestFlight UI and "ready to test" emails keep showing the FIRST version that was ever uploaded (in our case `1.0 (3)`). Newer uploads disappear silently: no rejection email, no ITMS error, just dedup-into-the-first-record.
+
+**Mechanism.** xcodegen generates external `Info.plist` files from `project.yml`'s per-target `info.properties` block. If the block does NOT list `CFBundleShortVersionString` and `CFBundleVersion`, xcodegen writes its built-in defaults `1.0` and `1` as literal strings. When the project uses an external `INFOPLIST_FILE` (we do — `Config/{Target}-Info.plist`), Xcode sets `GENERATE_INFOPLIST_FILE = NO`, and the modern Xcode 11+ auto-bake-MARKETING_VERSION-into-plist path is disabled. Build settings on the xcodebuild CLI then have NO route into the Info.plist unless the plist values are `$(VAR)` placeholders. Result: every IPA carries `1.0/1` regardless of what `project.yml` or the CLI says. App Store Connect binds the bundle ID to the first record it accepts and dedups all later submissions with the same `CFBundleShortVersionString` + `CFBundleVersion`.
+
+**Why workflow logs lie.** The workflow output `MARKETING_VERSION=0.3.0  CURRENT_PROJECT_VERSION=17` and the artifact filename `ARRunnerPhone-0.3.0-rc2-17.ipa` are built from GitHub Actions output variables. They reflect INTENT, not the bytes that ended up in the binary. `xcodebuild -showBuildSettings` similarly shows the resolved build setting — which IS `0.3.0/17` — without revealing that the "Process Info.plist" build phase wrote `1.0/1` into the actual `*.app/Info.plist`.
+
+**Detection (one command).** After `xcodegen generate`, source plists must reference variables, NOT literals:
+
+```bash
+for d in ARRunnerPhone ARRunnerWatch ARRunnerWidgetsPhone ARRunnerWidgetsWatch; do
+  plutil -p "Config/${d}-Info.plist" | grep -E 'BundleShort|BundleVersion'
+done
+# CORRECT:
+#   "CFBundleShortVersionString" => "$(MARKETING_VERSION)"
+#   "CFBundleVersion" => "$(CURRENT_PROJECT_VERSION)"
+# TRAP:
+#   "CFBundleShortVersionString" => "1.0"
+#   "CFBundleVersion" => "1"
+```
+
+If you see literal values, the version bump is being silently dropped.
+
+**Fix pattern (recommended).** In every target's `info.properties`:
+
+```yaml
+CFBundleShortVersionString: $(MARKETING_VERSION)
+CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+```
+
+xcodegen writes the literal `$(...)` string into the plist; Xcode substitutes during "Process Info.plist". CI overrides via `MARKETING_VERSION=... CURRENT_PROJECT_VERSION=... xcodebuild archive` then flow end-to-end.
+
+**Companion trap — non-numeric `MARKETING_VERSION`.** Once `$(MARKETING_VERSION)` actually reaches the binary, the workflow's habit of setting `MARKETING_VERSION="${TAG#v}"` (so `v0.3.0-rc3` → `0.3.0-rc3`) becomes fatal: `CFBundleShortVersionString` must be numeric `N`/`N.N`/`N.N.N`. App Store Connect hard-rejects prerelease suffixes. **The "literal in plist" bug masks this — you only see the rejection AFTER you fix the plist.** Always split the version resolution:
+
+```bash
+RAW_VERSION="${TAG#v}"               # 0.3.0-rc3 — for artifact names, logs, release notes
+MARKETING_VERSION="${RAW_VERSION%%-*}"  # 0.3.0   — for xcodebuild and Info.plist
+```
+
+Build number stays `${GITHUB_RUN_NUMBER}` — it's already integer.
+
+**Generalization.** Any time a "key X is set in two places" question arises (project.yml literal vs. build setting; xcconfig vs. CLI override; Info.plist literal vs. `$(VAR)`), inspect the bytes that ship — not the intent that was declared. Apple's tooling has many silent overrides and many fallthroughs. Workflow output variables, `-showBuildSettings` dumps, and CI artifact filenames are NECESSARY but NOT SUFFICIENT evidence. Authoritative ground truth lives in the post-archive `*.xcarchive/Products/Applications/*.app/Info.plist`.
+
+**Cross-reference.** Same shape as the rc4 `CODE_SIGN_STYLE` trap (project-level pbxproj overrode xcconfig) and the rc12 `UISupportedInterfaceOrientations` trap (validator rejected on bytes Apple actually got, not on what `project.yml` said it sent). Read the bytes, not the intent.
