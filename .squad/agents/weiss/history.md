@@ -116,3 +116,58 @@ is out of scope — blocked on Xcode 26 availability on GitHub-hosted runners.
 Pattern worth remembering: on a runner without librsvg/rsvg-convert, the
 `qlmanage -t -s N -o DIR FILE.svg` → `sips` flatten pipeline is a zero-deps
 SVG→opaque-PNG path on macOS.
+
+## 2026-05-18 — pre-run glasses connect screen (PR #42)
+
+Joe v0.2.0 device-test feedback: app launches but no way to pair Engo 2
+before tapping Start Run. Added a watch-side "Connect Glasses" flow on
+`feat/watch-glasses-connect`.
+
+**SDK reality check:** ActiveLook still ships no watchOS SDK. The
+project's `ActiveLookGlassesAdapter` is a hand-rolled CoreBluetooth
+actor, and that's what this PR builds on — no new dependency, no
+Info.plist change (`NSBluetoothAlwaysUsageDescription` was already
+present from the 2026-05-16 audit pass).
+
+**UX pattern landed:** pre-run status chip + sheet, with the chip
+visible ONLY in idle / terminal `launchState`s so it doesn't compete
+with live metrics during a run. Sheet has five button states keyed off
+`GlassesConnectionState`: Scan & Connect (disconnected) → Cancel
+(scanning/connecting/reconnecting w/ ProgressView) → Disconnect
+(connected) → Retry (failed, with surfaced typed-error message).
+
+**`WorkoutViewModel` wiring:** added `prepareGlassesIfNeeded()` (lazy
+build + attach streams, no scan), `connectGlasses()` (errors caught
+into a new `glassesPairingError` observable), `disconnectGlasses()`,
+`autoReconnectGlassesOnLaunch()` (only fires if `GlassesPairingPreferences.hasPaired`
+to avoid wasting battery on a fresh install). The key change in
+`start()` is reusing an existing transport instance instead of always
+rebuilding — otherwise a user-pre-paired link would be torn down and
+re-scanned the moment they tapped Start.
+
+**Protocol extension trick worth keeping:** added
+`var connectedDeviceName: String? { get async }` to
+`GlassesFrameTransport` with a default-nil impl in the protocol
+extension. Linux stubs and the existing `StubGlassesTransport` callsites
+needed no source changes; only the new test exercises the override.
+This mirrors how `updateFields` is already done in the same file.
+
+**Process trap encountered:** the working directory is shared with
+other parallel Squad agents. Another agent switched branches
+mid-session and wiped my uncommitted edits to tracked files (untracked
+new files survived). Recovery: re-applied all edits, then committed +
+pushed to origin IMMEDIATELY before another switch could happen. Going
+forward I'll commit aggressively after every coherent batch of changes
+in this kind of shared-cwd setup.
+
+**Scope guards held:** zero touches to in-run display (Laughlin's
+`feat/watch-in-run-display-improvements` will rebase cleanly), CI,
+HealthKit, or signing. AR HUD rendering itself remains a follow-up.
+
+**Skill candidate:** yes — wrote
+`.squad/skills/activelook-bluetooth-pairing/SKILL.md` capturing the
+pre-run-vs-in-run state separation, the lazy-transport reuse pattern,
+the "auto-reconnect only if user previously paired" UserDefaults gate,
+and the `connectedDeviceName` protocol-extension default. The shared-
+cwd commit-immediately discipline goes into a separate trap note
+because it generalises far beyond BLE.

@@ -46,6 +46,17 @@ final class WorkoutViewModel {
     private(set) var distanceMeters: Double?
     private(set) var elapsed: TimeInterval = 0
     private(set) var glassesConnected: Bool = false
+    /// Live glasses link state — observed by the pre-run "Connect Glasses"
+    /// UI to surface `Disconnected / Connecting… / Connected`. The
+    /// `glassesConnected` Bool above stays for the in-run HUD-offline
+    /// indicator; this exposes the finer-grained state for the pairing UX.
+    private(set) var glassesLinkState: GlassesConnectionState = .disconnected
+    /// Human-readable name of the currently connected pair (e.g. "Engo 2").
+    /// `nil` until the transport reports `.connected` and supplies a name.
+    private(set) var glassesDeviceName: String?
+    /// Last pairing error surfaced from `connectGlasses()`. Cleared on the
+    /// next successful connect or explicit dismissal.
+    private(set) var glassesPairingError: String?
     /// True while the glasses transport is in a dropped state. Mirrors the
     /// inverse of `glassesConnected` for state-driven UI; published as its
     /// own field so the view can react to the side-channel `.dropped` /
@@ -125,14 +136,28 @@ final class WorkoutViewModel {
 
         // v0.2 #1: bring up the glasses link alongside the workout. Per D4
         // the connect attempt is opportunistic — we never block the workout
-        // start on its outcome.
+        // start on its outcome. If the user pre-paired from the Connect
+        // Glasses sheet, the transport is already built and (likely)
+        // already connected; reuse it rather than rebuilding.
         if let transportFactory {
-            let transport = transportFactory()
-            self.transport = transport
-            let glasses = GlassesService(transport: transport)
-            self.glasses = glasses
-            attachGlasses(transport: transport, service: glasses)
+            let transport: any GlassesFrameTransport
+            let glasses: GlassesService
+            if let existing = self.transport, let existingService = self.glasses {
+                transport = existing
+                glasses = existingService
+            } else {
+                transport = transportFactory()
+                self.transport = transport
+                glasses = GlassesService(transport: transport)
+                self.glasses = glasses
+                attachGlasses(transport: transport, service: glasses)
+            }
+            // If the pre-paired link is already up we skip a redundant
+            // connect; otherwise (cold start, or post-failure retry) kick
+            // the scan off without blocking workout start.
             Task.detached { [transport] in
+                let state = await transport.connectionState
+                guard state != .connected, state != .connecting, state != .scanning else { return }
                 try? await transport.connect()
             }
         }
@@ -237,6 +262,104 @@ final class WorkoutViewModel {
         await controller.reportGlassesSignal(signal)
     }
 
+    // MARK: - Pre-run glasses pairing (Joe's v0.2.0 device-test feedback)
+
+    /// Build the transport and attach streams without starting a scan. Safe
+    /// to call repeatedly; subsequent calls are no-ops. Used by the pre-run
+    /// "Connect Glasses" sheet so the status chip reflects live state before
+    /// the workout starts, and so a user-pre-paired transport survives into
+    /// `start()` (reused there rather than rebuilt).
+    func prepareGlassesIfNeeded() {
+        guard transport == nil, let transportFactory else { return }
+        let transport = transportFactory()
+        self.transport = transport
+        let glasses = GlassesService(transport: transport)
+        self.glasses = glasses
+        attachGlasses(transport: transport, service: glasses)
+    }
+
+    /// User tapped "Connect Glasses" on the pre-run screen. Builds the
+    /// transport if needed, kicks off a scan/connect, surfaces errors via
+    /// `glassesPairingError`, and on success flips a one-shot
+    /// `hasPairedGlasses` UserDefaults flag so subsequent app launches can
+    /// auto-attempt a connect on appear.
+    func connectGlasses() async {
+        prepareGlassesIfNeeded()
+        guard let transport else { return }
+        glassesPairingError = nil
+        let current = await transport.connectionState
+        if current == .connected || current == .connecting || current == .scanning {
+            return
+        }
+        do {
+            try await transport.connect()
+            GlassesPairingPreferences.shared.markPaired()
+        } catch {
+            glassesPairingError = Self.describePairingError(error)
+        }
+    }
+
+    /// User tapped "Disconnect" / "Cancel" from the pre-run sheet. Tears down
+    /// the active link but keeps the transport instance around so a retry
+    /// doesn't have to rebuild it.
+    func disconnectGlasses() async {
+        guard let transport else { return }
+        try? await transport.disconnect()
+    }
+
+    /// Called by the WorkoutView on first appear. If the user has
+    /// successfully paired before, opportunistically attempt to reconnect.
+    /// No-op if the user has never paired (we don't want to consume battery
+    /// scanning for nothing) or if the link is already up.
+    func autoReconnectGlassesOnLaunch() async {
+        guard GlassesPairingPreferences.shared.hasPaired else { return }
+        prepareGlassesIfNeeded()
+        guard let transport else { return }
+        let current = await transport.connectionState
+        guard current == .disconnected || current == .failed else { return }
+        try? await transport.connect()
+    }
+
+    /// Clear a pairing error after the user dismisses it.
+    func dismissGlassesPairingError() {
+        glassesPairingError = nil
+    }
+
+    private static func describePairingError(_ error: Error) -> String {
+        if let typed = error as? GlassesTransportError {
+            switch typed {
+            case .notConnected:
+                return "Not connected. Try again."
+            case .bluetoothUnavailable:
+                return "Bluetooth is unavailable. Check Settings."
+            case .scanTimeout:
+                return "No glasses found. Make sure they're powered on and nearby."
+            case .writeFailed(let reason):
+                return "Pairing failed: \(reason)"
+            case .unknownLayout:
+                return "Pairing failed: layout mismatch"
+            }
+        }
+        return "Pairing failed: \(error.localizedDescription)"
+    }
+
+    /// MainActor-isolated bridge to update `glassesLinkState` +
+    /// `glassesDeviceName` whenever the transport's connection state
+    /// changes. Runs alongside the existing controller-signal hop in
+    /// `attachGlasses`'s state task.
+    fileprivate func updateGlassesLinkState(
+        _ state: GlassesConnectionState,
+        transport: any GlassesFrameTransport
+    ) async {
+        glassesLinkState = state
+        if state == .connected {
+            glassesDeviceName = await transport.connectedDeviceName
+            glassesPairingError = nil
+        } else if state == .disconnected || state == .failed {
+            glassesDeviceName = nil
+        }
+    }
+
     func attachGlasses(transport: any GlassesFrameTransport, service: GlassesService? = nil) {
         glassesStateTask?.cancel()
         glassesStatusTask?.cancel()
@@ -249,6 +372,7 @@ final class WorkoutViewModel {
         glassesStateTask = Task { [weak self] in
             let stream = await transport.connectionStates()
             for await state in stream {
+                await self?.updateGlassesLinkState(state, transport: transport)
                 await self?.reportGlasses(.from(state))
                 // P1.2 (audit 2026-05-16): activate the default curated preset
                 // the moment we transition to `.connected` so subsequent

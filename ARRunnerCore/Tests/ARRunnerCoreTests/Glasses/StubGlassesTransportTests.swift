@@ -37,6 +37,27 @@ final class StubGlassesTransportTests: XCTestCase {
         XCTAssertEqual(state, .connected)
     }
 
+    func testConnectedDeviceNameIsNilWhenDisconnected() async {
+        let transport = StubGlassesTransport(simulatedDeviceName: "Engo 2")
+        let name = await transport.connectedDeviceName
+        XCTAssertNil(name)
+    }
+
+    func testConnectedDeviceNameIsExposedWhenConnected() async throws {
+        let transport = StubGlassesTransport(simulatedDeviceName: "Engo 2")
+        try await transport.connect()
+        let name = await transport.connectedDeviceName
+        XCTAssertEqual(name, "Engo 2")
+    }
+
+    func testConnectedDeviceNameClearsAfterDisconnect() async throws {
+        let transport = StubGlassesTransport(simulatedDeviceName: "Engo 2")
+        try await transport.connect()
+        try await transport.disconnect()
+        let name = await transport.connectedDeviceName
+        XCTAssertNil(name)
+    }
+
     func testFieldUpdateRequiresConnection() async {
         let transport = StubGlassesTransport()
         let update = HUDFieldUpdate(layoutID: "balanced-run", fieldIndex: 0, value: "5:42")

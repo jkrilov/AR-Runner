@@ -46,6 +46,13 @@ public protocol GlassesFrameTransport: Sendable {
     /// Convenience bulk variant. Default implementation issues calls serially;
     /// adapters may override to coalesce into a single BLE write.
     func updateFields(_ updates: [HUDFieldUpdate]) async throws
+
+    /// Human-readable name of the currently-connected peripheral, if any.
+    /// Returns `nil` when no link is established (or the underlying transport
+    /// cannot supply a name — e.g. test stubs that don't model one). Used by
+    /// the pre-run "Connect Glasses" UI to surface `Glasses: {Device Name}`
+    /// once a pairing succeeds.
+    var connectedDeviceName: String? { get async }
 }
 
 extension GlassesFrameTransport {
@@ -53,5 +60,11 @@ extension GlassesFrameTransport {
         for update in updates {
             try await updateField(update)
         }
+    }
+
+    /// Default: transports that don't model a device name (Linux test stubs,
+    /// fakes) return `nil`. Real adapters override.
+    public var connectedDeviceName: String? {
+        get async { nil }
     }
 }

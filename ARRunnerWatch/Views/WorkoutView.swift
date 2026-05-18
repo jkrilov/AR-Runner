@@ -11,6 +11,7 @@ struct WorkoutView: View {
         transportFactory: { GlassesTransportFactory.makeDefault() },
         mirror: ARRunnerWatchEnvironment.shared.mirror
     )
+    @State private var showGlassesSheet = false
 
     /// v0.2 audit P1.1: cross-process handoff from
     /// `StartWorkoutIntent.perform()` (widget extension) to the
@@ -26,6 +27,9 @@ struct WorkoutView: View {
                 metricsSection
                 Divider()
                 controlsSection
+                if isPreRun {
+                    preRunGlassesRow
+                }
                 statusFooter
             }
             .padding(.horizontal)
@@ -36,10 +40,19 @@ struct WorkoutView: View {
             // First-launch path — `openAppWhenRun` lands here before the
             // scene phase change fires on a cold start.
             await maybeAutoStartFromIntent()
+            // v0.2.0 device-test fix: if the user has previously paired
+            // their glasses, kick off a reconnect attempt on launch so the
+            // pre-run status chip is accurate before they tap Start.
+            await viewModel.autoReconnectGlassesOnLaunch()
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 Task { await maybeAutoStartFromIntent() }
+            }
+        }
+        .sheet(isPresented: $showGlassesSheet) {
+            NavigationStack {
+                GlassesConnectView(viewModel: viewModel)
             }
         }
         .confirmationDialog(
@@ -83,6 +96,69 @@ struct WorkoutView: View {
                 .foregroundStyle(.orange)
                 .accessibilityLabel("Glasses HUD offline. Workout still recording.")
                 .transition(.opacity)
+        }
+    }
+
+    /// True while the workout is not running — i.e. the user is on the
+    /// "pre-run" surface (idle or post-run terminal states). The Connect
+    /// Glasses row only appears here so it doesn't compete for screen
+    /// real estate with live metrics during a run.
+    private var isPreRun: Bool {
+        switch viewModel.launchState {
+        case .idle, .ended, .cancelled, .failed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Tappable row that shows the live glasses link state and opens the
+    /// pairing sheet. Pre-run only — see `isPreRun`. This is Joe's
+    /// v0.2.0 device-test ask: a clear, persistent affordance to pair
+    /// the AR glasses before tapping Start Run.
+    @ViewBuilder
+    private var preRunGlassesRow: some View {
+        Button {
+            showGlassesSheet = true
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(glassesChipColor)
+                    .frame(width: 8, height: 8)
+                Image(systemName: "eyeglasses")
+                Text(glassesChipText)
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Glasses \(glassesChipText). Tap to manage pairing.")
+    }
+
+    private var glassesChipText: String {
+        switch viewModel.glassesLinkState {
+        case .disconnected: return "Glasses: Disconnected"
+        case .scanning:     return "Glasses: Scanning…"
+        case .connecting:   return "Glasses: Connecting…"
+        case .reconnecting: return "Glasses: Reconnecting…"
+        case .failed:       return "Glasses: Connection failed"
+        case .connected:    return "Glasses: \(viewModel.glassesDeviceName ?? "Connected")"
+        }
+    }
+
+    private var glassesChipColor: Color {
+        switch viewModel.glassesLinkState {
+        case .connected: return .green
+        case .scanning, .connecting, .reconnecting: return .yellow
+        case .failed: return .red
+        case .disconnected: return .secondary
         }
     }
 

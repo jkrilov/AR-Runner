@@ -29,11 +29,22 @@ public actor StubGlassesTransport: GlassesFrameTransport {
     public private(set) var disconnectCallCount = 0
 
     private let knownLayoutIDs: Set<String>
+    private let simulatedDeviceName: String?
     private var stateContinuations: [UUID: AsyncStream<GlassesConnectionState>.Continuation] = [:]
     private var statusContinuations: [UUID: AsyncStream<GlassesStatusEvent>.Continuation] = [:]
 
-    public init(knownLayoutIDs: Set<String> = Set(CuratedLayoutCatalog.mapping.keys)) {
+    public init(
+        knownLayoutIDs: Set<String> = Set(CuratedLayoutCatalog.mapping.keys),
+        simulatedDeviceName: String? = "Simulated Glasses"
+    ) {
         self.knownLayoutIDs = knownLayoutIDs
+        self.simulatedDeviceName = simulatedDeviceName
+    }
+
+    public var connectedDeviceName: String? {
+        get async {
+            connectionState == .connected ? simulatedDeviceName : nil
+        }
     }
 
     public func connectionStates() -> AsyncStream<GlassesConnectionState> {
