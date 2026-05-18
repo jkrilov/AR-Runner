@@ -116,3 +116,95 @@ something sensible like `"Simulated Glasses"`) so SwiftUI previews and
 unit tests don't have to special-case nil names. Add tests for the
 three obvious states: nil-when-disconnected, exposed-when-connected,
 clears-after-disconnect.
+
+## CoreBluetooth scan filter — the trap that broke PR #42
+
+**Added 2026-05-18 after the PR #42 → PR #45 fix campaign.**
+
+`CBCentralManager.scanForPeripherals(withServices:)` matches the
+service-UUID list against the peripheral's **advertising packet**, not
+its GATT table. ActiveLook / Engo 2 (and many opaque vendor peripherals)
+do NOT advertise their 128-bit private service UUID — it's only exposed
+on the GATT table after connection. Filtering by that UUID at scan time
+means `didDiscover` is never invoked and the connect screen hangs until
+the scan timeout fires.
+
+### Do this instead
+
+```swift
+// 1. Scan with nil services.
+central.scanForPeripherals(
+    withServices: nil,
+    options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+)
+
+// 2. Filter in didDiscover by manufacturer data company-ID prefix.
+//    For ActiveLook / Microoled: 0xFA 0xDA (little-endian SIG ID 0xDAFA).
+guard
+    let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
+    manufacturerData.count >= 2,
+    manufacturerData[manufacturerData.startIndex]     == 0xFA,
+    manufacturerData[manufacturerData.startIndex + 1] == 0xDA
+else { return }
+```
+
+Mirrors ActiveLook's own iOS SDK
+(`Sources/Classes/Public/ActiveLookSDK.swift:192`), which carries a
+literal `// Scanning with services list not working` comment next to
+their scan call.
+
+**Extract the byte-prefix check as a pure helper** in Core (e.g.
+`GlassesAdvertisementFilter.isActiveLookPeripheral(manufacturerData:)`)
+so it's exercised on the Linux CI runner without needing CoreBluetooth.
+Test the negative cases too: byte-swapped prefix, too-short payload,
+nil/empty data, and `Data` slices with a non-zero `startIndex` (the
+naive `data[0]` indexing silently misbehaves on slices — index from
+`data.startIndex` always).
+
+### Background-scan caveat
+
+Apple still requires a service-UUID filter for **background** scans.
+Our pairing flow is foreground only and the runtime reconnect path uses
+`retrievePeripherals(withIdentifiers:)` (no scan), so we don't hit this
+limit. If a future flow ever needs unattended background pair of a new
+device from the watch, expect to design around this separately.
+
+## Fast reconnect — never scan twice for the same glasses
+
+After the first successful connect, persist `peripheral.identifier`
+(`UUID`) to UserDefaults. On every subsequent app launch / connect-
+screen open, BEFORE starting a scan:
+
+```swift
+let known = central.retrievePeripherals(withIdentifiers: [savedUUID])
+if let peripheral = known.first {
+    central.connect(peripheral, options: nil) // No scan needed.
+}
+```
+
+This mirrors ActiveLook SDK's `connect(_:onDisconnect:onConnectionError:)`
+(`ActiveLookSDK.swift:368` and helpers at `240–298`). It's faster than
+scanning, more battery-friendly, and works when the peripheral isn't
+advertising loudly enough for a scan to pick it up in time.
+
+**Always pair this with a fallback safety timeout** (5–10 s). If
+`retrievePeripherals` returns `[]` because the system has evicted the
+peripheral from its cache (post-reboot, long idle), OR if `connect`
+never produces a `didConnect`/`didFailToConnect` callback (glasses
+powered off / out of range), tear it down and fall back to the
+manufacturer-data scan path. Don't surface the eviction as an error —
+it's normal.
+
+## Anti-pattern lesson — validate "platform limitation" claims first
+
+When you find yourself reaching for "the platform doesn't support this"
+as a diagnosis, **check whether a shipping app does support it.** The
+official ActiveLook watch app pairs glasses directly from watchOS;
+that's prima facie evidence the platform handles the use case. A 30-
+second `grep scanForPeripherals` on the vendor's iOS SDK source can
+flip a bad architectural pivot in two minutes. (See the v1 → v2
+retraction trail in `.squad/files/glasses-pairing-diagnosis.md` for the
+worked example. The watchOS-CB-third-party-restriction "skill" the v1
+diagnosis was going to spawn does not exist — it was a fabrication of
+the prior misreading.)
+

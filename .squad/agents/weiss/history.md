@@ -171,3 +171,248 @@ the "auto-reconnect only if user previously paired" UserDefaults gate,
 and the `connectedDeviceName` protocol-extension default. The shared-
 cwd commit-immediately discipline goes into a separate trap note
 because it generalises far beyond BLE.
+
+## 2026-05-18T13:40:57-04:00 — v0.3.0-rc1 glasses "Scanning…" hang: watchOS CB Central restriction (PR #42 fallout)
+
+Joe's on-device test of the pairing screen I shipped in PR #42 hangs
+indefinitely on "Scanning…" against a confirmed-on, in-pairing-mode Engo 2.
+Diagnosis at `.squad/files/glasses-pairing-diagnosis.md`. Decision proposed
+at `.squad/decisions/inbox/weiss-glasses-pairing-architecture-pivot.md`.
+
+**Root cause — new trap class: `watchos-cbcentral-third-party-restriction`.**
+`CBCentralManager.scanForPeripherals(withServices:options:)` from a
+watchOS target silently no-ops against non-MFi third-party BLE peripherals
+like ActiveLook-family glasses. The scan call is accepted without error,
+no `didDiscover` ever fires, no diagnostic logging surfaces — the Watch
+radio just doesn't surface those devices to third-party apps. Service-UUID
+filtering (which the docs require and we already do) doesn't help; this is
+a platform allow-list, not a code bug. Documented in Apple Developer Forums
+thread/774914 (and sibling thread/746043) with no developer-side fix.
+
+**Verifications that ruled out other causes.** Info.plist key present
+(`NSBluetoothAlwaysUsageDescription`, project.yml:76). Background mode
+declared (`bluetooth-central`, project.yml:78). No additional Bluetooth
+entitlement is required for the Central role (the `com.apple.developer.bluetooth-*`
+keys are MFi/L2CAP-only). Service UUID correct
+(`0783B03E-8535-B5A0-7140-A304D2495CB7`, round-tripped against
+`ActiveLookCommandTests`). Scan waits for `.poweredOn` via
+`centralManagerDidUpdateState` — no race. Strong refs held on peripheral
+and central — no premature dealloc. Code is textbook; platform is the
+problem.
+
+**Resolution path: Path A (phone-side BLE + WCSession state bridge).**
+Move `ActiveLookGlassesAdapter` to the phone target (pure CoreBluetooth —
+compiles unchanged), put the pairing UI on the phone, give the watch a
+read-only status chip + "Pair on iPhone" explainer, extend `WCMessage` with
+a `glassesState` case carried on `updateApplicationContext` (latest-wins
+across unreachability). HUD frame writes also follow the BLE link onto the
+phone as a v0.3 follow-up. Watch-first stance narrows: workouts stay
+watch-first, glasses cannot be. Scoped at ~5 files + 1 WCMessage case + ~300
+new LOC; no new dependencies; no signing/CI churn (rc14 embed wiring already
+correct).
+
+**Process traps re-encountered.**
+- Apple's docs site is client-rendered JS (`web_fetch` returns the empty
+  shell). Cross-checking via `web_search` against forums/SO is the
+  practical fallback for any future "what does Apple say about X" question.
+- The concurrent `chore/skip-encryption-compliance-prompt` PR touches
+  `project.yml` — Path A's `project.yml` additions are in a different
+  section (ARRunnerPhone.info.properties vs. encryption-compliance) so
+  merge should be mechanical, but rebase carefully before implementation.
+
+**Scope guard held.** This run was diagnose-only — no code changes, no
+tag, no PR. Returned recommendation to Joe via Squad.
+
+**Skill candidate:** yes — `watchos-cbcentral-third-party-restriction`
+deserves its own SKILL.md (very different surface from
+`activelook-ble-adapter-pitfalls/` and `activelook-bluetooth-pairing/`,
+which both assume the central role works at all). Will draft on the way
+through Path A implementation rather than as a standalone task.
+
+## 2026-05-18T13:46:44-04:00 — Glasses pairing diagnosis CORRECTED (v2)
+
+Joe pushed back on weiss-4: the official ActiveLook watch app ships and
+pairs from watchOS, so "watchOS CBCentralManager can't see non-MFi
+peripherals" cannot be the whole story. Joe also set a hard constraint
+that the iPhone must NOT be a runtime BLE dependency — workouts happen
+watch+glasses only, phone optional.
+
+**Corrected root cause.** Read `ActiveLook/ios-sdk@a39839f`,
+`Sources/Classes/Public/ActiveLookSDK.swift`. Line 192 carries a literal
+`// Scanning with services list not working` comment, followed by
+`scanForPeripherals(withServices: nil, options:
+[CBCentralManagerScanOptionAllowDuplicatesKey: false])`. They filter
+peripherals inside `didDiscover` (line 549) via
+`peripheralIsActiveLookGlasses(...)` (line 383) which inspects
+`kCBAdvDataManufacturerData` for the Microoled company-ID prefix
+`0xFA 0xDA`. Our PR #42 scan filters with the ActiveLook command-service
+UUID `0783B03E-…`, which the glasses don't include in advertising data
+(it lives on the GATT table post-connect). Service-UUID filters match
+the advertising packet, so `didDiscover` is never called. **Same code
+would fail on iOS too**, not a platform restriction.
+
+**Known-device fast path** also discovered in the SDK: line 368 uses
+`retrievePeripherals(withIdentifiers:[gUUID])`, line 395 uses
+`retrieveConnectedPeripherals(withServices:[GAS, DIS, Battery])`. Persist
+the peripheral UUID on first pair, skip scanning entirely on subsequent
+launches — `connect(peripheral)` directly. This is the right reconnect
+path for both v0.3 and any future phone-assisted handoff (Pattern Y).
+
+**Pivot recommendation withdrawn.** Pattern X (watch-direct, scan-nil +
+manufacturer-data filter + retrievePeripherals on reconnect) satisfies
+Joe's runtime-independence constraint, matches ActiveLook's own
+implementation, and is a ~10-30 line fix to `ActiveLookGlassesAdapter`
+plus a UserDefaults slot for the paired UUID. D-WEISS-WC-1 (watch-first)
+is **reinforced**, not narrowed.
+
+Rewrote `.squad/files/glasses-pairing-diagnosis.md` end to end (kept the
+filename so backlinks work). Wrote v2 decision at
+`.squad/decisions/inbox/weiss-glasses-pairing-architecture-pivot-v2.md`.
+v1 is explicitly retracted. The `watchos-cbcentral-third-party-restriction`
+skill draft mentioned in weiss-4 should NOT be authored — the restriction
+as I framed it doesn't exist.
+
+**Lessons (the real ones this time).**
+- **Validate "platform limitation" against shipping counter-examples
+  BEFORE recommending architectural pivots.** A vendor shipping a watch
+  app is strong prima facie evidence the platform supports the use case.
+  Apple Developer Forum threads describe failure modes; they don't bound
+  the platform's capabilities. I cited thread/774914 as if it justified
+  ignoring the existence of the ActiveLook watch app. It didn't.
+- **Read the reference SDK source FIRST.** A 30-second `grep
+  scanForPeripherals ActiveLook/ios-sdk` would have flipped the diagnosis
+  immediately. I skipped that step and went straight to architecture
+  pivot. Cost: one wasted diagnosis pass plus Joe having to push back.
+- **`scanForPeripherals(withServices:)` matches the ADVERTISING packet,
+  not the GATT table.** Vendor peripherals that hide their primary service
+  behind connect-then-discover require manufacturer-data filtering
+  (`kCBAdvDataManufacturerData`). This is general BLE knowledge I should
+  have applied unprompted.
+- **`retrievePeripherals(withIdentifiers:)` + `connect(peripheral)`
+  bypasses scan entirely.** This is the runtime path for any
+  previously-paired peripheral on any Apple platform — fewer moving
+  parts, no scan-time filter risk, and works identically on iOS / iPadOS /
+  watchOS / macOS.
+
+**Skill update plan:** roll the manufacturer-data filter + known-peripheral
+reconnect into `.squad/skills/activelook-bluetooth-pairing/SKILL.md`
+during PR #43. Do NOT publish the
+`watchos-cbcentral-third-party-restriction` draft. Add a separate trap
+note under "Diagnosis hygiene: validate platform limits against shipping
+counter-examples before recommending pivots" — generalises beyond BLE.
+
+---
+
+## 2026-05-18 — PR #45 landed the watch-direct glasses scan fix (Pattern X)
+
+Joe approved Pattern X from the v2 decision. Implementation was as scoped
+in the corrected diagnosis — ~140 LoC net change, watch-only.
+
+### What I actually shipped
+
+1. **Pure helper in Core**:
+   `ARRunnerCore/Sources/ARRunnerCore/Glasses/GlassesAdvertisementFilter.swift`
+   exposes `isActiveLookPeripheral(manufacturerData: Data?) -> Bool`.
+   8 XCTest cases in `Tests/ARRunnerCoreTests/Glasses/`. Lives in Core
+   specifically so Linux CI exercises it without `import CoreBluetooth`.
+
+2. **Adapter scan call** (`ActiveLookGlassesAdapter.swift`):
+   - `scanForPeripherals(withServices: nil,
+     options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])`.
+   - `handleDiscovered` now takes `manufacturerData: Data?` (not the raw
+     `[String: Any]` dictionary) — the coordinator extracts
+     `advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data`
+     on the CB delegate queue so we only ship a Sendable `Data?` across
+     the actor boundary. Avoids a Swift 6 strict-concurrency warning.
+   - Rejected peripherals logged at INFO under category `Glasses`,
+     subsystem `com.arrunner.watch`; accepted peripherals logged too.
+
+3. **Known-peripheral persistence** (`GlassesPairingPreferences.swift`):
+   - New `pairedPeripheralID: UUID?` slot, key
+     `glasses.lastKnownPeripheralIdentifier`, stored as a UUID string.
+   - `clear()` now removes both `pairedKey` and the peripheral ID.
+
+4. **Fast-reconnect path** in `handleCentralStateUpdate`:
+   - On `.poweredOn`, `tryRetrieveKnownPeripheral()` runs FIRST.
+   - If `prefs.pairedPeripheralID` is set AND
+     `central.retrievePeripherals(withIdentifiers: [saved])` returns
+     non-empty, we wire up the peripheral and call `connect()` directly
+     — no scan.
+   - 8-second safety timeout (new `knownPeripheralConnectTimeout`
+     parameter, defaulted) cancels the attempt and falls back to the
+     manufacturer-data scan path if the system never produces a
+     `didConnect`. WARN-level log on fallback.
+   - On `didConnect`, the `fastReconnectAttempted` flag is cleared so
+     the safety timeout becomes a no-op.
+
+5. **Persist on connect success**: in `handleCharacteristicsDiscovered`,
+   once `rxCharacteristic` is in hand we write
+   `prefs.pairedPeripheralID = peripheral.identifier` before resuming
+   the pending connect continuation. INFO log of the persisted UUID.
+
+### Patterns I want to remember
+
+**Manufacturer-data filter — 0xFA 0xDA, little-endian.** Microoled's
+Bluetooth SIG company identifier is `0xDAFA`; the wire/CoreBluetooth
+representation is little-endian so it appears as bytes
+`[0xFA, 0xDA, …]`. ActiveLook's iOS SDK
+(`Sources/Classes/Public/ActiveLookSDK.swift:383-388`) is the canonical
+reference. The byte-swapped variant `[0xDA, 0xFA]` is the easy mistake
+— I added an explicit negative test for it.
+
+**Index manufacturer data from `data.startIndex`, not literal 0.** A
+`Data` slice (e.g. `backing.suffix(from: 2)`) preserves the parent's
+indices, so `manufacturerData[0]` would either crash or return wrong
+bytes. The helper always uses
+`manufacturerData[manufacturerData.startIndex + i]`. Test
+`test_isActiveLookPeripheral_respectsNonZeroStartIndex` guards against
+regressing this.
+
+**Known-peripheral retrieve pattern.**
+`retrievePeripherals(withIdentifiers:)` returns `[]` on cache eviction
+(post-reboot, long idle) — treat that as "fall back to scan", NOT as
+an error. Even when retrieve returns a peripheral, the subsequent
+`connect()` may never produce a callback (glasses off / out of range);
+always pair the call with a safety timeout (I picked 8 s). The 15 s
+scan timeout safety net in the scan path is untouched.
+
+**Hoist non-Sendable extraction onto the CB queue.** When the actor
+needs only a small piece of the `advertisementData: [String: Any]`
+dictionary, pull it out inside the `Coordinator` delegate method (which
+runs on the CB queue) and ship only the Sendable extract into the
+`Task { await actor… }`. Cleaner than `@preconcurrency`-ing the whole
+dictionary across the boundary.
+
+### Verification
+
+- ARRunnerCore: `swift test` — 121 tests, 1 skipped, 0 failures (8 new
+  filter cases all pass).
+- ARRunnerWatch: `xcodebuild -scheme ARRunnerWatch
+  -destination 'generic/platform=watchOS' CODE_SIGNING_ALLOWED=NO build`
+  — succeeds, zero warnings/errors traceable to this change.
+- Real-device validation still pending Joe's bench session.
+
+### Skill update
+
+Appended a "CoreBluetooth scan filter — the trap that broke PR #42"
+section and a "Fast reconnect — never scan twice for the same glasses"
+section to `.squad/skills/activelook-bluetooth-pairing/SKILL.md`. The
+`watchos-cbcentral-third-party-restriction` skill draft remains
+un-authored — the restriction as v1 described it doesn't exist.
+
+### Lessons (compounded with the v2 retraction)
+
+1. **A 30-second `grep scanForPeripherals` on the vendor SDK** would
+   have flipped my v1 diagnosis before it ever made it to a decision
+   inbox. Read the reference implementation FIRST when diagnosing
+   third-party-device integration bugs.
+2. **`scanForPeripherals(withServices:)` filters the advertising
+   packet, not the GATT table.** Vendor peripherals very often expose
+   their command service on GATT but only broadcast a manufacturer-data
+   payload. Don't assume "service is in the GATT table → can scan-
+   filter by it."
+3. **Persisting `peripheral.identifier` + `retrievePeripherals` is the
+   standard fast-reconnect pattern on every Apple platform.** Whenever
+   we add new BLE peripheral integrations, build this in from day one
+   — it's cheap and removes the scan-time race entirely on subsequent
+   launches.
