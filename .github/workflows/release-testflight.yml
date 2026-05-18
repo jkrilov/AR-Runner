@@ -44,13 +44,15 @@ permissions:
 jobs:
   testflight:
     name: Archive & upload to TestFlight
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     env:
-      # Pinned for the same reason as ci-build.yml: 16.4 ships iOS 18.5 + watchOS 11.5
-      # simulator runtimes pre-baked. For archiving we don't need the sim runtimes,
-      # but pinning the Xcode version keeps signing/SDK behavior reproducible.
-      XCODE_VERSION: '16.4'
+      # Xcode 26.4 ships iOS 26.4 + watchOS 26.4 SDKs, satisfying Apple's
+      # requirement that new App Store submissions be built with the iOS 26 SDK
+      # (enforced since WWDC 2025). The macos-26 runner defaults to Xcode 26.2;
+      # we pin 26.4 for the latest stable SDK. Avoid 26.5 (beta on the image).
+      # See: actions/runner-images macos-26-arm64-Readme.md
+      XCODE_VERSION: '26.4'
       ARCHIVE_PATH: build/ARRunnerPhone.xcarchive
       EXPORT_PATH: build/export
       EXPORT_OPTIONS_PLIST: build/ExportOptions.plist
