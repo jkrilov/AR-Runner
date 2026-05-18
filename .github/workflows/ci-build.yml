@@ -22,8 +22,16 @@ permissions:
 jobs:
   xcodebuild:
     name: ${{ matrix.scheme }}
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
+    env:
+      # Align with release-testflight.yml (PR #31): Xcode 26.4 ships the iOS 26.4
+      # and watchOS 26.4 SDKs. Apple now requires App Store submissions to be
+      # built with the iOS 26 SDK; we keep CI on the same toolchain so PRs
+      # surface SDK-level breakage before tagging an rc. The macos-26 runner
+      # defaults to Xcode 26.2; we pin 26.4 for the latest stable SDK
+      # (26.5 is beta on the image).
+      XCODE_VERSION: '26.4'
     strategy:
       fail-fast: false
       matrix:
@@ -41,18 +49,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pin Xcode 16.4 — the macos-15 runner image ships it as the default Xcode
-      # with the iOS 18.5 AND watchOS 11.5 simulator runtimes pre-installed
-      # (both satisfy our D2 minimums of iOS 18 / watchOS 11). Older Xcode 16.0
-      # nominally bundles iOS 18.0 / watchOS 11.0 runtimes per the runner image
-      # manifest, but in practice the watchOS 11.0 simulator runtime is missing
-      # on the live image and `xcodebuild -downloadPlatform watchOS` cannot run
-      # unattended on CI (exit 70 — Apple ID auth required). Pinning a Xcode
-      # whose runtimes are pre-baked sidesteps both problems.
+      # Pin Xcode 26.4 — matches release-testflight.yml (rc12, PR #31). The
+      # macos-26 runner image ships Xcode 26.2 as default with the iOS 26.x
+      # and watchOS 26.x simulator runtimes pre-installed. Pinning 26.4 keeps
+      # PR builds on the same SDK that ships to TestFlight, so SDK-level
+      # breakage surfaces here rather than at tag-time. Avoid 26.5 (beta on
+      # the image). See: actions/runner-images macos-26-arm64-Readme.md
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16.4'
+          xcode-version: ${{ env.XCODE_VERSION }}
 
       - name: Show toolchain
         run: |
