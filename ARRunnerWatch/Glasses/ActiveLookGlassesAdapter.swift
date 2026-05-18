@@ -87,6 +87,18 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
     private var rxCharacteristic: CBCharacteristic?
+    /// Captured peripheral name at successful connect time. Held independently
+    /// of `peripheral` so the pre-run UI can keep showing
+    /// `Glasses: {name}` between auto-reconnect attempts when `peripheral`
+    /// has been nilled out by `handleDisconnect`.
+    private var lastConnectedName: String?
+
+    public var connectedDeviceName: String? {
+        get async {
+            guard case .connected = connectionState else { return nil }
+            return lastConnectedName
+        }
+    }
 
     private var stateContinuations: [UUID: AsyncStream<GlassesConnectionState>.Continuation] = [:]
     private var statusContinuations: [UUID: AsyncStream<GlassesStatusEvent>.Continuation] = [:]
@@ -281,6 +293,13 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         guard service.uuid == CBUUID(string: ActiveLookGATT.commandService) else { return }
 
         if rxCharacteristic != nil {
+            // Capture name from the peripheral at the moment connection
+            // completes — CoreBluetooth may clear `peripheral.name` after a
+            // drop, so we snapshot it for the pre-run UI's `Glasses: {name}`
+            // display.
+            if let name = peripheral?.name, !name.isEmpty {
+                lastConnectedName = name
+            }
             // If we were reconnecting after a drop, emit a `.reconnected` status.
             if let dropAt = lastDropAt {
                 emit(.reconnected(gap: Date().timeIntervalSince(dropAt), at: Date()))
