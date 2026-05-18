@@ -132,6 +132,27 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     private var activeLayoutDeviceID: UInt8?
     private var userDisconnectRequested = false
 
+    // MARK: - Write serialization (ActiveLook protocol requirement)
+    //
+    // The ActiveLook SDK gates every BLE write on:
+    //   1. Flow control characteristic confirming "ready" (notification subscription active)
+    //   2. Previous write acknowledged via `didWriteValueFor`
+    //
+    // Without this, commands written immediately after connect are silently
+    // dropped by the glasses' firmware — the root cause of the rc4/rc5
+    // blank-screen regression.
+
+    /// Whether the flow control characteristic's notification subscription
+    /// has been confirmed by CoreBluetooth. The glasses are not ready to
+    /// accept commands until this is true. Mirrors the ActiveLook SDK's
+    /// `isReady()` gate in `GlassesInitializer.swift`.
+    private var flowControlNotifyConfirmed = false
+
+    /// Continuation awaiting the current write's `didWriteValueFor` callback.
+    /// Only one write is in-flight at a time — the ActiveLook protocol
+    /// requires serial command delivery.
+    private var pendingWrite: CheckedContinuation<Void, Error>?
+
     // MARK: - Lifecycle
 
     public func connect() async throws {
@@ -146,6 +167,11 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         userDisconnectRequested = true
         reconnectTask?.cancel()
         reconnectTask = nil
+
+        // Cancel any in-flight write.
+        pendingWrite?.resume(throwing: GlassesTransportError.notConnected)
+        pendingWrite = nil
+        flowControlNotifyConfirmed = false
 
         if let central, let peripheral {
             central.cancelPeripheralConnection(peripheral)
@@ -383,13 +409,11 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
             switch characteristic.uuid.uuidString.uppercased() {
             case ActiveLookGATT.rxCharacteristic.uppercased():
                 rxCharacteristic = characteristic
-            case ActiveLookGATT.txCharacteristic.uppercased(),
-                 ActiveLookGATT.controlChar.uppercased():
+            case ActiveLookGATT.txCharacteristic.uppercased():
+                peripheral?.setNotifyValue(true, for: characteristic)
+            case ActiveLookGATT.controlChar.uppercased():
                 peripheral?.setNotifyValue(true, for: characteristic)
             case ActiveLookGATT.batteryLevelChar.uppercased():
-                // Subscribe to the standard Battery Service so periodic
-                // level pushes reach `handleBatteryLevel(_:)` via the
-                // coordinator. Without this the battery handler is dead code.
                 peripheral?.setNotifyValue(true, for: characteristic)
                 peripheral?.readValue(for: characteristic)
             default:
@@ -398,56 +422,102 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         }
 
         // Only flip to .connected once the command-service RX characteristic
-        // is in hand. Battery characteristics arrive in a later callback;
-        // we don't gate readiness on them.
+        // is in hand AND the flow control notification subscription is
+        // confirmed. The ActiveLook SDK's `GlassesInitializer.isReady()`
+        // polls for `flowControlCharacteristic!.isNotifying == true` before
+        // allowing any commands — without this gate, writes land before the
+        // glasses' command processor is ready and are silently dropped.
         guard service.uuid == CBUUID(string: ActiveLookGATT.commandService) else { return }
 
         if rxCharacteristic != nil {
-            // Capture name from the peripheral at the moment connection
-            // completes — CoreBluetooth may clear `peripheral.name` after a
-            // drop, so we snapshot it for the pre-run UI's `Glasses: {name}`
-            // display.
+            // Snapshot peripheral name before any post-connect state changes.
             if let name = peripheral?.name, !name.isEmpty {
                 lastConnectedName = name
             }
-            // Persist the peripheral identifier so the next launch can take
-            // the fast-reconnect path (`retrievePeripherals(withIdentifiers:)`
-            // → `connect`) and skip scanning entirely. Mirrors ActiveLook's
-            // own iOS SDK fast-reconnect (`ActiveLookSDK.swift:368, 240–298`).
             if let id = peripheral?.identifier {
                 prefs.pairedPeripheralID = id
                 glassesLogger.info("Persisted peripheral identifier \(id.uuidString, privacy: .public) for fast reconnect")
             }
-            // If we were reconnecting after a drop, emit a `.reconnected` status.
-            if let dropAt = lastDropAt {
-                emit(.reconnected(gap: Date().timeIntervalSince(dropAt), at: Date()))
-                lastDropAt = nil
+
+            // If flow control notifications are already confirmed (unlikely
+            // on first discover, but possible on a fast re-pair where the
+            // delegate fires before this path), we can go straight to ready.
+            // Otherwise, `handleNotificationStateChanged` will call
+            // `completeConnectionIfReady()` when the subscription confirms.
+            completeConnectionIfReady()
+
+            // Safety: if flow control never confirms (firmware quirk), don't
+            // hang — force-complete after 2s. The SDK's own poll timeout was
+            // also bounded. At worst we're back to the pre-fix behavior of
+            // writing without flow control confirmation.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await self?.forceFlowControlIfNeeded()
             }
-            transition(to: .connected)
-            // Re-apply layout if we had one selected before the drop.
-            if let activeLayoutDeviceID {
-                // P1.4 (audit 2026-05-16): guard the reconnect re-apply path
-                // too — the placeholder slot was pre-seeded from
-                // `RunningHUDPreset.default` in init, so without this trap
-                // the very first hardware reconnect would activate the
-                // wrong on-device layout silently.
-                CuratedLayoutCatalog.assertNotPlaceholder(
-                    activeLayoutDeviceID,
-                    layoutID: "(re-apply)"
-                )
-                let frame = ActiveLookCommand.displayLayout(id: activeLayoutDeviceID)
-                _ = try? sendRaw(frame)
-            }
-            resumePendingConnect(.success(()))
         } else {
             failPendingConnect(with: GlassesTransportError.writeFailed(reason: "RX characteristic missing"))
             transition(to: .failed)
         }
     }
 
+    /// Called when a characteristic's notification subscription state changes.
+    /// We specifically care about the flow control characteristic: the glasses
+    /// are not ready to accept commands until this subscription is active.
+    fileprivate func handleNotificationStateChanged(_ characteristic: CBCharacteristic, error: Error?) {
+        if let error {
+            logger.warning("Notification subscription failed for \(characteristic.uuid.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        if characteristic.uuid == CBUUID(string: ActiveLookGATT.controlChar), characteristic.isNotifying {
+            logger.debug("Flow control notifications confirmed active")
+            flowControlNotifyConfirmed = true
+            completeConnectionIfReady()
+        }
+    }
+
+    /// Transition to `.connected` only when both the RX characteristic is
+    /// discovered AND the flow control notification subscription is confirmed.
+    /// This mirrors the ActiveLook SDK's `GlassesInitializer.isReady()` gate.
+    private func completeConnectionIfReady() {
+        // Already connected — don't re-enter.
+        if case .connected = connectionState { return }
+        guard rxCharacteristic != nil, flowControlNotifyConfirmed else {
+            logger.debug("Not yet ready: rx=\(self.rxCharacteristic != nil), flowCtrl=\(self.flowControlNotifyConfirmed)")
+            return
+        }
+        logger.info("Glasses ready: RX characteristic + flow control confirmed. Transitioning to .connected")
+        if let dropAt = lastDropAt {
+            emit(.reconnected(gap: Date().timeIntervalSince(dropAt), at: Date()))
+            lastDropAt = nil
+        }
+        transition(to: .connected)
+        // Re-apply layout if we had one selected before the drop.
+        if let activeLayoutDeviceID {
+            CuratedLayoutCatalog.assertNotPlaceholder(
+                activeLayoutDeviceID,
+                layoutID: "(re-apply)"
+            )
+            let frame = ActiveLookCommand.displayLayout(id: activeLayoutDeviceID)
+            Task { try? await write(frame) }
+        }
+        resumePendingConnect(.success(()))
+    }
+
+    /// Safety fallback: force the flow control gate open after timeout.
+    private func forceFlowControlIfNeeded() {
+        guard !flowControlNotifyConfirmed, rxCharacteristic != nil else { return }
+        logger.warning("Flow control notify not confirmed within 2s — forcing ready state")
+        flowControlNotifyConfirmed = true
+        completeConnectionIfReady()
+    }
+
     fileprivate func handleDisconnect(error: Error?) {
         peripheral = nil
         rxCharacteristic = nil
+        flowControlNotifyConfirmed = false
+        // Cancel any in-flight write so it doesn't hang forever.
+        pendingWrite?.resume(throwing: GlassesTransportError.notConnected)
+        pendingWrite = nil
 
         if userDisconnectRequested {
             transition(to: .disconnected)
@@ -511,21 +581,46 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         }
     }
 
-    // MARK: - Writes
+    // MARK: - Writes (serialized per ActiveLook protocol)
 
+    /// Serialized write: sends bytes to the RX characteristic and waits for
+    /// the `didWriteValueFor` callback before returning. This ensures only
+    /// one BLE write is in-flight at a time, matching the ActiveLook SDK's
+    /// `sendBytes()` → `rxCharacteristicState` gate.
     private func write(_ bytes: [UInt8]) async throws {
-        try sendRaw(bytes)
-    }
-
-    @discardableResult
-    private func sendRaw(_ bytes: [UInt8]) throws -> Bool {
         guard let peripheral, let rxCharacteristic else {
             throw GlassesTransportError.notConnected
         }
-        // Per spike §4: write-with-response is the safer default; switch to
-        // .withoutResponse after profiling real hardware.
-        peripheral.writeValue(Data(bytes), for: rxCharacteristic, type: .withResponse)
-        return true
+        // Wait for any prior write to complete (serialization).
+        // In practice, `sendCommands` already serializes via `for frame in
+        // frames { try await write(frame) }`, but this guards against any
+        // concurrent caller.
+        assert(pendingWrite == nil, "Concurrent write detected — ActiveLook requires serial writes")
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            self.pendingWrite = continuation
+            let data = Data(bytes)
+            logger.debug("BLE write \(bytes.count) bytes: cmd=0x\(bytes.count > 1 ? String(bytes[1], radix: 16) : "?", privacy: .public)")
+            peripheral.writeValue(data, for: rxCharacteristic, type: .withResponse)
+        }
+    }
+
+    /// Called by the Coordinator when CoreBluetooth confirms a write completed.
+    fileprivate func handleWriteCompleted(error: Error?) {
+        guard let continuation = pendingWrite else {
+            // Spurious callback (e.g., from a write issued before we added
+            // serialization). Log but don't crash.
+            if let error {
+                logger.warning("Unmatched didWriteValueFor error: \(error.localizedDescription, privacy: .public)")
+            }
+            return
+        }
+        pendingWrite = nil
+        if let error {
+            logger.error("BLE write failed: \(error.localizedDescription, privacy: .public)")
+            continuation.resume(throwing: GlassesTransportError.writeFailed(reason: error.localizedDescription))
+        } else {
+            continuation.resume()
+        }
     }
 
     // MARK: - Continuation plumbing
@@ -667,6 +762,26 @@ extension ActiveLookGlassesAdapter {
             else { return }
             let level = Int(firstByte)
             Task { [weak adapter] in await adapter?.handleBatteryLevel(level) }
+        }
+
+        func peripheral(
+            _ peripheral: CBPeripheral,
+            didWriteValueFor characteristic: CBCharacteristic,
+            error: Error?
+        ) {
+            let writeError = error
+            Task { [weak adapter] in await adapter?.handleWriteCompleted(error: writeError) }
+        }
+
+        func peripheral(
+            _ peripheral: CBPeripheral,
+            didUpdateNotificationStateFor characteristic: CBCharacteristic,
+            error: Error?
+        ) {
+            let notifyError = error
+            Task { [weak adapter] in
+                await adapter?.handleNotificationStateChanged(characteristic, error: notifyError)
+            }
         }
     }
 }

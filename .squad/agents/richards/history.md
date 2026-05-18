@@ -8,6 +8,31 @@
 
 ## Active Learnings (Current)
 
+### 2026-05-18T22:32Z — HUD blank screen root cause: missing BLE write serialization + flow control gate
+
+**What happened:** rc5 (build 20) shipped Weiss's `power(on:true)` hypothesis (PR #53). Joe tested on real hardware — same blank screen. Weiss locked out after two failed attempts. Richards took over diagnosis.
+
+**Root cause:** The ActiveLook protocol requires two things our adapter never implemented:
+
+1. **Write serialization** — The official ActiveLook iOS SDK (`Glasses.swift:sendBytes()`) sends ONE command at a time and waits for the `peripheral(_:didWriteValueFor:error:)` callback before sending the next. Our adapter blasted all 4 connect-frames back-to-back via synchronous `writeValue` calls in a tight loop. With `.withResponse` writes, CoreBluetooth queues them, but the glasses' firmware drops commands that arrive before the previous command's response is processed.
+
+2. **Flow control readiness gate** — The SDK's `GlassesInitializer.isReady()` polls every 200ms until `flowControlCharacteristic!.isNotifying == true` before allowing any commands. Our adapter transitioned to `.connected` immediately on `rxCharacteristic` discovery, before the flow control subscription was confirmed — then immediately fired writes into an unready peripheral.
+
+**Why Weiss's hypotheses failed:** Both the placeholder-layout fix (PR #49) and the power-on fix (PR #53) addressed command *content* but not command *delivery*. The commands were correct; they just never reached the glasses' command processor because the BLE write pipeline violated the ActiveLook protocol's flow control contract.
+
+**Fix (branch `fix/hud-still-blank-on-rc5`):**
+- Gate `.connected` on `didUpdateNotificationStateFor` confirming flow control subscription active (with 2s safety timeout)
+- Replace fire-and-forget `sendRaw` with continuation-based `write()` that awaits `didWriteValueFor` before returning — serializing all writes
+- Add `didWriteValueFor:error:` delegate to Coordinator for write acknowledgment
+- Add `didUpdateNotificationStateFor` delegate to Coordinator for subscription tracking
+- Log all write successes/failures for future debuggability
+
+**Durable rule:** When driving a BLE peripheral via a custom GATT profile, read the vendor SDK's write-path implementation BEFORE building your own. The ATT layer's `.withResponse` guarantee (one-at-a-time delivery) is necessary but not sufficient — the peripheral's application layer often has its own flow control gate above ATT. "The write returned" ≠ "the peripheral processed the command."
+
+**Evidence source:** `ActiveLook/ios-sdk` on GitHub: `Sources/Classes/Public/Glasses.swift` (sendBytes, rxCharacteristicState, flowControlState), `Sources/Classes/Internal/GlassesInitializer.swift` (isReady poll gate).
+
+---
+
 ### 2026-05-18T13:23Z — rc12→rc15: TestFlight campaign COMPLETE. macos-26 runner + Xcode 26.4 SDK + Watch validation fixes.
 
 **What happened (rc12):** Joe identified the permanent fix for the SDK validation gate that blocked rc11. Apple now requires apps be built with the iOS 26 SDK. The `macos-15` runner only has Xcode 16.4 (iOS 18.5 SDK). Switched `release-testflight.yml` to `runs-on: macos-26` + `XCODE_VERSION: '26.4'` (pinned via `maxim-lobanov/setup-xcode@v1`). The `macos-26` runner is **GA** (actions/runner-images#13739), ships Xcode 26.0.1 through 26.5-beta, defaults to 26.2. We pin 26.4 (latest stable). PR #31 merged, CI green.

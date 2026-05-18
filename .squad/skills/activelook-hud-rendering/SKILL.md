@@ -1,13 +1,20 @@
 # Skill: ActiveLook HUD Rendering (raw `txt` running-HUD pattern)
 
-> **Owner:** Weiss
+> **Owner:** Weiss (protocol fix by Richards)
 > **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP)
-> **Confidence:** medium (rc4 surfaced a missing display-power-on trap;
-> see "Display power" section below — PR #53 fixed it but two
-> consecutive bench sessions still owed before this re-promotes to
-> high)
+> **Confidence:** low (rc4 + rc5 both failed on real hardware; root cause was
+> missing BLE write serialization + flow control gate, NOT command content.
+> Fix in PR pending — requires real-device re-validation before promoting.)
 > **Sibling to:** `activelook-bluetooth-pairing` (pairing UX) — this
 > skill covers what to draw on the glasses *after* the link is up.
+>
+> **⚠️ CRITICAL CAVEAT (2026-05-18):** The command encoding in this skill
+> is correct, but **delivery requires BLE write serialization** — one
+> command at a time, waiting for `didWriteValueFor` acknowledgment before
+> sending the next. The ActiveLook protocol also requires the flow control
+> characteristic subscription to be confirmed active before any writes.
+> Without both, commands are silently dropped by the glasses' firmware.
+> See decision `richards-hud-write-serialization.md`.
 
 ## Why this skill exists
 
@@ -180,6 +187,18 @@ extension GlassesFrameTransport {
 
 ## Anti-patterns to avoid
 
+- **Don't blast multiple BLE commands without waiting for write
+  acknowledgment between each.** The ActiveLook protocol requires serial
+  command delivery: send one frame → wait for `didWriteValueFor` → send
+  next. Fire-and-forget `writeValue` loops drop commands silently. This
+  was the rc4/rc5 root cause — both the placeholder fix and the power-on
+  fix encoded correct commands that never reached the glasses' command
+  processor.
+- **Don't transition to `.connected` before flow control notifications
+  are confirmed active.** The ActiveLook SDK polls
+  `flowControlCharacteristic!.isNotifying == true` before allowing any
+  writes (`GlassesInitializer.isReady()`). Without this gate, the
+  glasses' firmware drops early commands.
 - **Don't send `clear` / `txt` without first sending `power(on:true)`
   on every BLE connection (rc4 regression, PR #53).** Engo 2's display
   is in a low-power state after link-up; `clear` works on the buffer
