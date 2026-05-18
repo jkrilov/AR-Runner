@@ -28,24 +28,26 @@ permissions:
 jobs:
   analyze:
     name: CodeQL (swift)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
+    env:
+      # Mirrors ci-build.yml + release-testflight.yml (PR #31). Keeping the
+      # CodeQL build driver on the same Xcode/SDK as the release pipeline
+      # ensures the queries see the same Swift toolchain semantics that ship
+      # to TestFlight.
+      XCODE_VERSION: '26.4'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pin Xcode 16.4 — the macos-15 runner image ships it as the default Xcode
-      # with the iOS 18.5 AND watchOS 11.5 simulator runtimes pre-installed
-      # (both satisfy our D2 minimums of iOS 18 / watchOS 11). Older Xcode 16.0
-      # nominally bundles iOS 18.0 / watchOS 11.0 runtimes per the runner image
-      # manifest, but in practice the watchOS 11.0 simulator runtime is missing
-      # on the live image and `xcodebuild -downloadPlatform watchOS` cannot run
-      # unattended on CI (exit 70 — Apple ID auth required). Pinning a Xcode
-      # whose runtimes are pre-baked sidesteps both problems. Mirrors ci-build.yml.
+      # Pin Xcode 26.4 — mirrors ci-build.yml + release-testflight.yml (rc12,
+      # PR #31). The macos-26 runner ships Xcode 26.2 as default with the
+      # iOS/watchOS 26.x simulator runtimes pre-installed; we pin 26.4 for the
+      # latest stable SDK. Avoid 26.5 (beta on the image).
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16.4'
+          xcode-version: ${{ env.XCODE_VERSION }}
 
       - name: Install xcodegen
         run: brew install xcodegen
