@@ -18,16 +18,19 @@ Three workflow files serve distinct roles:
 
 | Workflow | Trigger | Runner | Purpose |
 |---|---|---|---|
-| `ci-build.yml` | PR + push to main | macos-15 | 4-way matrix build validation (no signing) |
-| `codeql.yml` | PR + push + weekly | macos-15 | Swift security analysis via CodeQL |
-| `release-testflight.yml` | manual dispatch | macos-15 | Archive, sign, upload to TestFlight |
+| `ci-build.yml` | PR + push to main | macos-26 | 4-way matrix build validation (no signing) |
+| `codeql.yml` | PR + push + weekly | macos-26 | Swift security analysis via CodeQL |
+| `release-testflight.yml` | pre-release tags | macos-26 | Archive, sign, upload to TestFlight |
 
 ---
 
 ## Key Decisions
 
+### Runner Image: macos-26 (GA)
+As of 2026-05, all workflows use `macos-26` (Apple Silicon arm64). The image is **GA** per [actions/runner-images#13739](https://github.com/actions/runner-images/issues/13739). It ships Xcode 26.0.1, 26.1.1, 26.2 (default), 26.3, 26.4.1, and 26.5 (beta).
+
 ### Xcode Version Pinning
-Pin Xcode 16.4 via `maxim-lobanov/setup-xcode@v1`. Reason: macos-15 runners ship Xcode 16.4 with iOS 18.5 + watchOS 11.5 runtimes pre-installed. watchOS 11.0 simulator runtime is absent on the default image; `xcodebuild -downloadPlatform watchOS` exits 70 on CI (requires Apple ID auth). Pinning a version whose runtimes are pre-baked sidesteps the problem entirely.
+Pin Xcode 26.4 via `maxim-lobanov/setup-xcode@v1`. The macos-26 image defaults to Xcode 26.2 — we pin 26.4 for the latest stable SDK (iOS 26.4 + watchOS 26.4). Avoid 26.5 (beta). Apple requires the iOS 26 SDK for new App Store submissions as of mid-2026; builds with iOS 18.x SDK are rejected by App Store Connect server-side validation (ITMS-90725).
 
 ### No-signing CI builds
 All validation workflows build with `CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""`. This means they never need a real signing certificate or provisioning profile — fast, cost-effective, and secure.
@@ -752,3 +755,61 @@ Catches the failure pre-upload and saves a TestFlight round-trip.
 The iPhone-side reinstall is what triggers the system to re-discover and push the newly-present watch payload to the paired watch. Re-pairing the watch is not necessary.
 
 **Cross-reference:** `.squad/skills/wkcompanion-bundle-id-prefix-rule` (the *other* watch-companion trap — bundle-ID naming); `.squad/skills/xcodegen-shared-widget-per-platform` (sibling pattern for per-platform extension targets).
+
+---
+
+## ⚠️ TRAP: Apple iOS 26 SDK Requirement (rc12, 2026-05-18)
+
+### What happens
+App Store Connect server-side validation rejects uploads built with the iOS 18.x SDK:
+```
+ERROR ITMS-90725: SDK Version Issue - This app was built with the iOS 18.5 SDK.
+All iOS and iPadOS apps must be built with the iOS 26 SDK or later.
+```
+
+### Root cause
+Apple began requiring the iOS 26 SDK (Xcode 26+) for new App Store submissions in mid-2026. The `macos-15` runner only ships Xcode 16.x.
+
+### Fix
+Switch to `macos-26` runner (GA per actions/runner-images#13739). Pin Xcode 26.4 via `maxim-lobanov/setup-xcode@v1` (image defaults to 26.2; 26.5 is beta). Manual signing chain is fully arch-agnostic — zero changes needed.
+
+### Trap class
+"The build succeeded locally but the uploaded binary fails server-side validation." This is a delayed-feedback loop: the error only surfaces after a complete archive → export → upload cycle. Always verify the SDK version matches Apple's current requirements *before* starting the cycle.
+
+---
+
+## ⚠️ TRAP: `workout-processing` UIBackgroundModes removed in watchOS 11 (rc15, 2026-05-18)
+
+### What happens
+App Store Connect rejects the upload with:
+```
+ITMS-90362: Invalid value 'workout-processing' for Info.plist key UIBackgroundModes
+in watchOS app bundle
+```
+
+### Root cause
+Apple removed the `workout-processing` UIBackgroundModes value in watchOS 11. Apps must use the Background Tasks API (`CKWorkoutBackgroundTask`) instead.
+
+### Fix
+Remove `workout-processing` from `UIBackgroundModes` in the watchOS target's Info.plist (via project.yml). Keep other values like `bluetooth-central` that are still valid. Separately implement `CKWorkoutBackgroundTask` for workout background functionality.
+
+---
+
+## ⚠️ TRAP: Missing Watch App Icons and CFBundleIconName (rc15, 2026-05-18)
+
+### What happens
+Two related validation errors on upload:
+```
+ITMS-90391: Missing Icons. No icons found for watch application.
+ITMS-90713: Missing CFBundleIconName value in watch bundle.
+```
+
+### Root cause
+watchOS app target had no `Assets.xcassets` with an AppIcon.appiconset, and the Info.plist lacked `CFBundleIconName`. Both are required for App Store submission.
+
+### Fix
+1. Add `ARRunnerWatch/Assets.xcassets/AppIcon.appiconset/` with a 1024px icon and a `Contents.json` specifying `"platform": "watchos"`.
+2. Add `CFBundleIconName: AppIcon` to the Watch target's Info.plist properties.
+
+### iPad orientation companion trap
+If `TARGETED_DEVICE_FAMILY` defaults to `1,2` (iPhone+iPad), Apple requires all four orientations in `UISupportedInterfaceOrientations` including `UIInterfaceOrientationPortraitUpsideDown`. Error: ITMS-90474.

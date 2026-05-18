@@ -8,6 +8,30 @@
 
 ## Active Learnings (Current)
 
+### 2026-05-18T13:23Z — rc12→rc15: TestFlight campaign COMPLETE. macos-26 runner + Xcode 26.4 SDK + Watch validation fixes.
+
+**What happened (rc12):** Joe identified the permanent fix for the SDK validation gate that blocked rc11. Apple now requires apps be built with the iOS 26 SDK. The `macos-15` runner only has Xcode 16.4 (iOS 18.5 SDK). Switched `release-testflight.yml` to `runs-on: macos-26` + `XCODE_VERSION: '26.4'` (pinned via `maxim-lobanov/setup-xcode@v1`). The `macos-26` runner is **GA** (actions/runner-images#13739), ships Xcode 26.0.1 through 26.5-beta, defaults to 26.2. We pin 26.4 (latest stable). PR #31 merged, CI green.
+
+**rc12 upload failure (ITMS-90474):** Archive/export succeeded with iOS 26.4 SDK — first time past the SDK gate. Upload reached App Store Connect but server-side validation rejected the binary: missing `UIInterfaceOrientationPortraitUpsideDown` for iPad multitasking. Phone target defaults to `TARGETED_DEVICE_FAMILY=1,2` (iPhone+iPad), so Apple requires all four orientations. Fixed in PR #34 (rc13 tag).
+
+**rc14 upload failure (3 Watch errors):** PR #36 (Laughlin) embedded the Watch app companion into the iOS bundle. Three new server-side validation errors appeared:
+- **ITMS-90391:** Missing Icons — Watch app had no asset catalog.
+- **ITMS-90713:** Missing `CFBundleIconName` in Watch bundle.
+- **ITMS-90362:** Invalid `UIBackgroundModes` value `workout-processing` — **Apple removed this in watchOS 11.** Apps must migrate to the Background Tasks API (`CKWorkoutBackgroundTask`).
+
+Fixed all three in PR #38 (rc15 tag): added `ARRunnerWatch/Assets.xcassets/AppIcon.appiconset` with 1024px icon, added `CFBundleIconName: AppIcon` to Watch Info.plist, removed `workout-processing` from `UIBackgroundModes`.
+
+**rc15 result: ✅ UPLOAD SUCCEEDED.** Full pipeline green — archive, export, upload to App Store Connect, artifact upload. Build is now processing for TestFlight. Campaign complete after 15 RCs.
+
+**Key findings on macos-26 runner:**
+- GA, not preview (despite expectations). Apple Silicon arm64.
+- Ships Xcode 26.0.1, 26.1.1, 26.2 (default), 26.3, 26.4.1, 26.5 (beta).
+- `maxim-lobanov/setup-xcode@v1` needed to pin from default 26.2 → 26.4.
+- Manual signing chain (temp keychain, cert import, ASC API key, PROVISIONING_PROFILE_SPECIFIER) is fully arch-agnostic — zero changes needed.
+- Known flaky: `ARRunnerWidgetsWatch` CI job intermittently can't find `generic/platform=watchOS Simulator` destination. Passes on retry sometimes. Not a blocker for release workflow (which uses `generic/platform=iOS` for archive).
+
+**Durable rule:** *When Apple changes SDK requirements, first check the runner-images repo for GA images — don't assume preview.*
+
 ### 2026-05-18T00:45Z — rc10: TF-17. Archive finally succeeded; export failed on a separate signing pass. ExportOptions.plist needs its own `provisioningProfiles` map.
 
 **What happened:** TF-16 (rc10 tag) worked — the archive built cleanly for the first time in nine rcs. Per-target `PROVISIONING_PROFILE_SPECIFIER` + `-allowProvisioningUpdates` + the ASC API key fetched the four App Store distribution profiles from App Store Connect at archive time and signed every bundle. Then the very next step, `xcodebuild -exportArchive`, blew up with `Cloud signing permission error` and `No profiles for 'com.arrunner.phone' were found`. Same job, same keychain, same API key, same secrets — but a brand-new failure mode that the previous nine rcs had never reached because Archive had always died first.
