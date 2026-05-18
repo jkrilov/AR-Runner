@@ -57,6 +57,15 @@ targets:
         PRODUCT_NAME: ARRunnerWatch
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: '4'
+      configs:
+        # Release-only pin (rc9 — D-RICHARDS-TF-16). With manual signing +
+        # `-allowProvisioningUpdates`, xcodebuild fetches the named profile
+        # from App Store Connect at archive time. No local install step on
+        # the runner. If you rename this profile in App Store Connect,
+        # update this string too. Debug is left unset so local dev with
+        # Automatic signing keeps working.
+        Release:
+          PROVISIONING_PROFILE_SPECIFIER: AR-Runner Watch
     info:
       path: Config/ARRunnerWatch-Info.plist
       properties:
@@ -98,6 +107,11 @@ targets:
         # at target level, which would override the project-level xcconfig pin.
         # $(inherited) defers to the xcconfig where CI sets Apple Distribution.
         CODE_SIGN_IDENTITY: $(inherited)
+      configs:
+        # Release-only profile pin (rc9 — D-RICHARDS-TF-16). See
+        # ARRunnerWatch for the full rationale.
+        Release:
+          PROVISIONING_PROFILE_SPECIFIER: AR-Runner
     info:
       path: Config/ARRunnerPhone-Info.plist
       properties:
@@ -131,6 +145,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.phone.widgets
         PRODUCT_NAME: ARRunnerWidgetsPhone
         SKIP_INSTALL: YES
+      configs:
+        # Release-only profile pin (rc9 — D-RICHARDS-TF-16).
+        Release:
+          PROVISIONING_PROFILE_SPECIFIER: AR-Runner Widgets
     info:
       path: Config/ARRunnerWidgetsPhone-Info.plist
       properties:
@@ -157,6 +175,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.phone.watchkitapp.widgets
         PRODUCT_NAME: ARRunnerWidgetsWatch
         SKIP_INSTALL: YES
+      configs:
+        # Release-only profile pin (rc9 — D-RICHARDS-TF-16).
+        Release:
+          PROVISIONING_PROFILE_SPECIFIER: AR-Runner Watch Widgets
     info:
       path: Config/ARRunnerWidgetsWatch-Info.plist
       properties:

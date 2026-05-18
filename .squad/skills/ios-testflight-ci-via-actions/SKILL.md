@@ -543,17 +543,46 @@ All four profiles (phone, widgets, watch, watch widgets) verified the same way. 
 
 ### Fix
 
-Install profiles onto the runner **before** `xcodebuild archive`. Two viable strategies:
+Install profiles onto the runner **before** `xcodebuild archive`, OR use `PROVISIONING_PROFILE_SPECIFIER` per target and let xcodebuild fetch by name. Three viable strategies:
 
-**Option A (chosen, rc8):** Download all team profiles via App Store Connect API and let the tool install them into `~/Library/MobileDevice/Provisioning Profiles/`. Implemented as a `fastlane sigh download_all` step using the existing ASC API key (assembled into a JSON file with `jq`). One step, handles all four targets uniformly, including the embedded Watch app.
+**Option A (tried rc8, FAILED — see next trap):** Download all team profiles via App Store Connect API and let the tool install them into `~/Library/MobileDevice/Provisioning Profiles/`. Implemented as a `fastlane sigh download_all` step using the existing ASC API key (assembled into a JSON file with `jq`). One step, handles all four targets uniformly, including the embedded Watch app. **Looked clean in rc8 — was vacuous.** See the "sigh download_all silent-zero" trap below.
 
-**Option B:** Pass `PROVISIONING_PROFILE_SPECIFIER` per target on the `xcodebuild` CLI (e.g. `ARRunnerPhone="AR-Runner" ARRunnerWidgetsPhone="AR-Runner Widgets" …`). Simpler (no new dependency) but `xcodebuild` still needs the `.mobileprovision` files on disk to read entitlements from — and embedded targets (Watch app inside iOS archive) don't always honor CLI per-target specifiers the same way the main app does. Not recommended for multi-target archives.
+**Option B (chosen, rc9):** Set `PROVISIONING_PROFILE_SPECIFIER` per target (in `project.yml` `configs.Release`, NOT base — leaving Debug unset preserves local Automatic-signing dev). With manual signing + `-allowProvisioningUpdates` + a valid App Manager ASC API key, xcodebuild fetches the named profile directly from App Store Connect at archive time. No local install step, no fastlane dependency, no platform-filter trap. Trade-off: profile names are hardcoded in `project.yml`; if the names change in App Store Connect, the build breaks until `project.yml` is updated.
+
+**Option C (not used):** Apple-Actions/download-provisioning-profiles GitHub action. Equivalent to Option A in effect; same class of filter risk.
 
 ### Rule (durable)
 
-> **If `IsXcodeManaged` is `false` on your provisioning profiles, `-allowProvisioningUpdates` alone is insufficient.** The workflow must explicitly install the profiles into `~/Library/MobileDevice/Provisioning Profiles/` (via `fastlane sigh download_all`, the App Store Connect REST API + curl, or `actions/Apple-Actions/download-provisioning-profiles`). The `-allowProvisioningUpdates` flag is for Xcode-managed profiles only.
+> **If `IsXcodeManaged` is `false` on your provisioning profiles, `-allowProvisioningUpdates` alone is insufficient.** Either install the profiles into `~/Library/MobileDevice/Provisioning Profiles/` (and verify the install with a non-zero file count!) OR pin `PROVISIONING_PROFILE_SPECIFIER` per target so xcodebuild fetches by name. Option B (specifier) removes the local-install moving part entirely and is the chosen path in this repo.
 
 ### Cross-reference
 
-- D-RICHARDS-TF-15 (rc8 — this fix)
+- D-RICHARDS-TF-16 (rc9 — pivot to specifier; this is the live approach)
+- D-RICHARDS-TF-15 (rc8 — sigh install attempt; superseded)
 - D-RICHARDS-TF-14 (rc7 — 3-way-error probe; this trap is cause #3 confirmed)
+
+---
+
+## Trap: `fastlane sigh download_all` exits 0 with zero profiles installed
+
+**Symptom:** rc9 forensics. The `Download & install provisioning profiles` step in rc8/rc9 ran `fastlane sigh download_all --api_key_path … --team_id … --platform ios` and exited code 0. The "step succeeded" badge was green. The following `ls -la ~/Library/MobileDevice/Provisioning Profiles/` line showed:
+
+```
+total 0
+drwxr-xr-x  2 runner  staff  64 May 18 00:28 .
+```
+
+Zero profiles installed. The next step (`xcodebuild archive`) failed with the byte-identical "requires a provisioning profile with the <X> feature" error that rc5/rc6/rc7 had hit.
+
+**Cause (most likely, not exhaustively re-probed because we pivoted):** sigh's `--platform ios` filter is exact-match against the profile's primary platform. Profiles minted in the modern App Store Connect portal for an iOS-family App ID can carry a `Platform` array of `[iOS, xrOS, visionOS]` (Apple's portal lumps the visionOS/xrOS sibling platforms in by default). sigh 2.233.0's filter matched no profile under `[iOS, xrOS, visionOS]` against `--platform ios` and quietly downloaded nothing.
+
+Secondary candidate causes (not falsified before pivot): sigh's `api_key_path` JSON format edge cases, sigh-side scope quirks around `download_all` for App Store profiles without `--app-identifier`. We did not bother disambiguating because Option B (specifier) removed the dependency.
+
+**Rule (durable):** When a download/fetch step claims success, **assert on the artifact, not the exit code**. Specifically, a `find … | wc -l` or `ls … | wc -l` with an explicit `[[ "$count" -gt 0 ]] || exit 1` check turns vacuous success into loud failure. Apply this to every "fetch N things from an API" step in CI, not just sigh — the silent-zero pattern is endemic to filter-aware downloaders.
+
+**Meta-rule (extends "Am I treating silence as success?" from TF-12):** *"Am I treating a clean exit as a non-vacuous outcome?"* — Exit codes describe the tool's internal happy path. They do NOT describe whether the tool produced the artifact the next step needs. Wire artifact-count assertions into every download/install step.
+
+### Cross-reference
+
+- D-RICHARDS-TF-16 (rc9 — names this trap; pivot to specifier removes the dependency)
+- D-RICHARDS-TF-15 (rc8 — original sigh install attempt that hit this trap)
