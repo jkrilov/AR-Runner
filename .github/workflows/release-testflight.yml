@@ -69,18 +69,27 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            VERSION="${{ inputs.version }}"
+            RAW_VERSION="${{ inputs.version }}"
           else
             TAG="${GITHUB_REF#refs/tags/}"
-            VERSION="${TAG#v}"
+            RAW_VERSION="${TAG#v}"
           fi
-          if [[ -z "$VERSION" ]]; then
+          if [[ -z "$RAW_VERSION" ]]; then
             echo "::error::Could not resolve version (ref=$GITHUB_REF, event=${{ github.event_name }})"
             exit 1
           fi
-          echo "marketing_version=$VERSION" >> "$GITHUB_OUTPUT"
+          # CFBundleShortVersionString must be numeric (N, N.N, or N.N.N) —
+          # App Store Connect hard-rejects prerelease suffixes like "-rc2".
+          # Strip everything from the first '-' onward so v0.3.0-rc3 → 0.3.0.
+          # The full tag/raw value is still used for artifact filenames and
+          # release notes; only the embedded CFBundleShortVersionString is
+          # normalized here. (rc1/rc2 version-bump trap — see
+          # .squad/files/version-bump-diagnosis.md.)
+          MARKETING_VERSION="${RAW_VERSION%%-*}"
+          echo "raw_version=$RAW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "marketing_version=$MARKETING_VERSION" >> "$GITHUB_OUTPUT"
           echo "build_number=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "Resolved MARKETING_VERSION=$VERSION  CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER"
+          echo "Resolved RAW=$RAW_VERSION  MARKETING_VERSION=$MARKETING_VERSION  CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER"
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -403,7 +412,7 @@ jobs:
         if: always() && env.IPA_PATH != ''
         uses: actions/upload-artifact@v4
         with:
-          name: ARRunnerPhone-${{ steps.version.outputs.marketing_version }}-${{ steps.version.outputs.build_number }}.ipa
+          name: ARRunnerPhone-${{ steps.version.outputs.raw_version }}-${{ steps.version.outputs.build_number }}.ipa
           path: ${{ env.IPA_PATH }}
           retention-days: 14
 
@@ -411,7 +420,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ARRunnerPhone-${{ steps.version.outputs.marketing_version }}.xcarchive
+          name: ARRunnerPhone-${{ steps.version.outputs.raw_version }}.xcarchive
           path: ${{ env.ARCHIVE_PATH }}
           retention-days: 7
 
