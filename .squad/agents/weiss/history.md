@@ -416,3 +416,110 @@ un-authored — the restriction as v1 described it doesn't exist.
    we add new BLE peripheral integrations, build this in from day one
    — it's cheap and removes the scan-time race entirely on subsequent
    launches.
+
+### 2026-05-18: PR #49 — v0.3.0 AR HUD MVP (raw txt rendering)
+
+Joe's rc2 bench test: pairing works (PR #45), but "Start a run" leaves
+the glasses frozen on the "Connection Successful" splash. Diagnosed in
+30 s by re-reading `ReconnectPolicy.swift` — the on-connect path called
+`selectLayout(preset: .default)` which resolves to placeholder slot
+0x02. No such layout is baked onto the Engo 2 yet
+(Config-Generator still deferred), so every subsequent `updateField`
+wrote into a layout that doesn't exist. `assertNotPlaceholder` did its
+job in debug — but Joe was on a release build, which just logs a fault
+and continues silently. The HUD was always going to look broken until
+either the bake step ships OR we render without depending on it.
+
+Picked the latter for v1 per Joe's spec: render time/distance/pace via
+ActiveLook's raw `txt` command (cmdID 0x37 — draw text at absolute
+(x, y)). Works on any stock Engo 2 with zero on-device config.
+
+**What shipped:**
+
+1. `ActiveLookCommand.text(x:y:rotation:fontSize:color:string:)` —
+   x/y are i16 big-endian, defaults match ActiveLook iOS sample
+   (rotation=4 bottom-RL, font=3 largest stock, color=15 full white).
+2. `RunningHUDFrame` pure builder — `[clear, txt(time), txt(distance),
+   txt(pace)]` at y=40/120/200, x=20 on the 304×256 panel. Reuses
+   Laughlin's `RunMetricFormatting` so the wrist and the HUD share one
+   source of truth.
+3. `RunningHUDPushPolicy` — 1Hz minimum + change-detection.
+4. `GlassesFrameTransport.sendCommands([[UInt8]])` with default no-op;
+   adapter writes each frame via `sendRaw`; stub records into
+   `receivedHUDFrameBatches`.
+5. `WorkoutViewModel`: per-tick push from the existing 1Hz
+   `tickElapsed`, initial frame on start + on glasses (re)connect,
+   "Workout Complete" splash on save. Killed the
+   `selectLayout(preset: .default)` call on `.connected`.
+6. `ActiveLookGlassesAdapter.init(defaultPreset:)` default changed to
+   `nil` and the pre-seed gated on
+   `!placeholderDeviceIDs.contains(id)` so re-connect doesn't trip
+   `assertNotPlaceholder`.
+
+The v0.2 curated-layout pipeline (`HUDLayout`, `HUDFieldUpdate`,
+`GlassesService.apply(metric:)`, `HUDFieldThrottle`) is **dormant,
+not deleted**. The moment Config-Generator output replaces the
+placeholder slot IDs, callers pass `defaultPreset: .default` again
+and the per-tick field-update path comes back online alongside the
+raw HUD. Raw HUD = "works on any stock device"; curated HUD = "richer
+post-bake experience".
+
+**Tests:** 19 new pure-function tests in `ARRunnerCoreTests/Glasses/
+RunningHUDFrameTests.swift` (`swift test` → 140 passing, was 121).
+Covers: encoder wire-format (incl. negative y two's-complement),
+payload formatter wiring, distance < 0.01 mi → pace placeholder, the
+4-frame `[clear, txt, txt, txt]` sequence, txt-payload geometry on
+Engo 2, summary-frame banner, push-policy 1Hz gate + change detection
++ reset semantics. CI on PR #49: all three build/test jobs green;
+squash-merged as `5849343`. Real-device validation queued.
+
+**Patterns I want to remember:**
+
+* **Default-no-op protocol extension for transport capabilities.** Same
+  trick as `connectedDeviceName` in PR #42 — adding `sendCommands` to
+  `GlassesFrameTransport` with a default no-op meant zero churn at
+  every test stub / preview site; only the platform adapter and the
+  one test stub that wanted to record needed to override. Strict
+  Swift 6 stayed quiet.
+
+* **Pure builder in Core + side-effect push at the watch boundary.** The
+  raw HUD `[UInt8]` frames are generated in ARRunnerCore (Linux-CI-
+  buildable, fully unit-tested) and only the BLE write lives in the
+  watch target. Same separation as PR #42's
+  `GlassesAdvertisementFilter` — pays for itself in test coverage every
+  time.
+
+* **Send-on-1Hz-elapsed-ticker, not on every metric change.** The
+  workout pipeline emits metrics at variable cadence (HK statistics
+  callbacks can fire faster than the wall clock). Hanging the HUD push
+  off `tickElapsed` (already 1Hz) means the throttle is mostly a
+  belt-and-braces guard; the elapsed ticker is the natural rate-
+  limiter. Bonus: time / distance / pace all update together in a
+  single frame, so the wearer never sees a stale time next to a fresh
+  distance.
+
+* **`Payload` struct, not three loose `String`s, for change detection.**
+  Made the policy a single `==` and means future fields (HR, splits)
+  can extend without re-shaping every call site.
+
+**Lessons:**
+
+1. **A debug `assert` is not a release safety net.** P1.4's
+   `assertNotPlaceholder` was right to add, but it's silent in release
+   — exactly when it matters most. For "this should never reach
+   production hardware" cases, pair the assert with a behavioural
+   guard (here: refuse to pre-seed a placeholder ID in the first
+   place) so the bug can't manifest even if the assert is compiled out.
+
+2. **Always have a path that doesn't depend on a deferred build step.**
+   The curated-layout pipeline was correct architecture but
+   blocked on Config-Generator. A "works on any stock device" fallback
+   (raw `txt`) costs ~150 LOC and unblocks every bench session until
+   the proper bake step lands. Build the fallback first, then layer
+   the optimisation on top.
+
+3. **Re-read the audit before you debug.** I literally wrote
+   "placeholder layout IDs → silent on hardware" as P1.4 of the
+   2026-05-16 audit. Reading my own audit before chasing Joe's
+   symptom would have saved 10 minutes of confused
+   `central?.scanForPeripherals` re-skimming.
