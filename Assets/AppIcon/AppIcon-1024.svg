@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AR-Runner app icon — 1024x1024 master source.
+  Visual brief:
+    - Background: deep navy → electric blue diagonal gradient (sporty, AR-forward).
+    - Runner silhouette: stylized mid-stride figure, white at ~85% opacity, sits
+      behind the glasses as a backdrop. Recognizable when scaled to 60×60.
+    - Engo 2-style sunglasses: dominant foreground element. Single curved
+      wraparound lens, dark frame, translucent cyan AR lens with a thin HUD
+      readout line hinting at smart-glasses functionality.
+    - No transparency in background (App Store icons reject alpha).
+    - Content kept within central ~90% safe area; iOS auto-rounds corners.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Background: deep navy to electric blue diagonal gradient -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#0A2540"/>
+      <stop offset="100%" stop-color="#1E5BE0"/>
+    </linearGradient>
+
+    <!-- Lens gradient: translucent cyan with brighter highlight on upper-left,
+         suggesting an AR HUD display reflection. -->
+    <linearGradient id="lens" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#7FF6FF" stop-opacity="0.95"/>
+      <stop offset="45%"  stop-color="#00D4FF" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#0077AA" stop-opacity="0.90"/>
+    </linearGradient>
+
+    <!-- Subtle frame highlight (top edge catches light) -->
+    <linearGradient id="frameHi" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#2A2A38"/>
+      <stop offset="35%"  stop-color="#0A0A14"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Solid background (no alpha, App Store compliant) -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- ============================================================
+       RUNNER SILHOUETTE (background layer)
+       Stylized mid-stride figure: head, leaning torso, bent rear
+       arm, forward arm, trailing leg, lifted forward knee.
+       White at 85% opacity so it reads as a backdrop behind the
+       glasses but stays recognizable when icon is scaled small.
+       Centered horizontally, occupies most of the vertical canvas.
+       ============================================================ -->
+  <g fill="#FFFFFF" opacity="0.85">
+    <!-- Head -->
+    <circle cx="560" cy="230" r="62"/>
+
+    <!-- Torso: leaning forward, slight diagonal capsule from upper-right
+         shoulder down to lower-left hip. Drawn as a rotated rounded rect
+         approximated with a path. -->
+    <path d="
+      M 600 290
+      L 660 380
+      L 540 520
+      L 470 460
+      Z" />
+
+    <!-- Forward (driving) arm — bent at elbow, fist up near chin -->
+    <path d="
+      M 620 320
+      Q 700 290 720 220
+      L 690 200
+      Q 670 270 600 295
+      Z"/>
+
+    <!-- Rear arm — swung back behind torso, bent -->
+    <path d="
+      M 500 380
+      Q 410 430 380 520
+      L 415 540
+      Q 445 460 525 420
+      Z"/>
+
+    <!-- Forward (lifted) leg — knee high, foot kicking forward -->
+    <path d="
+      M 540 500
+      Q 640 540 700 640
+      L 660 680
+      Q 600 610 515 580
+      Z"/>
+
+    <!-- Trailing leg — extended back, pushing off ground -->
+    <path d="
+      M 470 500
+      Q 430 660 350 770
+      L 405 800
+      Q 490 690 535 555
+      Z"/>
+  </g>
+
+  <!-- ============================================================
+       ENGO 2-STYLE SUNGLASSES (foreground, dominant)
+       Single curved wraparound lens spanning ~58% of icon width,
+       sitting roughly mid-icon (slightly above center for balance).
+       Dark frame with a top highlight; lens has a translucent cyan
+       AR-display gradient with a thin HUD readout line.
+       ============================================================ -->
+  <g transform="translate(512, 520)">
+    <!-- Outer frame shell: wraparound shape. The lens-frame is a single
+         curved band — wider in the middle, sweeping down at the temples
+         in classic sport-wrap style. Drawn as a closed path. -->
+    <path d="
+      M -310   0
+      Q -300 -110, -180 -135
+      Q   0  -160,  180 -135
+      Q  300 -110,  310    0
+      Q  280   60,  200  100
+      Q  100  140,    0  140
+      Q -100  140, -200  100
+      Q -280   60, -310    0
+      Z"
+      fill="url(#frameHi)"/>
+
+    <!-- Inner lens area (single continuous wraparound lens — no nose
+         bridge cutout in the lens itself; just a subtle frame ridge).
+         Inset slightly from the frame outline. -->
+    <path d="
+      M -270  -10
+      Q -260 -90, -170 -110
+      Q   0  -135,  170 -110
+      Q  260  -90,  270  -10
+      Q  245   45,  175   80
+      Q   90  115,    0  115
+      Q  -90  115, -175   80
+      Q -245   45, -270  -10
+      Z"
+      fill="url(#lens)"/>
+
+    <!-- Subtle nose-bridge ridge on the frame (vertical accent at center,
+         doesn't break the lens — Engo 2 has a continuous lens with a
+         frame bridge above). -->
+    <path d="
+      M -22 -132
+      Q 0 -150, 22 -132
+      L 18 -108
+      Q 0 -118, -18 -108
+      Z"
+      fill="#0A0A14"/>
+
+    <!-- HUD readout line: thin horizontal line across upper-left of lens,
+         hinting at AR text/data without being literal text. -->
+    <rect x="-200" y="-55" width="160" height="6" rx="3"
+          fill="#FFFFFF" opacity="0.55"/>
+    <rect x="-200" y="-35" width="90"  height="4" rx="2"
+          fill="#FFFFFF" opacity="0.40"/>
+
+    <!-- A single bright pixel/dot near the readout, suggesting an
+         active HUD indicator. -->
+    <circle cx="-30" cy="-52" r="6" fill="#FFFFFF" opacity="0.85"/>
+
+    <!-- Specular highlight: soft white sweep across upper edge of lens -->
+    <path d="
+      M -240 -60
+      Q -160 -120,  0 -125
+      Q  160 -120, 240 -60
+      Q  160 -100,  0 -105
+      Q -160 -100, -240 -60
+      Z"
+      fill="#FFFFFF" opacity="0.18"/>
+
+    <!-- Top frame highlight: thin lighter stroke along the upper edge -->
+    <path d="
+      M -300 -10
+      Q -290 -105, -175 -128
+      Q   0  -152,  175 -128
+      Q  290 -105,  300 -10"
+      fill="none" stroke="#3A3A4A" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>
