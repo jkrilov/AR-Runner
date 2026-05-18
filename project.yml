@@ -127,11 +127,13 @@ targets:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default Configuration
         UILaunchScreen: {}
-        # rc11 — Apple validation requires UISupportedInterfaceOrientations on
-        # iPhone. Portrait + both landscape; skip portrait-upside-down per
-        # Apple convention for non-iPad apps.
+        # rc13 — when uploading as --type ios (universal iPhone+iPad build),
+        # Apple's validator requires ALL FOUR orientations including
+        # UIInterfaceOrientationPortraitUpsideDown to support iPad
+        # multitasking. rc12 was rejected with ITMS-90474 for omitting it.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
     entitlements:
