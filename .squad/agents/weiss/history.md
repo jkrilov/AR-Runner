@@ -93,3 +93,26 @@ Joe spawned me to fix the two AR P1 audit findings on `fix/v02-p1-audit-bugs`. B
 **Canonical rule:** "App ID capabilities must mirror entitlements when using -allowProvisioningUpdates + manual signing."
 
 This is portal-side state, not code-fixable, and is a new trap class in SKILL.md. Relevant during any future release campaign / signing fix work.
+
+## 2026-05-18 — rc11 app icon + Info.plist fix
+
+Designed Engo 2-style app icon (sport-wrap sunglasses with cyan AR HUD lens
+over a white runner silhouette on navy→blue gradient) as a 1024×1024 SVG at
+`Assets/AppIcon/AppIcon-1024.svg`. Rendered to PNG via `qlmanage -t -s 1024`,
+then flattened alpha by round-tripping through JPEG with `sips` (App Store
+rejects alpha in icons).
+
+Wired into `ARRunnerPhone/Assets.xcassets/AppIcon.appiconset/` using the iOS
+14+ single-size universal icon format (1 PNG + Contents.json; Xcode
+synthesizes 120×120 / 152×152 / etc. at build time). Added `CFBundleIconName`
+and `UISupportedInterfaceOrientations` to `ARRunnerPhone`'s `info.properties`
+in `project.yml` — the plist is xcodegen-generated, NOT a hand-edited file at
+`ARRunnerPhone/Info.plist`. Confirmed plist output and pbxproj wiring after
+`xcodegen generate`.
+
+Closed Apple validation errors 1–4 for rc11. Error 5 (iOS 26 SDK requirement)
+is out of scope — blocked on Xcode 26 availability on GitHub-hosted runners.
+
+Pattern worth remembering: on a runner without librsvg/rsvg-convert, the
+`qlmanage -t -s N -o DIR FILE.svg` → `sips` flatten pipeline is a zero-deps
+SVG→opaque-PNG path on macOS.

@@ -116,6 +116,9 @@ targets:
       path: Config/ARRunnerPhone-Info.plist
       properties:
         CFBundleDisplayName: AR-Runner
+        # rc11 — Apple validation requires CFBundleIconName when icons live in
+        # an asset catalog (iOS 11+). Must match ASSETCATALOG_COMPILER_APPICON_NAME.
+        CFBundleIconName: AppIcon
         NSHealthShareUsageDescription: AR-Runner reads workouts and live metrics to mirror your run on iPhone.
         NSHealthUpdateUsageDescription: AR-Runner stores run summaries and AR metadata alongside HealthKit workouts.
         UIApplicationSceneManifest:
@@ -124,6 +127,13 @@ targets:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default Configuration
         UILaunchScreen: {}
+        # rc11 — Apple validation requires UISupportedInterfaceOrientations on
+        # iPhone. Portrait + both landscape; skip portrait-upside-down per
+        # Apple convention for non-iPad apps.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     entitlements:
       path: Config/ARRunnerPhone.entitlements
       properties:
