@@ -36,30 +36,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # NOTE: watchOS targets need careful destination handling on
-          # macos-26-arm64. That runner image does NOT ship a watchOS
-          # Simulator runtime preinstalled (macos-15 did). Two cases:
+          # NOTE: watchOS targets need careful handling on macos-26-arm64.
+          # That runner image does NOT ship a watchOS Simulator runtime
+          # preinstalled (macos-15 did), and even when the runtime is
+          # downloaded via `xcodebuild -downloadPlatform watchOS`, the
+          # ARRunnerWidgetsWatch (app-extension) scheme does not surface any
+          # watchOS Simulator destinations on Xcode 26 — `xcodebuild
+          # -showdestinations` for that scheme returns only macOS / iOS /
+          # iOS Simulator / visionOS Simulator (no watchOS entries at all).
+          # Consequences:
           #   - ARRunnerWatch (app scheme): builds fine against
           #     `generic/platform=watchOS` (device-class generic, same form
           #     release-testflight.yml uses for archive). No sim runtime
           #     needed.
-          #   - ARRunnerWidgetsWatch (app-extension scheme): its scheme does
-          #     NOT surface a device-class generic watchOS destination on
-          #     this image — only macOS / iOS / iOS Simulator appear in
-          #     `xcodebuild -showdestinations`. It requires the watchOS
-          #     Simulator runtime to be installed (see the conditional
-          #     "Install watchOS Simulator runtime" step below) and uses the
-          #     `=watchOS Simulator` destination.
+          #   - ARRunnerWidgetsWatch (widget extension): is NOT built
+          #     standalone here. It is embedded by ARRunnerWatch
+          #     (`embed: true` in project.yml), so building ARRunnerWatch
+          #     transitively compiles the widget — any compile error in the
+          #     widget will fail the ARRunnerWatch job. The standalone
+          #     matrix entry was removed because no satisfiable destination
+          #     exists for the widget extension scheme on this image.
           # See skill: ios-testflight-ci-via-actions → "Runner image runtime
+           #   - ARRunnerWidgetsPhone (widget extension): similarly embedded
+           #     by ARRunnerPhone, so removed from the matrix for consistency.
+           #     Building ARRunnerPhone transitively compiles the widget.
           # drift".
           - scheme: ARRunnerWatch
             destination: generic/platform=watchOS
           - scheme: ARRunnerPhone
             destination: generic/platform=iOS Simulator
-          - scheme: ARRunnerWidgetsPhone
-            destination: generic/platform=iOS Simulator
-          - scheme: ARRunnerWidgetsWatch
-            destination: generic/platform=watchOS Simulator
 
     steps:
       - name: Checkout
@@ -113,16 +118,6 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
-
-      # Only the ARRunnerWidgetsWatch scheme requires this: its app-extension
-      # scheme does not surface a `generic/platform=watchOS` device-class
-      # destination on macos-26-arm64 (which has no preinstalled watchOS
-      # Simulator runtime), so we install one. The watch *app* scheme
-      # (ARRunnerWatch) builds fine without it via `generic/platform=watchOS`.
-      # See skill: ios-testflight-ci-via-actions → "Runner image runtime drift".
-      - name: Install watchOS Simulator runtime
-        if: matrix.scheme == 'ARRunnerWidgetsWatch'
-        run: xcodebuild -downloadPlatform watchOS
 
       - name: xcodebuild ${{ matrix.scheme }}
         run: |
