@@ -2,7 +2,7 @@
 
 **Owner:** Richards
 **Created:** 2026-05-15
-**Last updated:** 2026-05-17T17:44:28-04:00
+**Last updated:** 2026-05-17T23:16:00Z
 
 ---
 
@@ -310,8 +310,250 @@ Three rc failures in a row tried to make Automatic work for CLI archive. Each on
 
 ---
 
+## ⚠️ CRITICAL TRAP (rc5): Manual Signing Works, But Provisioning Profile Lacks Required Entitlements
+
+### Symptom (rc5 — run 26004285341)
+
+After fixing the rc4 manual-signing trap, archive now fails per-target with messages of the form:
+
+```
+error: "<TargetName>" requires a provisioning profile with the App Groups feature.
+       Select a provisioning profile in the Signing & Capabilities editor.
+
+error: "<TargetName>" requires a provisioning profile with the App Groups and
+       HealthKit features. Select a provisioning profile in the Signing &
+       Capabilities editor.
+```
+
+Crucially, NO "conflicting provisioning settings" / "automatically signed for development" wording — that family of error is gone. Manual signing is engaged correctly. This is a different layer: the **provisioning profile content** does not satisfy the **entitlements file**.
+
+### Why it happens
+
+`-allowProvisioningUpdates` + an App Store Connect API key lets `xcodebuild` mint an Apple Distribution provisioning profile on demand. But the minted profile only includes capabilities **enabled on the App ID itself in the Apple Developer portal**. If the target's `.entitlements` file declares (e.g.) `com.apple.developer.healthkit = true` but the App ID record on developer.apple.com does NOT have the HealthKit capability checked, the freshly-minted profile will lack the HealthKit entitlement, and the archive step rejects it with the message above.
+
+The repo files (entitlements, Info.plist, project.yml) can be perfectly correct and this still fails. The truth lives in the portal, not the repo.
+
+### The fix — portal action, not code change
+
+For every iOS/watchOS App ID that the archive will sign, ensure the App ID declares **every capability** that appears in the corresponding `.entitlements` file:
+
+1. <https://developer.apple.com/account/resources/identifiers/list>
+2. Open each App ID.
+3. Tick every capability the entitlements file uses (App Groups, HealthKit, Sign in with Apple, Push, etc.).
+4. For App Groups, click "Edit" next to the capability and assign the specific group identifier(s) the entitlements file references. Register the group itself first under Identifiers → "App Groups" filter if it doesn't exist.
+5. Save the App ID.
+
+Then re-run the archive. Do **not** download or install profiles manually — `-allowProvisioningUpdates` will mint fresh profiles that now include the capabilities. Do **not** add `PROVISIONING_PROFILE_SPECIFIER` to the workflow; it couples the CI to manually-named profiles and is only worth doing if the team must operate without an Admin-scoped ASC API key.
+
+### Pre-flight runbook addition
+
+Before tagging an rc:
+
+```bash
+# Inventory entitlements declared in the repo.
+for f in Config/*.entitlements; do
+  echo "=== $f ==="
+  /usr/libexec/PlistBuddy -c "Print" "$f" 2>/dev/null || cat "$f"
+done
+```
+
+For each target's bundle ID, manually confirm the corresponding App ID in the portal has at least the union of these capabilities. (If we ever script this with the ASC API, log a follow-up.)
+
+### Rule (durable, confidence: high)
+
+> **Manual-signed CLI archive errors of the form `"<Target>" requires a provisioning profile with the <Capability> feature` mean the App ID in the developer portal does not have that capability enabled.** Fix in the portal; do not touch the workflow. `-allowProvisioningUpdates` only mints profiles for capabilities the App ID already declares.
+
+### Confidence
+
+**High** — fifth iteration on this signing-pathway chain (rc1 → rc5), each iteration revealing a distinct layer (CLI identity default → CLI parser → CLI precedence → project-base precedence + identity-default → portal-side capability registration). Five distinct root causes, five fixes, each terminal to its symptom class.
+
+---
+
+## ⚠️ RETRACTED (rc6 first-pass): "Cached stale Distribution profile" diagnosis was wrong
+
+The original rc6 entry in this skill claimed `-allowProvisioningUpdates` was reusing stale Distribution profiles for the iOS bundle IDs, and offered an "asymmetric Watch-pass / iOS-fail" fingerprint as the smoking gun. **Both claims were disconfirmed.**
+
+- The portal Profile list (correct team selected) is **empty** — there are no cached profiles to reuse, so the reuse-if-present mechanism cannot be what's biting us here.
+- The "Watch targets succeeded" claim was an inferential error: `xcodebuild archive` aborts at the **first** failed target, so the absence of a Watch-target error in the rc6 log is equally consistent with "Watch was never reached." There was no positive evidence Watch succeeded.
+
+**Durable reasoning lesson (cross-cutting, not just signing):** when a tool has *stop-at-first-error* semantics, "no error logged for X" is NOT evidence that "X succeeded." Demand positive evidence before claiming asymmetry. This applies to xcodebuild, swift build, ld, codesign, and any pipeline that bails on first failure.
+
+The reuse-if-present semantic of `-allowProvisioningUpdates` is still real and may bite us in a *later* rc — keep this section for that day, but do not use the "asymmetric target" fingerprint, and only suspect the cache when the portal actually shows a Distribution profile for the failing bundle ID.
+
+The corrected rc6 diagnosis is below.
+
+---
+
+## ⚠️ CRITICAL TRAP (rc6, corrected): App Store Connect API key role insufficient for Distribution profile minting
+
+### Symptom (rc6 — run 26005442467)
+
+After applying the rc5 fix (every App ID has the required capabilities — App Groups + HealthKit as appropriate), the archive fails with:
+
+```
+error: "ARRunnerPhone" requires a provisioning profile with the App Groups and HealthKit features.
+error: "ARRunnerWidgetsPhone" requires a provisioning profile with the App Groups feature.
+```
+
+AND the developer portal Profile list is **empty** for all four bundle IDs — no Distribution profile has ever been minted, despite `-allowProvisioningUpdates` being passed on every prior rc.
+
+### Why it happens
+
+`xcodebuild -allowProvisioningUpdates` mints Distribution profiles by calling the App Store Connect REST API under the hood (the same endpoints `fastlane sigh` and `fastlane match` use). That `POST .../profiles` call is **role-gated**:
+
+| Role on the API key | Can read profiles | Can **create** Distribution profile |
+|---|---|---|
+| Developer | ✅ | ❌ |
+| App Manager | ✅ | ✅ |
+| Admin | ✅ | ✅ |
+
+A **Developer**-role key can read existing profiles but is denied on profile creation. `xcodebuild` does not surface the underlying 403 as a useful error — it just falls through to the generic "requires a provisioning profile with the <Capability> feature" message because, from its perspective, no profile satisfying the entitlements exists. Net effect: the build looks like it's failing on capabilities (rc5-style) when it's actually failing on key role.
+
+### Diagnostic fingerprint (corrected)
+
+The real fingerprint is **"empty portal Profile list + correct App ID capabilities + repeated rc5-style errors"** — meaning nothing has ever been minted for any bundle ID, not just some. Do NOT use the prior "asymmetric target failure" claim; see the retracted-section notice above.
+
+### The fix — verify and (if needed) rotate the API key
+
+1. Open <https://appstoreconnect.apple.com/access/integrations/api>.
+2. Find the row matching the **Key ID** stored as `APP_STORE_CONNECT_API_KEY_ID`.
+3. Read the **Access** column.
+   - If **App Manager** or **Admin** → key is fine; the trap is elsewhere (see fallback below).
+   - If **Developer** → root cause confirmed. Generate a new key with **App Manager** access, update the three repo secrets (`APP_STORE_CONNECT_API_KEY_ID`, `APP_STORE_CONNECT_API_ISSUER_ID`, `APP_STORE_CONNECT_API_KEY_P8`), revoke the old key.
+4. Re-tag. `-allowProvisioningUpdates` will now successfully mint a Distribution profile per bundle ID on first archive.
+
+### Fallback if the key role is already sufficient
+
+Manually pre-create one App Store Distribution profile per bundle ID in the portal (Certificates, IDs & Profiles → Profiles → +). `-allowProvisioningUpdates` will then read the existing profile rather than having to create one. This bypasses any first-time-mint edge case Apple may have for fresh App IDs. Trade-off: profiles become a manual artifact you must revoke + re-create whenever entitlements change.
+
+### Rule (durable, replaces the prior rc6 rule)
+
+> **`-allowProvisioningUpdates` can only mint Distribution profiles when the API key role is App Manager or Admin. A Developer-role key surfaces this as the generic "requires a profile with <Capability>" error — indistinguishable from the rc5 App-ID-capability bug at the xcodebuild layer.** Always confirm the API key's role in App Store Connect before chasing capability or profile-cache hypotheses. The disambiguating signal is the **portal Profile list itself**: empty list = nothing was ever minted = suspect key role; populated list with stale entitlements = suspect reuse-if-present.
+
+### Pre-flight runbook addition (extends rc5 entry)
+
+Before any rc that depends on a freshly-minted Distribution profile:
+1. Confirm App ID capabilities match entitlements (rc5 rule, still in force).
+2. Confirm the API key in use has **App Manager** or **Admin** access (this rule).
+3. If you've changed entitlements on a bundle ID that already has a Distribution profile in the portal, plan to revoke that profile (the retracted rc6 entry's reuse-if-present concern remains valid — just not what was biting us *this* time).
+
+### Cross-references (corroborating)
+
+- Apple — [App Store Connect API roles reference](https://developer.apple.com/documentation/appstoreconnectapi/roles): defines which roles can perform `POST /profiles`.
+- fastlane — [App Store Connect API permissions](https://docs.fastlane.tools/app-store-connect-api/#permissions): "the API Key should have at least the App Manager role" for profile/cert creation flows.
+
+### Confidence
+
+**High** for the diagnosis matching the evidence (empty portal + capabilities-correct + rc5-style error is exactly the failure mode a Developer-role key produces). The diagnosis is also falsifiable: if the key turns out to already be App Manager, this rule is wrong and we move to the manual-pre-create fallback. That's a feature, not a weakness — the previous rc6 diagnosis was unfalsifiable in practice and turned out to be wrong.
+
+---
+
 ## Open Question: Should PR CI probe-build Release?
 
 `ci-build.yml` only builds Debug for the simulator. Release config differs in `-O` optimization level, signing config, and sometimes in warnings-as-errors behavior — meaning a Release-only build error (or a Release-only signing misconfig like the rc1/rc2/rc3/rc4 traps) won't surface until the TestFlight workflow runs, by which point the version tag is already burned. **Four data points now** (rc1 signing identity, rc2 CLI parsing, rc3 CLI-precedence shadow, rc4 project-base-precedence shadow + CLI archive identity default) support adding a `xcodebuild archive -configuration Release CODE_SIGNING_ALLOWED=NO` job to PR CI — or at minimum a `-showBuildSettings | grep CODE_SIGN` assertion that catches precedence regressions at PR time. Trade-off: ~3-4 extra minutes per PR vs. burning a version tag per signing iteration. See D-RICHARDS-TF-8 (proposed); re-amplified by D-RICHARDS-TF-10 (rc4).
 
 
+
+---
+
+## ⚠️ TRAP: "requires a provisioning profile with the <X> feature" is a 3-way error
+
+### Symptom
+
+```
+"<Target>" requires a provisioning profile with the <Capability> feature.
+Select a provisioning profile in the Signing & Capabilities editor.
+```
+
+### Why it is ambiguous
+
+xcodebuild emits this **identical string** for at least three distinct underlying causes:
+
+1. **App ID lacks the capability** — any profile minted for that bundle ID is born without the entitlement, so no candidate profile satisfies the requirement. (rc5/TF-11 class.)
+2. **Profile exists with capability, but cert mismatch** — profile's `DeveloperCertificates[]` does not contain the cert whose private key is in the signing keychain. Xcode silently rejects the profile and reports "none usable."
+3. **Profile not present at all and minting failed** — earlier API failure, role insufficiency, or `-allowProvisioningUpdates` was omitted. Xcode falls through to the same string.
+
+The error wording does NOT distinguish "no profile found" from "profile found but unusable." Do not assume.
+
+### Rule
+
+When this error appears, the build log alone is **not sufficient** to localize the root cause. Always run a 2-axis probe:
+
+- **Axis 1 (App ID truth):** open the App ID in <https://developer.apple.com/account/resources/identifiers/list>; verify the Capabilities checkboxes AND that any configurable capability (App Groups, iCloud, Associated Domains) has its sub-configuration committed (e.g. App Groups must have the actual group ID *selected*, not merely defined in the master list).
+- **Axis 2 (Profile ground truth):** download the `.mobileprovision` and run `security cms -D -i <file> | plutil -p -` to read both `Entitlements` (proves Axis 1 was saved) and `DeveloperCertificates[]` (lets you compare SHA1 against the `.p12` you imported in CI: `openssl pkcs12 -in dist.p12 -nokeys -passin pass:... | openssl x509 -noout -fingerprint -sha1`).
+
+If Axis 2 entitlements are present AND its cert SHA1 matches the keychain cert SHA1, the profile is unambiguously usable; any remaining failure is a workflow bug (missing `PROVISIONING_PROFILE_SPECIFIER`, wrong keychain search list, etc.), not a portal/cert issue.
+
+### Recall bias warning (rc7 lesson)
+
+When the user has *just* finished a manual portal configuration session, "I clicked the box" feels like ground truth but isn't — Apple's portal silently no-ops on Save in some flows (modal dismissed without confirm, capability edit not committed before navigating away). Always trust the downloaded `.mobileprovision` over UI recall.
+
+### Cross-reference
+
+- D-RICHARDS-TF-11 (App ID capabilities — root of cause #1)
+- D-RICHARDS-TF-12 — RETRACTED (cached-profile-reuse hypothesis disconfirmed by empty portal Profile list)
+- D-RICHARDS-TF-13 — RETRACTED (API key role hypothesis disconfirmed; Joe's key is App Manager)
+- D-RICHARDS-TF-14 (rc7 — this trap; 1-click portal probe with contingent profile-bytes probe)
+
+---
+
+## ⚠️ TRAP: `-allowProvisioningUpdates` does NOT install manual profiles
+
+### Symptom
+
+You have manually created App Store distribution profiles in the portal (correct bundle IDs, correct entitlements, `IsXcodeManaged: false`). The CI workflow imports the `.p12`, installs the App Store Connect API key, and runs:
+
+```
+xcodebuild ... archive -allowProvisioningUpdates \
+  -authenticationKeyID ... -authenticationKeyIssuerID ... -authenticationKeyPath ...
+```
+
+Archive fails with the now-familiar:
+
+```
+"<Target>" requires a provisioning profile with the <Capability> feature.
+```
+
+…on every signed target. The error is identical to cases where the App ID lacks the capability or where the cert doesn't match — *but in this case the profile is provably correct*.
+
+### Why it happens
+
+`-allowProvisioningUpdates` is documented as "allow xcodebuild to communicate with Apple to **update** signing assets." In practice it **only auto-mints/updates Xcode-managed profiles** (`IsXcodeManaged: true`). It does NOT scan the App Store Connect account for matching manual profiles and download them to the runner's `~/Library/MobileDevice/Provisioning Profiles/`.
+
+Manual profiles must be physically present in `~/Library/MobileDevice/Provisioning Profiles/` for xcodebuild to consider them. A fresh GitHub Actions macOS runner has an empty profiles directory.
+
+So the candidate-profile set is empty → cause #3 of the 3-way error fires.
+
+### Confirmation (rc7 forensics)
+
+Joe ran:
+
+```bash
+security cms -D -i ~/Downloads/AR_Runner.mobileprovision
+```
+
+Profile contained:
+- `application-identifier = GB66R9JAYL.com.arrunner.phone` ✅
+- `com.apple.developer.healthkit = true` ✅
+- `com.apple.security.application-groups = [group.com.arrunner.shared]` ✅
+- `IsXcodeManaged = false`
+- `DeveloperCertificates[0]` SHA1 == the single Distribution cert SHA1 in the keychain `.p12` ✅
+
+All four profiles (phone, widgets, watch, watch widgets) verified the same way. Axis 1 and Axis 2 of the 3-way-error probe both returned clean → cause #3 (no profile on disk).
+
+### Fix
+
+Install profiles onto the runner **before** `xcodebuild archive`. Two viable strategies:
+
+**Option A (chosen, rc8):** Download all team profiles via App Store Connect API and let the tool install them into `~/Library/MobileDevice/Provisioning Profiles/`. Implemented as a `fastlane sigh download_all` step using the existing ASC API key (assembled into a JSON file with `jq`). One step, handles all four targets uniformly, including the embedded Watch app.
+
+**Option B:** Pass `PROVISIONING_PROFILE_SPECIFIER` per target on the `xcodebuild` CLI (e.g. `ARRunnerPhone="AR-Runner" ARRunnerWidgetsPhone="AR-Runner Widgets" …`). Simpler (no new dependency) but `xcodebuild` still needs the `.mobileprovision` files on disk to read entitlements from — and embedded targets (Watch app inside iOS archive) don't always honor CLI per-target specifiers the same way the main app does. Not recommended for multi-target archives.
+
+### Rule (durable)
+
+> **If `IsXcodeManaged` is `false` on your provisioning profiles, `-allowProvisioningUpdates` alone is insufficient.** The workflow must explicitly install the profiles into `~/Library/MobileDevice/Provisioning Profiles/` (via `fastlane sigh download_all`, the App Store Connect REST API + curl, or `actions/Apple-Actions/download-provisioning-profiles`). The `-allowProvisioningUpdates` flag is for Xcode-managed profiles only.
+
+### Cross-reference
+
+- D-RICHARDS-TF-15 (rc8 — this fix)
+- D-RICHARDS-TF-14 (rc7 — 3-way-error probe; this trap is cause #3 confirmed)
