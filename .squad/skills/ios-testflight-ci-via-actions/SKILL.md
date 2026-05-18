@@ -658,3 +658,17 @@ Every rc before rc9 died during Archive — exportArchive never ran. rc9 also di
 ### Confidence
 
 High. Failure mode is documented across Apple developer forums and xcodebuild release notes (Xcode 13+ where ExportOptions.plist became authoritative for export-time signing). The fix is canonical — Apple's own `xcodebuild -h` man page for `-exportOptionsPlist` describes `provisioningProfiles` exactly this way. The only judgment call is whether to centralize the three duplicated profile-name sources; held off for now (low value, real risk).
+
+---
+
+## Operational note (rc12 follow-up — Laughlin, 2026-05-18): macos-26 CodeQL cost & concurrency-queue eviction
+
+Two observations from aligning `ci-build.yml` + `codeql.yml` onto Richards's macos-26 / Xcode 26.4 pin (PR #32, follow-up to #31):
+
+**1. CodeQL — Swift on macos-26 / Xcode 26.4 runs noticeably slower than on macos-15 / Xcode 16.4.** Observed wall-clock: 27m54s on the rc12 release commit's CodeQL run (the first green CodeQL on the new image) vs the previous green baseline of ~19m on macos-15. Most plausibly first-run cold cache on a new image + heavier Xcode-26 toolchain + CodeQL Swift extractor doing more work on a newer SDK. **Not** approaching the 45-minute `timeout-minutes` ceiling, but if a future change adds substantial Swift compile cost, raise the timeout before chasing a phantom hang.
+
+**2. `cancel-in-progress: false` does NOT protect queued runs from eviction by newer queued runs.** GitHub Actions concurrency: the flag prevents cancellation of **in_progress** runs only. While a run is `queued` (waiting behind an in-progress run in the same group), a third run queued after it will evict it. Surfaced when verifying #32 post-merge: rc12's CodeQL was still in flight when my PR-32 merge commit pushed; my CodeQL run queued; a third push (unrelated iPad orientation fix) arrived; my queued run was cancelled in favour of the newest. The rc12 in-progress run completed normally.
+
+**Implication for verifying a workflow change post-merge:** don't rely on the natural main-push run being the verifying run if main is busy. Either (a) re-trigger explicitly via `workflow_dispatch` once main is quiet, (b) push a no-op commit to a quiet branch to exercise the workflow on PR, or (c) inspect the next-following push's run — which is what worked here, because the iPad-orientation push then ran the same updated workflow file (workflow-file edits take effect on the next run regardless of which commit triggered it).
+
+**Cross-reference:** D-LAUGHLIN-CI-01 (alignment decision); D-RICHARDS-rc12 family (the original macos-26 move).

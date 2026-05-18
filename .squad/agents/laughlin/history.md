@@ -74,3 +74,21 @@ Tests: 101 passing in `swift test` from `ARRunnerCore/`, 0 failures, 1 pre-exist
 **Canonical rule:** "App ID capabilities must mirror entitlements when using -allowProvisioningUpdates + manual signing."
 
 This is portal-side state, not code-fixable, and is a new trap class in SKILL.md. Relevant during any future release campaign / signing fix work.
+
+## 2026-05-18T09:34:18-04:00 — rc12 CI alignment: ci-build + codeql → macos-26 / Xcode 26.4
+
+PR #32 (`chore/v02-rc12-align-ci-workflows`) → squash-merged into main. Brings `ci-build.yml` and `codeql.yml` onto the same runner image + Xcode pin Richards-9 introduced for `release-testflight.yml` in #31. Surgical diff: runner label, `XCODE_VERSION` env var, comment refresh. Same `setup-xcode@v1` action and same `XCODE_VERSION` env-var pattern as #31, so the three macOS workflows now read identically at the top of each job.
+
+Post-merge verification on main:
+- **CI — App Builds (macOS)** (4-scheme matrix on macos-26): ✅ success in 8m34s.
+- **CodeQL — Swift** on macos-26 / Xcode 26.4: ✅ success in 27m54s (verified via the rc12 release commit's own CodeQL run — my PR's CodeQL run was queue-cancelled by a subsequent push under `cancel-in-progress: false` queue eviction; not a workflow failure).
+
+### Learnings
+
+- **`cancel-in-progress: false` does NOT protect queued runs from eviction by newer queued runs of the same concurrency group.** Both rc12's CodeQL run and my PR-32 CodeQL run targeted `refs/heads/main` (same concurrency group `codeql-CodeQL — Swift-refs/heads/main`). My run waited behind rc12's; while waiting, a third push (iPad orientation fix) landed; GitHub evicted my queued run in favour of the newest queued run and rc12's in-progress run completed normally. **Implication:** "I'll wait for it to drain naturally" only holds if no third push arrives. For belt-and-braces post-merge verification of a workflow change, re-trigger via `workflow_dispatch` or a no-op commit on a quiet branch rather than relying on the natural main push being the verifying run.
+
+- **macos-26 CodeQL run is materially slower than macos-15 was** (27m54s vs ~19m on previous green run of the same workflow). Plausibly first-run cache cold on a new image, plausibly Xcode 26.4 toolchain weight, plausibly CodeQL Swift extractor doing more on a newer SDK. Not slow enough to bump the `timeout-minutes: 45` ceiling, but worth knowing — if a future change pushes the total past ~35m, raise the timeout rather than chase a phantom hang.
+
+- **The runner version drift would have silently masked SDK breakage.** Before #31 + #32, PR builds were compiling against iOS 18.5 / watchOS 11.5 SDKs but rc tags were archiving against iOS 26.4 / watchOS 26.4. Any iOS-26-only deprecation, removed API, or behavior shift would only have surfaced at tag time (release-testflight.yml), past the point of cheap correction. Aligning all three macOS workflows on the same image+SDK closes that drift window. Generalizes: **whenever a release workflow moves to a new toolchain, every PR-gating workflow that compiles the same code must move with it in the same campaign — runner-version skew between PR CI and release CI is a defect category, not a config preference.**
+
+- **`gh pr merge --auto --delete-branch` can complete instantly when branch protection allows it.** PR #32 reported `mergedAt` populated on the first call rather than enqueueing an `autoMergeRequest`, presumably because there are no required status checks blocking main. Useful to know: if you want CI to validate the change *before* merge specifically, you can't rely on `--auto` alone — you'd need to add a required check at the branch-protection level, or push to a dummy branch first.
