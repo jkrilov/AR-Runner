@@ -36,25 +36,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # NOTE: watchOS targets use `generic/platform=watchOS` (no "Simulator"),
+          # matching how release-testflight.yml archives the watch app. The
+          # macos-26-arm64 runner image does NOT ship a watchOS Simulator runtime
+          # preinstalled (macos-15 did) — `generic/platform=watchOS Simulator`
+          # is unsatisfiable here. These are build-only verification jobs (no
+          # `xcodebuild test`), so the device-class generic destination is the
+          # right choice; it avoids a ~3–5 min `xcodebuild -downloadPlatform
+          # watchOS` step on every run. See skill: ios-testflight-ci-via-actions
+          # → "Runner image runtime drift".
           - scheme: ARRunnerWatch
-            destination: generic/platform=watchOS Simulator
+            destination: generic/platform=watchOS
           - scheme: ARRunnerPhone
             destination: generic/platform=iOS Simulator
           - scheme: ARRunnerWidgetsPhone
             destination: generic/platform=iOS Simulator
           - scheme: ARRunnerWidgetsWatch
-            destination: generic/platform=watchOS Simulator
+            destination: generic/platform=watchOS
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       # Pin Xcode 26.4 — matches release-testflight.yml (rc12, PR #31). The
-      # macos-26 runner image ships Xcode 26.2 as default with the iOS 26.x
-      # and watchOS 26.x simulator runtimes pre-installed. Pinning 26.4 keeps
-      # PR builds on the same SDK that ships to TestFlight, so SDK-level
-      # breakage surfaces here rather than at tag-time. Avoid 26.5 (beta on
-      # the image). See: actions/runner-images macos-26-arm64-Readme.md
+      # macos-26 runner image ships Xcode 26.2 as default with iOS 26.x and
+      # visionOS 26.x simulator runtimes pre-installed (but NOT watchOS — see
+      # destination note above). Pinning 26.4 keeps PR builds on the same SDK
+      # that ships to TestFlight, so SDK-level breakage surfaces here rather
+      # than at tag-time. Avoid 26.5 (beta on the image). See:
+      # actions/runner-images macos-26-arm64-Readme.md
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
