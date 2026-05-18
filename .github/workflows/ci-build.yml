@@ -36,15 +36,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # NOTE: watchOS targets use `generic/platform=watchOS` (no "Simulator"),
-          # matching how release-testflight.yml archives the watch app. The
-          # macos-26-arm64 runner image does NOT ship a watchOS Simulator runtime
-          # preinstalled (macos-15 did) — `generic/platform=watchOS Simulator`
-          # is unsatisfiable here. These are build-only verification jobs (no
-          # `xcodebuild test`), so the device-class generic destination is the
-          # right choice; it avoids a ~3–5 min `xcodebuild -downloadPlatform
-          # watchOS` step on every run. See skill: ios-testflight-ci-via-actions
-          # → "Runner image runtime drift".
+          # NOTE: watchOS targets need careful destination handling on
+          # macos-26-arm64. That runner image does NOT ship a watchOS
+          # Simulator runtime preinstalled (macos-15 did). Two cases:
+          #   - ARRunnerWatch (app scheme): builds fine against
+          #     `generic/platform=watchOS` (device-class generic, same form
+          #     release-testflight.yml uses for archive). No sim runtime
+          #     needed.
+          #   - ARRunnerWidgetsWatch (app-extension scheme): its scheme does
+          #     NOT surface a device-class generic watchOS destination on
+          #     this image — only macOS / iOS / iOS Simulator appear in
+          #     `xcodebuild -showdestinations`. It requires the watchOS
+          #     Simulator runtime to be installed (see the conditional
+          #     "Install watchOS Simulator runtime" step below) and uses the
+          #     `=watchOS Simulator` destination.
+          # See skill: ios-testflight-ci-via-actions → "Runner image runtime
+          # drift".
           - scheme: ARRunnerWatch
             destination: generic/platform=watchOS
           - scheme: ARRunnerPhone
@@ -52,7 +59,7 @@ jobs:
           - scheme: ARRunnerWidgetsPhone
             destination: generic/platform=iOS Simulator
           - scheme: ARRunnerWidgetsWatch
-            destination: generic/platform=watchOS
+            destination: generic/platform=watchOS Simulator
 
     steps:
       - name: Checkout
@@ -106,6 +113,16 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      # Only the ARRunnerWidgetsWatch scheme requires this: its app-extension
+      # scheme does not surface a `generic/platform=watchOS` device-class
+      # destination on macos-26-arm64 (which has no preinstalled watchOS
+      # Simulator runtime), so we install one. The watch *app* scheme
+      # (ARRunnerWatch) builds fine without it via `generic/platform=watchOS`.
+      # See skill: ios-testflight-ci-via-actions → "Runner image runtime drift".
+      - name: Install watchOS Simulator runtime
+        if: matrix.scheme == 'ARRunnerWidgetsWatch'
+        run: xcodebuild -downloadPlatform watchOS
 
       - name: xcodebuild ${{ matrix.scheme }}
         run: |

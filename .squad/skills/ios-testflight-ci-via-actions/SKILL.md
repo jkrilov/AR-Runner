@@ -813,3 +813,68 @@ watchOS app target had no `Assets.xcassets` with an AppIcon.appiconset, and the 
 
 ### iPad orientation companion trap
 If `TARGETED_DEVICE_FAMILY` defaults to `1,2` (iPhone+iPad), Apple requires all four orientations in `UISupportedInterfaceOrientations` including `UIInterfaceOrientationPortraitUpsideDown`. Error: ITMS-90474.
+## Trap class: Runner image runtime drift
+
+**Symptom.** A previously-green watchOS (or any non-default platform) build starts failing on every PR with:
+
+```
+xcodebuild: error: Unable to find a destination matching the provided destination specifier:
+    { generic:1, platform:watchOS Simulator }
+
+Available destinations for the "<Scheme>" scheme:
+    { platform:macOS, ... }
+    { platform:iOS, ... }
+    { platform:iOS Simulator, ... }
+    { platform:visionOS Simulator, ... }
+    # NO watchOS Simulator entries
+```
+
+…immediately after a runner-image migration (e.g., `runs-on: macos-15` → `runs-on: macos-26`).
+
+**Why it happens.** GitHub Actions runner images bundle a curated set of preinstalled SDK simulator runtimes, and the set changes between image major versions. Notably, **macos-26-arm64 ships iOS Sim, visionOS Sim, and macOS — but NO watchOS Simulator runtime preinstalled** (macos-15 shipped it). Any `-destination 'generic/platform=watchOS Simulator'` (or any sim-runtime-bearing destination for a dropped platform) becomes unsatisfiable on the new image. The Xcode toolchain itself, the watchOS SDK headers, and the device-class generic destination (`generic/platform=watchOS`) all still work for app schemes — only the *simulator runtime* is missing.
+
+**Why it goes undetected.** Often coincides with a workflow-wide migration that touches multiple jobs at once; the failure of a single matrix scheme is easy to lose in the noise. Made dramatically worse when branch protection does not require the failing job — auto-merge keeps landing red builds and the failure surface compounds across subsequent PRs.
+
+**Fix — app schemes (preferred, cheap).** Drop `Simulator` from the destination:
+
+```yaml
+# Before
+-destination 'generic/platform=watchOS Simulator'
+# After
+-destination 'generic/platform=watchOS'
+```
+
+This is the device-class generic destination — same form the release pipeline uses for `xcodebuild archive`. It does not depend on any simulator runtime being preinstalled, so it survives future image migrations.
+
+**Fix — app-extension schemes (required, costlier).** Watch widget / app-extension schemes on Xcode 26 / macos-26 do NOT surface `generic/platform=watchOS` — `xcodebuild -showdestinations` for the extension scheme returns only macOS / iOS / iOS Simulator. The build fails with `IDERunDestination: Supported platforms for the buildables in the current scheme is empty.` For these schemes you must install the watchOS Simulator runtime explicitly and keep `=watchOS Simulator`:
+
+```yaml
+- name: Install watchOS Simulator runtime
+  if: matrix.scheme == 'ARRunnerWidgetsWatch'   # gate to only the scheme that needs it
+  run: xcodebuild -downloadPlatform watchOS
+
+- name: xcodebuild
+  run: |
+    xcodebuild -scheme ARRunnerWidgetsWatch \
+      -destination 'generic/platform=watchOS Simulator' \
+      ...
+```
+
+Costs ~3–5 min for the download per matrix job that uses it. Gate the install step with a matrix `if:` so unaffected jobs don't pay the cost.
+
+**Alternative for app-extension schemes (cheapest if you accept the trade).** Drop the standalone matrix entry for the extension — it's redundant. The parent watch app's `embed: true` dependency forces the extension to compile transitively whenever the watch app builds. You lose per-extension build telemetry but save 3–5 min per PR and one matrix job's macOS minutes.
+
+**Verification step for any runner-image migration.** Before merging a PR that bumps `runs-on:` to a new image, run (or temporarily add as a CI step):
+
+```yaml
+- name: Show available destinations
+  run: xcodebuild -showdestinations -scheme <YourScheme> -project AR-Runner.xcodeproj
+```
+
+Diff the output against what the previous runner image produced. Any destination the workflow references that no longer appears is broken — fix the destination string or install the runtime before merging. Repeat for each scheme in the matrix; app vs. extension schemes can have different available destinations even within the same project.
+
+**Generalization.** The same trap applies to any preinstalled-SDK-runtime change between runner image versions, not just watchOS Simulator. Inspect the runner-image release notes (`actions/runner-images` repo, `images/macos/macos-{version}-Readme.md`) for the "Installed SDKs / Simulators" section whenever bumping the image.
+
+**Companion trap.** Comment text that documents which runtimes are preinstalled tends to lag the reality. After a fix, also update inline `# Pin Xcode …` comments that claim a runtime is preinstalled when it no longer is — stale comments are how the next runner-image migration repeats this trap.
+
+**Cross-reference.** Other watch-companion traps in this skill (bundle ID, embed phase). The through-line: watch-companion validation chains have several thin links, and only one needs to break to look like everything is broken.
