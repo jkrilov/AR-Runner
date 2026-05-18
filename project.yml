@@ -79,6 +79,7 @@ targets:
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.arrunner.phone
         WKSupportsRunningWithoutiPhone: true
+        ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: Config/ARRunnerWatch.entitlements
       properties:
@@ -147,6 +148,7 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: Config/ARRunnerPhone.entitlements
       properties:
@@ -178,6 +180,7 @@ targets:
         CFBundleDisplayName: AR-Runner Widgets
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: Config/ARRunnerWidgetsPhone.entitlements
       properties:
@@ -208,6 +211,7 @@ targets:
         CFBundleDisplayName: AR-Runner Widgets
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: Config/ARRunnerWidgetsWatch.entitlements
       properties:
