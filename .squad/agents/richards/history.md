@@ -1,4 +1,4 @@
-# Richards — History
+# Richards — History (Summarized)
 
 ## Core Context
 
@@ -6,206 +6,150 @@
 - **Role:** Lead
 - **Joined:** 2026-05-14T18:30:31.650Z
 
-## Active Learnings
+## Active Learnings (Current)
 
-### 2026-05-17 — rc4 archive trap: CLI archive + Automatic style → Apple Development identity → xcconfig Distribution pin is treated as conflicting manual override; project.yml `CODE_SIGN_STYLE: Automatic` also shadows xcconfig style at project-base precedence
+### 2026-05-17T23:25Z — rc7: TF-13 also wrong. The error string is 3-way ambiguous; stop guessing causes, start probing axes.
 
-**Context:** PR #25 (rc3 fix) successfully removed `CODE_SIGN_STYLE` from the xcodebuild CLI. v0.2.0-rc4 was tagged from main. Run [26003539754](https://github.com/jkrilov/AR-Runner/actions/runs/26003539754) failed the Archive step with TWO errors, one per iOS target:
+**What happened:** Joe's ASC API key was already App Manager (TF-13 disconfirmed). He fell to Option B and manually pre-created all four App Store Distribution profiles in the portal. rc7 failed with the **byte-identical** error as rc5 and rc6: `"<Target>" requires a provisioning profile with the <Capability> feature`.
 
-> `ARRunnerPhone has conflicting provisioning settings. ARRunnerPhone is automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified.`
->
-> `ARRunnerWidgetsPhone has conflicting provisioning settings. ARRunnerWidgetsPhone is automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified.`
+**The real meta-lesson:** that error string is **not a diagnosis, it is a symptom**. It is emitted whenever xcodebuild's candidate-profile set has no member satisfying (bundleID ∧ entitlements ∧ available cert). At least three distinct root causes collapse to the same string: (1) App ID lacks the capability so any profile minted/created lacks the entitlement; (2) profile has the entitlement but its `DeveloperCertificates` doesn't include the cert in the signing keychain; (3) no profile at all (mint failed silently). My TF-11, TF-12, TF-13 chain treated successive iterations of this error as evidence for successively new mechanisms when actually each iteration was **the same insufficiency** — I was picking causes without probing whether the previous fix actually changed the candidate-set state.
 
-CLI was clean (rc3 fix held). Both targets carried the conflict — not just the widget. The pre-work hypothesis ("xcconfig identity + automatic style is fundamentally OK at project-config level") was wrong. Two compounding precedence bugs surfaced:
+**Durable rule (high confidence):** When `requires a provisioning profile with the <X> feature` appears, do NOT propose a cause. **Probe.** Two axes, every time: (1) App ID capability ground truth in the portal; (2) `.mobileprovision` byte-level ground truth via `security cms -D -i <file>` (reveals both `Entitlements` and `DeveloperCertificates`). The error itself contains no signal that disambiguates them; the build log will not help. Don't pattern-match on the string — instrument the truth.
 
-**Bug A — CLI `xcodebuild archive` + `CODE_SIGN_STYLE=Automatic` always resolves to `Apple Development` identity.** Xcode.app's GUI archive action auto-promotes automatic signing to Distribution because it knows the action's intent. The CLI does not. With Automatic style on the CLI, Xcode resolves identity = `Apple Development` and treats the xcconfig's `Apple Distribution` pin as a conflicting manual override. No amount of xcconfig-level pinning fixes this — it's a CLI archive limitation.
+**Sub-rule on UI recall:** When a user reports "I just configured X in the portal," that is not ground truth, it is recall. Apple's portal has multiple App-Groups surfaces, silent Save no-ops on lost modals, and per-App-ID-vs-global checkbox confusion. Always trust the downloaded profile bytes over user recall, especially when their recall is freshly biased toward "I just did the thing."
 
-**Bug B — xcodegen bakes `CODE_SIGN_STYLE = Automatic` into the project-level pbxproj** when `project.yml settings.base.CODE_SIGN_STYLE: Automatic` is set. Project-level pbxproj has **higher precedence than xcconfig** in Xcode's settings hierarchy. So even appending `CODE_SIGN_STYLE = Manual` to xcconfig is silently ignored until the project-base pin is removed. Verified empirically: `xcodebuild -showBuildSettings` returned `CODE_SIGN_STYLE = Automatic` even with `Manual` written into xcconfig — until I removed the project-base pin, after which Manual resolved correctly.
+**Reasoning hygiene I'm adding to my pre-commit-decision checklist:**
 
-**Per-target widget gotcha confirmed but re-explained:** rc4 hitting both targets isn't because the widget needs its own `$(inherited)` injection — the widget doesn't get xcodegen's iPhone-Developer target-level inject (that's an iOS application-target-only behavior, per rc3 learning). The widget fails for the same root reason as the main app: project-wide xcconfig identity + project-base Automatic style → conflict on every signed target. The fix at the project-base + xcconfig layer covers both targets in one shot.
+1. *"Am I treating silence as success?"* (from TF-12 retraction — still in force)
+2. *"Is my diagnosis falsifiable in practice by one cheap probe?"* (from TF-13 retraction — still in force)
+3. **NEW from TF-14:** *"Could the error string I'm reading actually be ambiguous between multiple causes? If so, what probe disambiguates, and have I asked for it BEFORE proposing a fix?"* — Three iterations of misdiagnosis is the signature of pattern-matching on a string that has more than one preimage.
 
-**Resolution (PR #26 forthcoming, branch `fix/v02-rc4-signing-pathway`):**
+**Decision:** D-RICHARDS-TF-14 (inbox) — refines TF-11; retracts TF-13. Proposes one-click portal probe with contingent profile-bytes fallback. Critically, the decision *itself* names what would falsify it (if both probes return clean and rc8 still fails identically, TF-14 is wrong and I escalate to TF-15 with a workflow instrumentation change rather than another speculative cause).
 
-Two coordinated layer changes:
+**Artifacts:** Decision inbox file, SKILL.md (new trap section: "requires a provisioning profile with the <X> feature is a 3-way error"), this history entry.
 
-1. **`project.yml`** — `settings.base.CODE_SIGN_STYLE: Automatic` → `CODE_SIGN_STYLE: $(inherited)`. xcodegen now writes `CODE_SIGN_STYLE = "$(inherited)"` to project-level pbxproj, deferring to xcconfig. Local dev still resolves to Automatic because `bootstrap-signing.sh` writes `CODE_SIGN_STYLE = Automatic` to xcconfig.
-2. **`release-testflight.yml`** — xcconfig append changed from identity-only to:
-   ```
-   CODE_SIGN_STYLE = Manual
-   CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
-   CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
-   ```
-   Manual signing makes the archive intent explicit; `-allowProvisioningUpdates` + ASC API key fetches/creates the App Store distribution profile for each bundle ID on demand.
+---
 
-**Strategy:** Option A (Manual signing for the archive). Rejected Option B (try harder with Automatic — three iterations of evidence say it can't work for CLI archive), Option C (hybrid `[config=Release]` conditional — doesn't address the identity-default root cause), Option D (Manual + explicit `PROVISIONING_PROFILE_SPECIFIER` per target — reserved as a fallback if rc5 fails; specifier coupling is fragile).
+### 2026-05-17T23:16Z — rc6 corrected: API key role insufficient (TF-12 retracted; reasoning lesson logged)
 
-**Trade-off named:** Distribution profiles must be creatable for both bundle IDs via the ASC API key. Joe's key has Admin scope, so this is automatic on first archive. If the key is ever scoped down to read-only, we'd add explicit specifiers — at which point we revisit.
+**What happened:** My TF-12 diagnosis (cached stale Distribution profiles being reused by `-allowProvisioningUpdates`) was **wrong**. Joe checked the portal Profile list with the correct team selected — it is **empty**. There is nothing to reuse. The reuse-if-present semantic is real but is not the trap firing here.
 
-**Local dev verified intact:** `xcodebuild -showBuildSettings -configuration Debug` for all four targets resolves to `Automatic` + `Apple Development` after the project.yml change. Personal Team device debugging keeps working — the project.yml change is `$(inherited)`, not `Manual`, so local xcconfig (`Automatic`) wins for non-CI scenarios.
+**Corrected root cause (high confidence):** The App Store Connect API key in `APP_STORE_CONNECT_API_KEY_ID` likely has the **Developer** role. `-allowProvisioningUpdates` mints Distribution profiles via the App Store Connect REST API, and that endpoint is role-gated — Developer can read profiles but cannot create them. xcodebuild surfaces the underlying 403 as the generic "requires a provisioning profile with the <Capability> feature" error, indistinguishable at the build-log layer from the rc5 App-ID-capability bug. Fastlane docs and Apple's roles reference both explicitly require **App Manager** or **Admin** for profile creation.
 
-**Durable rules added to skill:**
+**Joe's action:** Check role at <https://appstoreconnect.apple.com/access/integrations/api>. If Developer → generate new App Manager key, rotate three GH secrets (`APP_STORE_CONNECT_API_KEY_ID`, `APP_STORE_CONNECT_API_ISSUER_ID`, `APP_STORE_CONNECT_API_KEY_P8`), retag rc7. If already App Manager → fall back to manually pre-creating one App Store Distribution profile per bundle ID in the portal.
 
-- Never pin `CODE_SIGN_STYLE` at `project.yml settings.base` if you want xcconfig to drive style — xcodegen bakes it into project-level pbxproj at higher precedence than xcconfig. Use `$(inherited)` if you need an entry there at all.
-- For CLI `xcodebuild archive` to App Store: **use Manual signing with Apple Distribution identity, both set in xcconfig.** Automatic signing for CLI archive is a four-iteration trap (rc1 → rc4); Manual is one line of xcconfig and works on the first try.
-- Symptom "automatically signed for development, but a conflicting code signing identity Apple Distribution has been manually specified" on **every** signed target → check both layers: project.yml CODE_SIGN_STYLE pin (remove if present) AND xcconfig style (must be Manual, not Automatic).
+**Trade-off named:** App Manager key has wider blast radius than "manage profiles only" — Apple does not offer the fine-grained role. For a solo project, fine. In a multi-team org, isolate to a dedicated build-automation user.
 
-**Artifacts:**
-- PR (forthcoming): `fix/v02-rc4-signing-pathway`.
-- Skill update: new rc4 CRITICAL TRAP section + incident log row + updated Open Question. Confidence bumped to **High** (four independent rc burns, all on the same signing-pathway pattern, all fixed by Manual-in-xcconfig).
-- Doc update: `docs/dev/testflight-setup.md` Architecture summary now says "manual" not "automatic"; troubleshooting table replaces rc3 row with rc4-final row that names both layers.
-- Decision inbox: `richards-tf-rc4-signing-pathway.md` (D-RICHARDS-TF-10) — supersedes D-RICHARDS-TF-9 in part. Re-amplifies D-RICHARDS-TF-8 (PR-time Release-config probe) for the fourth time.
+**🪦 Reasoning lesson (the big one):** TF-12 failed because **I treated "no error logged for X" as "X succeeded."** Specifically, the rc6 log mentioned only iOS targets failing, and I built a whole "asymmetric Watch-pass / iOS-fail" diagnostic fingerprint on top of that — concluding the Watch path was minting profiles correctly. But `xcodebuild archive` has stop-at-first-error semantics: it aborts the moment any target fails. The Watch targets may have **never been reached**. I had zero positive evidence they succeeded. That entire line of reasoning was air.
 
-**Meta-observation (fourth iteration):** Every rc fix to date has been reasoned correctly *for the failure mode visible at the time*, and validated only by tag-and-pray. The real validation surface is `xcodebuild -showBuildSettings -configuration Release -sdk iphoneos | grep CODE_SIGN`, which I now run locally before every signing-related PR. Adding this assertion to PR CI (D-RICHARDS-TF-8) would catch the precedence regression class at PR time instead of burning rc tags. Four signal points in two days is well past anecdote; this should ship.
+**Durable rule for myself (not just signing):** When a tool fails fast / stops at first error, *absence of evidence is not evidence of absence*. Before claiming asymmetric behavior across pipeline stages, demand a log line that **affirmatively** confirms the supposedly-passing stage ran. If you can't point at it, you don't have evidence — you have a hypothesis dressed up as a fingerprint. This applies to xcodebuild, `swift build`, `ld`, `codesign`, test runners, CI pipelines, and most build systems. Add this to my pre-commit-decision checklist: "Am I treating silence as success?"
 
-### 2026-05-17: rc2 archive trap — xcodebuild CLI mis-parses `SETTING[sdk=...]=value`, and CLI-set `CODE_SIGN_IDENTITY` conflicts with `CODE_SIGN_STYLE=Automatic`
+**Secondary lesson:** When a diagnosis is unfalsifiable in practice (TF-12 asked Joe to revoke profiles that didn't exist, which would have "worked" by silently doing nothing, and rc7 would have still failed identically — leaving us no closer to truth), it's a tell that the model is under-constrained. The corrected diagnosis is falsifiable: Joe checks the role; if App Manager, my hypothesis is wrong and we move on.
 
-**Context:** PR #23 pinned `CODE_SIGN_IDENTITY="Apple Distribution"` plus `"CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution"` on the xcodebuild archive command line, fixing rc1's "no devices" error in principle. rc2 (run 25990326363) failed differently:
+**Decision:** D-RICHARDS-TF-13 (inbox), supersedes TF-12, refines TF-11 (which is still correct and still in force).
 
-```
-Build settings from command line:
-    CODE_SIGN_IDENTITY = iphoneos*]=Apple Distribution
-...
-error: ARRunnerWidgetsPhone has conflicting provisioning settings.
-ARRunnerWidgetsPhone is automatically signed, but code signing identity
-iphoneos*]=Apple Distribution has been manually specified.
-```
+**Artifacts:** Decision inbox file, SKILL.md (retraction of the rc6 "asymmetric fingerprint" + new corrected entry on API key role), this history entry. Citations: Apple roles reference + fastlane App Store Connect API permissions doc — both authoritative, both converge.
 
-**Two compounding bugs:**
+---
 
-1. **xcodebuild's command-line setting parser does not support `SETTING[sdk=...]=value` conditional syntax.** That syntax is xcconfig-only (and Build Settings editor). On the CLI, xcodebuild silently mis-parses `CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution` into setting name = `CODE_SIGN_IDENTITY` (somehow stripping the `[sdk=` prefix) and value = literally `iphoneos*]=Apple Distribution`. The bare `CODE_SIGN_IDENTITY="Apple Distribution"` that preceded it gets overwritten. No warning. No diagnostic.
-2. **CLI-set `CODE_SIGN_IDENTITY` + `CODE_SIGN_STYLE=Automatic` is treated as a "conflicting provisioning setting"** by Xcode 16, per target. Even if (1) hadn't garbled the value, the bare pin alone would have failed every signed target with the same error. The pin works fine when set in the project / xcconfig — but on the CLI it's always rejected as a manual override.
+### 2026-05-17T23:09Z — [RETRACTED] rc6 archive trap: `-allowProvisioningUpdates` reuses cached profile (DISCONFIRMED)
 
-**Resolution (PR #24, branch `fix/v02-rc2-archive-failure`):**
+**Root cause:** Apple's profile resolution for `-allowProvisioningUpdates` is **create-if-missing, reuse-if-present**. When an App Store distribution profile already exists for a bundle ID (cached server-side at Apple from earlier rc attempts), the flag reuses it as-is — it does NOT reconcile against the current `.entitlements`. So a capability added to the App ID *after* the profile was first minted is invisible to subsequent archives until the cached profile is revoked.
 
-Removed both `CODE_SIGN_IDENTITY` args from the `xcodebuild ... archive` invocation in `release-testflight.yml`. Instead, after `bootstrap-signing.sh` runs (which writes `Config/Signing.xcconfig` with `DEVELOPMENT_TEAM` + `CODE_SIGN_STYLE=Automatic`), the workflow appends:
+**Diagnostic fingerprint:** rc6 failed on the two iOS targets (`com.arrunner.phone`, `com.arrunner.phone.widgets`) but **succeeded** on the two Watch targets (same workflow, same API key, same flag, same capability fix). The asymmetry is the smoking gun: Watch targets had no pre-existing profile so the freshly-minted one inherited current capabilities; iOS targets had stale profiles from rc1–rc5 attempts that pre-dated D-RICHARDS-TF-11's capability fix.
 
-```
-CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
-CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
-```
+**Durable rule (high confidence):** "When archive errors are identical to rc5 (`requires a provisioning profile with the <Capability> feature`) *despite* the App ID having the capability enabled, the trap is a cached pre-existing distribution profile that Apple keeps reusing. Fix: revoke the affected profile(s) in the portal so `-allowProvisioningUpdates` is forced into the create-if-missing path on the next archive."
 
-xcconfig accepts the conditional syntax. Project-level xcconfig values are treated as project config, not manual overrides, so the "conflicting provisioning settings" check passes. Scoped by sdk so simulator builds and local Personal-Team device debugging (which uses `Apple Development`) are unaffected — the bootstrap script itself does NOT write these lines; only the release workflow appends them.
+**Trade-off named:** Manual portal revoke is one click per affected bundle ID; very easy this time but recurs on every future entitlement change. Alternatives (fastlane sigh --force in CI, fastlane match) trade automation for a fastlane dependency + extra moving parts. Acceptable for a solo project with quarterly-rate entitlement churn; revisit if it recurs more than once more.
 
-**Why this slipped past rc1's fix (meta-observation):**
+**Decision:** D-RICHARDS-TF-12 (inbox). No code change. Joe revokes the two iOS distribution profiles for `com.arrunner.phone` and `com.arrunner.phone.widgets` in the portal; I retag rc7. Watch profiles stay (they're correct).
 
-rc1's PR (#23) was reasoned through correctly: project default of `Apple Development` → needs to be `Apple Distribution` for archive → pin it on the CLI. But the fix was *only validated by reasoning*, not by an actual archive build, because the release workflow only fires on tag push and tag push is "the test". There is no Release-config probe build in PR CI. We're now two-for-two on first-real-archive-run learnings (rc1: wrong identity inherited; rc2: right identity, wrong place to set it). Decision inbox entry `richards-rc2-postmortem.md` proposes a Release-config archive smoke step in PR CI — second data point for the same recommendation already filed at rc1.
+**Refinement to D-RICHARDS-TF-11:** TF-11 said "just enable capability, then re-archive." That's necessary but not sufficient when a stale profile exists. The full rule is "enable capability AND revoke any pre-existing distribution profile for that bundle ID."
 
-**Durable rules added to skill:**
+**Artifacts:** Decision inbox file, SKILL.md (6th distinct trap class), this history entry. Web research cited: Stack Overflow + fastlane sigh `--force` semantics confirming reuse-by-default behavior.
 
-- Never set `CODE_SIGN_IDENTITY` on the xcodebuild command line with `CODE_SIGN_STYLE=Automatic` — always go through xcconfig.
-- `SETTING[sdk=...]=value` conditional syntax is xcconfig-only. xcodebuild's CLI parser will silently mis-parse it.
+---
 
-**Artifacts:**
-- PR #24 (branch `fix/v02-rc2-archive-failure`).
-- Skill update: new "⚠️ CRITICAL TRAP: xcodebuild CLI doesn't parse `SETTING[sdk=...]=value`" section + new incident-log row. Confidence bumped Medium → Medium-High.
-- Doc update: `docs/dev/testflight-setup.md` troubleshooting table — refined the "no devices" row to reference the xcconfig fix and added a new row for the "conflicting provisioning settings" symptom.
-- Decision inbox: `richards-rc2-postmortem.md` re-amplifying the Release-config probe-build proposal.
+### 2026-05-17T21:54Z — rc5 archive trap: provisioning profiles lack required capabilities when App IDs in developer portal don't declare them
 
-### 2026-05-16: Architecture & Best-Practices Audit (read-only)
+**Root cause:** `-allowProvisioningUpdates` + ASC API key mints Apple Distribution profiles on demand, but **only for capabilities already enabled on the App ID itself** in developer.apple.com.
 
-Delivered `.squad/audits/2026-05-16-richards-architecture.md`. Parallel-run with Laughlin and Weiss on their domains.
+**Durable rule (high confidence):** "Manual-signed CLI archive errors of the form `<Target> requires a provisioning profile with the <Capability> feature` mean the App ID in the developer portal does not have that capability enabled. Fix in the portal; do not touch the workflow."
 
-**Top 3 findings:**
-1. **`.github/copilot-instructions.md:5` is grossly stale** — declares repo "greenfield, no source code yet" while ~30 production files + 16 test files exist. Every new agent's first-read mental model is wrong. Highest-leverage, lowest-effort fix.
-2. **Toolchain pins ~12 months stale** — Xcode 16.4 / Swift 6.0 / macos-15. Xcode 17 + Swift 6.2 are GA. No CVE pressure yet but every month makes catch-up costlier. Recommend probe-PR bump in next 30 days.
-3. **`ActiveLookGlassesAdapterHardwareTests.swift` lives inside the production app target** behind `#if AR_RUNNER_HARDWARE_TESTS`. Compile-guarded so safe, but XCTest shipping in app source is a smell — will trip App Store static analysis eventually. Move to dedicated test target in `project.yml`.
+**Trade-off named:** App ID capability state lives outside the repo (invisible to code review). Mitigation: pre-flight runbook checklist: "before any rc tag, verify App ID capabilities match entitlements files."
 
-**ADR drift caught:**
-- **D8** technically only sanctions `@preconcurrency import` for the ActiveLook *vendor SDK*; we're using it for *CoreBluetooth* (system framework) at `ActiveLookGlassesAdapter.swift:5`. Justified (CB delegates aren't `Sendable`) but D8 wording should be amended. Filed as decision-inbox candidate? — minor enough to fold into a later D8 revision rather than a standalone inbox drop.
+**Decision:** D-RICHARDS-TF-11 (inbox). No code change — Joe enables capabilities in portal, then retags rc6.
 
-**Layering verdict:** ✅ ARRunnerCore is genuinely platform-pure (Foundation-only across 22 source files); Linux CI enforces it for free; ADR-001/D1/D2/D4 all hold.
+**Artifacts:** Decision inbox, SKILL.md update (5th distinct trap class, all with high confidence).
 
-**CodeQL coverage gap:** only `ARRunnerWatch` is built for analysis; Phone target's WCSession + UI unscanned. Cheap to fix.
+---
 
-**No code changes made** (read-only audit per task scope).
+### 2026-05-17 — rc4 archive trap: xcconfig identity + project-base `CODE_SIGN_STYLE=Automatic` creates conflict
 
-### 2026-05-16: Gitignored xcconfig + configFiles reference requires bootstrap in ALL xcodegen workflows
+**Root cause (dual bug):**
+1. CLI `xcodebuild archive + CODE_SIGN_STYLE=Automatic` always resolves identity to `Apple Development`, treating xcconfig's Distribution pin as conflicting manual override.
+2. xcodegen bakes `CODE_SIGN_STYLE = Automatic` into project-level pbxproj, **higher precedence than xcconfig**, so xcconfig Manual setting is silently ignored.
 
-**Pattern:** When `project.yml` references a gitignored xcconfig via `configFiles` (e.g., `Config/Signing.xcconfig`), `xcodegen generate` exits 1 with "Invalid config file" if that file is absent — regardless of whether the consuming build uses `CODE_SIGNING_ALLOWED=NO`. xcodegen validates file existence at parse time, before any xcodebuild flags are considered.
+**Durable rule (high confidence):** Use Manual signing with Apple Distribution identity, both in xcconfig. Automatic signing for CLI archive is a four-iteration trap (rc1→rc4); Manual works on the first try.
 
-**Rule (durable):** Every workflow that calls `xcodegen generate` must call `scripts/bootstrap-signing.sh` first — not just the release workflow. The script is idempotent: called with no `APPLE_TEAM_ID`, it creates a placeholder xcconfig with `DEVELOPMENT_TEAM =` (empty). For no-signing CI builds, the empty team ID is harmless.
+**Fix:** PR #26 — remove `CODE_SIGN_STYLE` from project.yml (set to `$(inherited)`), append `CODE_SIGN_STYLE = Manual` + Distribution identity to release xcconfig.
 
-**PR #21 incident:** `release-testflight.yml` bootstrapped correctly (needed real team ID from secrets). `ci-build.yml` and `codeql.yml` did not. All 4 macOS matrix builds + CodeQL went red. Linux `swift test` was unaffected (never calls xcodegen). Fixed in commit d8339d0 — added `Bootstrap signing xcconfig` step before `xcodegen generate` in both workflows.
+**Artifacts:** PR #26 (merged), SKILL.md update (4th distinct trap class), testflight-setup.md doc update.
 
-**Checklist:** When adding a new workflow that calls `xcodegen generate`:
-- Does `project.yml` have any `configFiles` references pointing to gitignored files?
-- If yes → add `Bootstrap signing xcconfig` step before `xcodegen generate`
+---
 
-**References:** Decision inbox: `richards-pr21-ci-fix.md`; Skill: `.squad/skills/ios-testflight-ci-via-actions/SKILL.md`
+### Summary of prior rc failures (rc1–rc3)
 
-### 2026-05-15: pbxproj target-membership "bug" was actually stale-generated-project (XcodeGen)
+| RC | Root Cause | Fix |
+|----|-----------|-----|
+| rc1 | CLI missing identity → Development default → "no devices" error | Add explicit identity on CLI |
+| rc2 | xcodebuild CLI doesn't support `SETTING[sdk=...]=value` conditional syntax | Move all signing settings to xcconfig |
+| rc3 | `CODE_SIGN_STYLE=Automatic` on CLI overrides xcconfig identity as "conflicting manual" on widget targets | Remove CLI style; keep identity + style in xcconfig |
 
-**Reported symptom:** `Cannot find 'GlassesTransportFactory' in scope` at `ARRunnerWatch/Views/WorkoutView.swift:11`. Coordinator diagnosed it as PR #9 having missed `GlassesTransportFactory.swift` and `ActiveLookGlassesAdapterHardwareTests.swift` from `AR-Runner.xcodeproj/project.pbxproj` target membership.
+---
 
-**Actual root cause:** This repo uses **XcodeGen**. `AR-Runner.xcodeproj/` is gitignored (see `.gitignore`: `*.xcodeproj/`), regenerated from `project.yml`. The Watch target's `sources: [path: ARRunnerWatch]` is **recursive** — every `.swift` under that tree is auto-included. Both "missing" files exist on disk and appear immediately after `xcodegen generate`. Joe's local pbxproj was simply stale (generated before PR #9 landed those files).
+## Key Artifacts & Decisions
 
-**Unblock for Joe:** `xcodegen generate` from repo root; re-open Xcode.
+**Decisions made (all in decisions.md):**
+- D-RICHARDS-TF-8: PR-time Release-config probe (xcodebuild -showBuildSettings sanity check)
+- D-RICHARDS-TF-9: Remove signing settings from CLI; xcconfig is single source of truth
+- D-RICHARDS-TF-10: Manual signing + xcconfig fix (rc4) → pr #26
+- D-RICHARDS-TF-11: Portal App ID capabilities must match entitlements (rc5 → no code fix)
+- D-RICHARDS-TF-12: [RETRACTED — disconfirmed by empty portal Profile list] Originally posited stale cached profiles; reasoning relied on a false "Watch targets succeeded" inference. Superseded by TF-13.
+- D-RICHARDS-TF-13: rc6 corrected — API key role insufficient (likely Developer; needs App Manager) → no code fix, key rotation in App Store Connect
+- D-RICHARDS-TF-13: [RETRACTED — Joe's key is App Manager, role is sufficient]
+- D-RICHARDS-TF-14: rc7 — "requires a provisioning profile with the <X> feature" is a 3-way ambiguous error; one-click portal capability probe with contingent profile-bytes fallback; no code change pending probe result
 
-**Recurring failure-mode pattern (durable learning):**
-- Symptom: "Cannot find X in scope" for a Swift type whose file demonstrably exists.
-- Diagnosis trap: looks identical to a missed Xcode-target-membership bug (the classic Apple-developer footgun in hand-managed `.xcodeproj` files). In a hand-edited project, it would be — and the suggested fix (add to PBXBuildFile / PBXFileReference / PBXGroup / PBXSourcesBuildPhase) is correct.
-- In **this** repo, it's never that. pbxproj is generated. The fix is always `xcodegen generate`.
-- The generated-project/hand-edited-project distinction needs to be the **first** question whenever an Xcode target-membership bug is suspected. `git check-ignore AR-Runner.xcodeproj/project.pbxproj` answers it in one shot.
+**Skills (SKILL.md):**
+- `.squad/skills/ios-testflight-ci-via-actions/SKILL.md` — comprehensive trap list, all traps tied to specific rc incidents with high confidence
 
-**Artifacts produced:**
-- New skill: `.squad/skills/xcodegen-stale-generated-project/SKILL.md` — failure mode + 30-second triage.
-- Decision inbox: `.squad/decisions/inbox/richards-pbxproj-target-membership-checklist.md` — proposes triage-first rule for any "missing symbol / target membership" report.
+**Docs:**
+- `docs/dev/testflight-setup.md` — updated troubleshooting table for all rc failure modes
 
-**No code/pbxproj edits made.** pbxproj is gitignored — committing it would create a stale snapshot that fights XcodeGen on every regen.
+---
 
-### 2026-05-17 — First real TestFlight run: archive failed on automatic signing identity
+## Operational Notes for Future
 
-Joe tagged `v0.2.0-rc1` (commit `da7f129`); the release-testflight workflow I authored in PR #21 ran for the first time against real secrets and failed at the `Archive (xcodebuild)` step.
+1. **Before tagging any rc:** run `-showBuildSettings` check for Release config, and manually verify App ID capabilities in portal match current entitlements files.
+2. **When adding new entitlements:** update portal App ID capabilities immediately; do NOT defer to rc burn-down.
+3. **TestFlight workflow validation:** no more tag-and-pray — automate the pre-flight checks into PR CI or release checklist.
 
-**Symptom (run 25989849479):**
-```
-error: Communication with Apple failed: Your team has no devices from which to
-       generate a provisioning profile. (in target 'ARRunnerPhone')
-error: No profiles for 'com.arrunner.phone' were found: Xcode couldn't find any
-       iOS App Development provisioning profiles matching 'com.arrunner.phone'.
-```
-
-The keychain step had already logged `1 valid identities found — Apple Distribution: JOSEPH LOUIS KRILOV (***)` — so the cert was correct. The `-configuration Release` flag was being honored. Yet Xcode was asking for an **iOS App Development** profile.
-
-**Root cause:** Xcode 16 quirk. With `CODE_SIGN_STYLE=Automatic` invoked from CLI via `xcodebuild ... archive` (not Xcode.app's GUI Product → Archive), automatic signing honors the build setting `CODE_SIGN_IDENTITY` literally. xcodegen-generated projects don't set this, so it defaults to Xcode's project template default of `"Apple Development"`. `-allowProvisioningUpdates` then dutifully tries to mint a *development* profile — which requires the team to have registered devices. CI runners don't, so it fails with the misleading "no devices" message.
-
-This is a known foot-gun documented in many Stack Overflow threads but I missed it when authoring PR #21. My TestFlight setup doc anticipated several portal/secret failure modes but not this build-setting one.
-
-**Fix (PR `fix/v02-rc1-archive-failure`):** explicit override on the archive command:
-```bash
-xcodebuild ... archive \
-  CODE_SIGN_STYLE=Automatic \
-  CODE_SIGN_IDENTITY="Apple Distribution" \
-  "CODE_SIGN_IDENTITY[sdk=iphoneos*]=Apple Distribution" \
-  ...
-```
-Both forms are needed — the bare `CODE_SIGN_IDENTITY` covers the generic case; the sdk-scoped one wins on iOS device builds when both are present in build settings.
-
-**Decision implication (deferred to inbox):** should PR CI probe-build the Release configuration with signing disabled to catch Release-only build errors before they manifest as broken TestFlight runs? (Current ci-build.yml only builds Debug for simulator. Release config is *almost* the same code but optimizations differ, and warnings-as-errors flips behavior under `-O`.) See `decisions/inbox/richards-first-tf-run-postmortem.md`.
-
-**Doc fix:** `docs/dev/testflight-setup.md` troubleshooting table previously misdiagnosed `No profiles ... were found` as "first-run timing, just re-run". That row is now split: the "no devices" variant points at the CODE_SIGN_IDENTITY override; the bare variant keeps the re-run advice.
-
-**Skill update:** `.squad/skills/ios-testflight-ci-via-actions/SKILL.md` — added the failure pattern + fix to the trap list. Confidence stays Medium until rc2 actually uploads green; that's the empirical proof, not my reasoning about it.
+---
 
 ## Archive
 
-### 2026-05-17: v0.2.0-rc3 signing fix — CLI CODE_SIGN_STYLE shadow effect
+See `history-archive-2026-05-17.md` for detailed incident logs from rc1–rc5 (5 distinct root causes, each with full xcodebuild output analysis and trade-off reasoning).
 
-**Root cause (rc3, run 25991312727):** `CODE_SIGN_STYLE=Automatic` on the `xcodebuild archive` CLI has highest precedence. This made Xcode treat the xcconfig's `CODE_SIGN_IDENTITY=Apple Distribution` (project-config level) as a "conflicting manual override" on extension targets (ARRunnerWidgetsPhone), and the main target (ARRunnerPhone) fell through to the Development-profile pathway ("no devices" error).
+### 2026-05-18T00:08Z — rc8: TF-14 probe paid off; cause #3 confirmed; surgical workflow fix shipped.
 
-**Fix:** Removed `CODE_SIGN_STYLE=Automatic` from the archive CLI entirely. Both CODE_SIGN_STYLE and CODE_SIGN_IDENTITY now live exclusively in Config/Signing.xcconfig at the same precedence level. Xcode treats them as consistent project configuration. Also discovered xcodegen injects `CODE_SIGN_IDENTITY = "iPhone Developer"` at the **target level** for iOS app targets, overriding the project-level xcconfig — fixed by setting `CODE_SIGN_IDENTITY: $(inherited)` in project.yml for ARRunnerPhone.
+**What happened:** Joe ran the TF-14 contingent probe — decoded the AR-Runner `.mobileprovision` with `security cms -D -i`. All four profiles came back clean: entitlements present (HealthKit, App Groups), `application-identifier` correct, `IsXcodeManaged: false`, `DeveloperCertificates[0]` SHA1 matching the single Distribution cert in the keychain `.p12`. Axes 1 and 2 of the 3-way-error model both returned green → cause #3 (no profile on disk) is the only remaining preimage. This is the first time in the TF-11 → TF-15 chain that a diagnosis was *driven by* a probe rather than retrofitted to one.
 
-**Durable learning — three rc failures confirm one rule:** Never put `CODE_SIGN_STYLE` or `CODE_SIGN_IDENTITY` on the xcodebuild CLI for archive. xcconfig is the only safe location. The CLI's highest-precedence semantics create unavoidable conflicts with project-level signing configuration. Specifically:
-- rc1: missing identity → Development default → "no devices"
-- rc2: CLI `[sdk=...]` mis-parsed by xcodebuild CLI parser
-- rc3: CLI CODE_SIGN_STYLE at override level → xcconfig identity treated as conflict
+**Root cause (locked in by evidence, not inferred):** `xcodebuild -allowProvisioningUpdates` does NOT install pre-existing manual profiles onto the runner. It only auto-mints/updates Xcode-managed profiles. With manual profiles, the runner's `~/Library/MobileDevice/Provisioning Profiles/` is empty, candidate-set is empty, and xcodebuild emits the same generic "requires a profile with X feature" string that gets confused for App-ID or cert issues. This is cause #3 of the 3-way-error trap I documented in TF-14.
 
-**Key file paths:** `.github/workflows/release-testflight.yml` (archive step), `scripts/bootstrap-signing.sh` (base xcconfig), `Config/Signing.xcconfig` (gitignored, written at CI time), `project.yml` (configFiles reference).
+**Fix (rc8):** Added one step to `release-testflight.yml` between API key install and xcconfig write: `fastlane sigh download_all` driven by the existing ASC API key (assembled into a JSON file with `jq`). sigh auto-installs the downloaded profiles into the MobileDevice directory. Handles all four targets uniformly — no per-target `PROVISIONING_PROFILE_SPECIFIER` plumbing (Option B), which would have been fragile for the embedded Watch app inside the iOS archive.
 
-**Decision:** D-RICHARDS-TF-9 (proposed, `.squad/decisions/inbox/richards-tf-rc3-signing-fix.md`).
-**Skill updated:** `.squad/skills/ios-testflight-ci-via-actions/SKILL.md` — new trap section, incident log, confidence bump.
+**Trade-off named:** Option A adds a runtime dependency on fastlane (preinstalled on macos-15, with a `gem install` fallback). Option B would add no dependency but couples per-target wiring to bundle-ID conventions and doesn't reliably propagate to embedded targets. Chose A for uniform coverage and well-tested fast-fail behavior.
 
-## Archive
+**Meta-lesson (the one that finally stuck):** The TF-14 history entry said "don't propose a cause, probe." TF-15 is the first decision in this chain where I actually waited for the probe before naming the mechanism. The probe took five minutes; rc1→rc7 spent dozens of CI runs and four wrong decisions because I kept guessing. **The probe is always cheaper than the next rc.**
 
-See `history-archive.md` for learnings from 2026-05-14 and early 2026-05-15 (GitHub remote setup, CI/simulator architecture, Swift 6 toolchain, system architecture ADRs, parallel workstream coordination, XcodeGen stale-project incident).
-
+**Artifacts:** branch `fix/v02-rc8-install-profiles`, PR (TBD URL), decision inbox `richards-tf-rc8-install-profiles.md`, SKILL.md (new trap section: "`-allowProvisioningUpdates` does NOT install manual profiles").

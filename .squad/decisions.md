@@ -1,6 +1,7 @@
 # Squad Decisions
 
 ## Active Decisions (Locked — D1–D9)
+## Active Decisions (Locked — D1–D9)
 
 ### 2026-05-14T15:12:57-04:00: AR-Runner v0.1 architecture decisions (D1–D9)
 
@@ -1623,3 +1624,399 @@ Downstream display: Weiss's `7dd784e` already extended `WorkoutViewModel.apply(m
 - Did NOT touch `MetricKind` enum — Amber-owned, shipped 9571e23.
 - Did NOT fix the latent optional-pattern-match in the substrate switch — out of scope per Joe.
 
+# D-RICHARDS-TF-9 — Remove all signing build settings from xcodebuild CLI; xcconfig is single source of truth
+
+**Date:** 2026-05-17
+**Author:** Richards
+**Status:** Proposed
+**Supersedes / refines:** D-RICHARDS-TF-8 remains valid (probe-build is orthogonal). This decision completes the signing-pathway fix that D-RICHARDS-TF-1 through TF-7 established and rc1/rc2/rc3 exposed gaps in.
+
+## Context
+
+Three consecutive rc failures (rc1, rc2, rc3) all trace to the same root: signing-related build settings placed on the `xcodebuild archive` command line instead of in the project-level xcconfig.
+
+| RC | CLI setting | Failure |
+|---|---|---|
+| rc1 | (none — inherited default `Apple Development`) | "no devices" — automatic signing tried Development profile path |
+| rc2 | `CODE_SIGN_IDENTITY="Apple Distribution"` + `"CODE_SIGN_IDENTITY[sdk=iphoneos*]=..."` | xcodebuild mis-parsed `[sdk=...]` conditional; bare identity flagged as "manually specified" |
+| rc3 | `CODE_SIGN_STYLE=Automatic` (with identity moved to xcconfig) | CLI override elevated style to highest precedence, making xcconfig identity appear as conflicting manual override on widget targets; main target fell back to Development path |
+
+## Decision
+
+**All signing-related build settings (`CODE_SIGN_STYLE`, `CODE_SIGN_IDENTITY`) live exclusively in `Config/Signing.xcconfig`.** They are never passed on the `xcodebuild` command line.
+
+The only signing-adjacent setting allowed on the CLI is `DEVELOPMENT_TEAM` (a runtime secret, not a mode selector).
+
+The release workflow appends Distribution identity pins to the xcconfig after `bootstrap-signing.sh`:
+```
+CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+CODE_SIGN_IDENTITY[sdk=watchos*] = Apple Distribution
+```
+
+**Additional fix:** xcodegen injects `CODE_SIGN_IDENTITY = "iPhone Developer"` at the target level for iOS application targets. This overrides the project-level xcconfig (target settings > project xcconfig in Xcode's precedence). Fixed by setting `CODE_SIGN_IDENTITY: $(inherited)` in `project.yml` for ARRunnerPhone, which defers to the xcconfig.
+
+## Options considered
+
+| Option | Verdict | Trade-off |
+|---|---|---|
+| **A: Manual signing for archive** (`CODE_SIGN_STYLE=Manual` on CLI + per-target profile specifiers) | Rejected | Defeats `-allowProvisioningUpdates` profile creation; requires portal pre-provisioning for every bundle ID; adds maintenance when adding new targets/extensions. Overkill given that xcconfig-only automatic signing should work. |
+| **B: xcconfig-only automatic signing** (remove `CODE_SIGN_STYLE` from CLI, keep xcconfig pins) | **Chosen** | Both CODE_SIGN_STYLE and CODE_SIGN_IDENTITY at project-config level — consistent precedence, no conflict. `-allowProvisioningUpdates` creates Distribution profiles via ASC API. Trade-off: first archive after adding a new bundle ID may take 1-2 extra minutes while Xcode creates the profile. |
+| **C: Keep automatic signing, override everything on CLI** | Rejected | xcodebuild's CLI parser doesn't support `[sdk=...]` conditionals, and any CLI identity conflicts with CLI `CODE_SIGN_STYLE=Automatic`. Three rc failures prove this approach is fundamentally broken. |
+
+## Consequences
+
+1. `release-testflight.yml` archive step passes `DEVELOPMENT_TEAM`, `MARKETING_VERSION`, `CURRENT_PROJECT_VERSION`, and `OTHER_CODE_SIGN_FLAGS` on CLI — nothing else signing-related.
+2. Distribution profiles for all 4 bundle IDs must exist in the portal OR be mintable by the ASC API key (App Manager role).
+3. Local dev is unaffected — `bootstrap-signing.sh` writes `CODE_SIGN_STYLE = Automatic` with no identity pin; Xcode.app uses the developer's personal Apple Development cert.
+
+## Owner if accepted
+
+Richards (Lead / Architect)
+
+### D-RICHARDS-TF-11: rc5 archive fails on portal-side App ID capabilities — fix is portal action, not code (2026-05-17)
+
+**Context.** v0.2.0-rc5 (run [26004285341](https://github.com/jkrilov/AR-Runner/actions/runs/26004285341)) confirmed the rc4 manual-signing fix worked: no more "automatically signed for development" conflict. Archive now fails one layer deeper, with two errors specific to provisioning-profile capability content:
+
+> `"ARRunnerWidgetsPhone" requires a provisioning profile with the App Groups feature. Select a provisioning profile in the Signing & Capabilities editor.`
+>
+> `"ARRunnerPhone" requires a provisioning profile with the App Groups and HealthKit features. Select a provisioning profile in the Signing & Capabilities editor.`
+
+The entitlements in the repo are correct and unambiguous:
+
+| Target | Bundle ID | Entitlements declared |
+|---|---|---|
+| `ARRunnerPhone` | `com.arrunner.phone` | App Groups (`group.com.arrunner.shared`) + HealthKit |
+| `ARRunnerWidgetsPhone` | `com.arrunner.phone.widgets` | App Groups (`group.com.arrunner.shared`) |
+
+`Config/ARRunnerPhone.entitlements` declares both keys; `Config/ARRunnerWidgetsPhone.entitlements` declares App Groups. `project.yml` `ARRunnerPhone-Info.plist` has both `NSHealthShareUsageDescription` and `NSHealthUpdateUsageDescription`. Nothing on the repo side is missing.
+
+**Root cause (portal-side).** `-allowProvisioningUpdates` + the ASC API key can mint an Apple Distribution provisioning profile on demand, **but only for capabilities already enabled on the App ID itself in the Apple Developer portal.** The error message is Xcode's way of saying "the profile I just minted doesn't satisfy your entitlements file because the App ID doesn't declare those capabilities." This is not something the CI can fix — App ID capability registration is a one-time portal action by an Account Holder / Admin.
+
+**Decision: Path (a) — Joe enables capabilities on the App IDs in the developer portal. No code change. Retag rc6 after confirmation.**
+
+Considered and rejected:
+
+- **Path (b)** — pass `PROVISIONING_PROFILE_SPECIFIER` per target with hand-created profiles. Rejected: requires Joe to do portal work *and* a code change, couples the workflow to profile names, and breaks the ergonomic of `-allowProvisioningUpdates` minting profiles on demand. Reconsider only if path (a) reveals a portal-side blocker (e.g., HealthKit requires extra approval on this team).
+- **Path (c)** — adopt fastlane `match`. Rejected per scope discipline: it's a larger architectural commitment (new dependency, private profiles repo, new secret rotation story) that would only be justified if (a) and (b) both failed. They haven't.
+
+**Trade-off named.** Path (a) puts the source of truth for capability registration *outside* the repo — in the developer portal — which is invisible to code review and CI assertions. The mitigation is the runbook entry below (and SKILL.md update) that names this as a class of failure and tells future-us exactly which portal pages to check first.
+
+**Required portal actions (for Joe — Account Holder).**
+
+Go to <https://developer.apple.com/account/resources/identifiers/list> on the AR-Runner team and:
+
+1. **App Group** — Identifiers → "App Groups" filter → confirm `group.com.arrunner.shared` exists. If not, create it (name: `AR-Runner Shared`, identifier: `group.com.arrunner.shared`).
+2. **`com.arrunner.phone`** — open the App ID → enable **App Groups** capability → "Edit" → check `group.com.arrunner.shared` → Continue. Then enable **HealthKit** capability → Continue. Save.
+3. **`com.arrunner.phone.widgets`** — open the App ID → enable **App Groups** capability → "Edit" → check `group.com.arrunner.shared` → Continue. Save.
+4. *(Optional sanity, not required for this iteration)* — repeat the App Groups enable for the watchOS App IDs `com.arrunner.phone.watchkitapp` (App Groups + HealthKit) and `com.arrunner.phone.watchkitapp.widgets` (App Groups). The rc5 archive only signs the iOS scheme so they're not blocking, but they will be when the watch scheme starts shipping.
+
+No need to manually create or download provisioning profiles. Once the App IDs declare the capabilities, `-allowProvisioningUpdates` + the ASC API key will mint matching Apple Distribution profiles on the next archive run.
+
+**Validation plan.** After Joe confirms portal state, retag `v0.2.0-rc6` from `main`. Expected outcome: archive succeeds, IPA exports, altool upload reaches App Store Connect. If it still fails, capture the exact error and revisit — likely either a HealthKit approval requirement on the team or a stale cached profile, both of which have known fixes that do not require code changes.
+
+**Supersedes:** none. **Extends:** D-RICHARDS-TF-10 (rc4 manual-signing fix); without that fix this error class would have been invisible behind the earlier identity conflict.
+
+**Re-amplifies:** D-RICHARDS-TF-8 (PR-time Release-config probe). A `-showBuildSettings` probe wouldn't have caught this one — portal capability state is genuinely external — but a documented "before-rc-tag" runbook step ("confirm App ID capabilities match entitlements files") would have. Adding that to the TestFlight runbook.
+
+— Richards, 2026-05-17T21:54Z
+---
+
+## D-RICHARDS-TF-12 — rc6 stale-profile-reuse: `-allowProvisioningUpdates` does not re-mint existing profiles after a capability is added to the App ID
+
+**Date:** 2026-05-17T23:09Z
+**Author:** Richards (Lead / Architect)
+**Status:** Proposed — portal action required from Joe; no code change
+**Supersedes (partially):** D-RICHARDS-TF-11 ("portal capability fix is sufficient" — true but incomplete; this decision adds the missing step)
+**Context tag:** TestFlight CI hardening — rc6 (run 26005442467)
+
+### Context
+
+After D-RICHARDS-TF-11, Joe enabled the missing capabilities on all four App IDs in the Apple Developer portal:
+
+- `com.arrunner.phone` → App Groups + HealthKit ✅
+- `com.arrunner.phone.widgets` → App Groups ✅
+- `com.arrunner.phone.watchkitapp` → App Groups + HealthKit ✅
+- `com.arrunner.phone.watchkitapp.widgets` → App Groups ✅
+
+He retagged `v0.2.0-rc6` (no code change). Archive failed with the **identical** two errors as rc5:
+
+```
+error: "ARRunnerPhone" requires a provisioning profile with the App Groups and HealthKit features.
+error: "ARRunnerWidgetsPhone" requires a provisioning profile with the App Groups feature.
+```
+
+Critically: **the two Watch targets did not error.** Same workflow, same API key, same `-allowProvisioningUpdates`, but only the iOS targets failed.
+
+### Root cause (confidence: high)
+
+`xcodebuild -allowProvisioningUpdates` resolves a provisioning profile for each signed target by querying App Store Connect for an *existing* App Store distribution profile matching the bundle ID + team + cert. If one exists, **it is reused as-is.** Apple does not reconcile the existing profile's entitlements against the current target's `.entitlements` file. A new profile is only minted when no matching profile exists at all.
+
+During rc1–rc5 we burned multiple archive attempts. Each successful "signing-resolution" step (rc4 onwards, after Manual signing was wired up correctly) caused Apple to mint and persist an "iOS App Store" / "Apple Distribution" profile for `com.arrunner.phone` and `com.arrunner.phone.widgets` **before** the App Groups + HealthKit capabilities were enabled on those App IDs. Those profiles are now cached server-side at Apple. When rc6 ran:
+
+- iOS targets → matching profile found → reused → lacks App Groups/HealthKit → archive rejects it. ❌
+- Watch targets → **no pre-existing profile** (Watch-target signing first reached this code path only after the rc5 capability fix) → freshly minted profile inherits current App ID capabilities → archive accepts. ✅
+
+The asymmetric pass/fail by target type is the diagnostic fingerprint and disconfirms hypotheses (b) API-key scope (would fail all four targets equally), (c) `-allowProvisioningUpdates` never re-mints with new entitlements (it does — for first mints — as the Watch targets prove), and (d) Apple propagation delay (hours have passed).
+
+### Web research corroboration
+
+1. **Stack Overflow / community guidance (multiple sources):** "`xcodebuild -allowProvisioningUpdates` will not re-mint your provisioning profile unless… the profile itself is regenerated. Apple sometimes doesn't allow certain changes to be made to existing profiles; instead, the profile must be deleted and recreated." Recommended fix: delete the profile in the Developer Portal and let the tooling mint a fresh one, or run `fastlane sigh --force`. (Cited via web search 2026-05-17.)
+2. **Fastlane `sigh` docs / behavior:** the explicit `--force` flag exists precisely because the default path is to reuse existing matching profiles. `sigh --force` deletes then recreates. The fact that this flag was added to fastlane is itself evidence that the underlying Apple API reuses-by-default, including via `-allowProvisioningUpdates`.
+3. **App Store Connect API key role:** minimum role for provisioning operations is **Developer**; App Manager and Admin also suffice. Marketing and Access roles cannot mint profiles. (Confirmed via Apple's API key documentation.) Joe's key is clearly above the floor — it has minted the four Watch-side profiles and the original iOS profiles already.
+
+### Decision
+
+**Portal action by Joe — three steps, in order:**
+
+1. Open <https://developer.apple.com/account/resources/profiles/list>.
+2. Filter to **Distribution** profiles. **Revoke (delete)** the two profiles matching:
+   - `com.arrunner.phone` (any "iOS App Store" / "Apple Distribution" profile bound to this bundle ID — there may be one or two; revoke all)
+   - `com.arrunner.phone.widgets` (same — revoke all)
+   - **Do NOT revoke** the two Watch profiles (`...watchkitapp` and `...watchkitapp.widgets`) — those are minted correctly and reusing them is fine.
+3. Confirm in the same UI that the App ID capability state from D-RICHARDS-TF-11 is still intact (App Groups + HealthKit on the two iOS App IDs, App Groups on the widget App ID).
+
+Then I retag `v0.2.0-rc7` from `main` (no code change). On rc7, `-allowProvisioningUpdates` will see no matching profile for the two iOS bundle IDs and mint fresh ones that inherit the current (full) App ID capabilities.
+
+**No code/CI change in this decision.** A future-proofing CI change (e.g., calling `fastlane sigh --force` per bundle ID before archive whenever an entitlements file changes) is deferred — it adds a fastlane dependency for a problem that should occur at most once per entitlement change. See "Follow-up" below for the lightweight alternative.
+
+### Trade-off named
+
+| Option | Pros | Cons |
+|---|---|---|
+| **Portal revoke + retag** (chosen) | Zero code change; uses existing `-allowProvisioningUpdates` plumbing; surgical | Manual portal step; same trap recurs if a future entitlement is added |
+| Switch to `fastlane sigh --force` in CI | Automated re-mint on every entitlement change | Adds fastlane to runner; another moving part to maintain; per-bundle-ID invocation needed for the 4 targets; couples release pipeline to fastlane gem versioning |
+| Switch to `fastlane match` | Profiles version-controlled in a private repo (full reproducibility) | Requires a second private repo + match-encryption key as a new secret; significant setup; over-engineering for a 4-bundle-ID solo project right now |
+| Add `PROVISIONING_PROFILE_SPECIFIER` to xcconfig + manually download profiles | Explicit, deterministic | Couples CI to portal profile names; every cert rotation breaks it; loses the "automation" of `-allowProvisioningUpdates` |
+
+I'm choosing the surgical portal action because the trap only triggers when entitlements are mutated mid-stream, which should be a quarterly event at most. If it recurs more than once more, we re-open the trade-off and pick fastlane sigh.
+
+### Why this didn't surface in D-RICHARDS-TF-11
+
+The rc5 diagnosis correctly identified that App ID capability state was misaligned with entitlements. It implicitly assumed `-allowProvisioningUpdates` would re-mint on next archive because that's how the flag is colloquially described in Apple's release notes. The flag's actual semantics — "create-if-missing, reuse-if-present" — were not researched. The Watch targets propagating correctly (per the rc6 error pattern) is the empirical test that proves the create-if-missing path works; the iOS targets' failure is the empirical proof of the reuse-if-present trap.
+
+### Follow-up (not in this decision; tracked as TF-13 candidate)
+
+- Add a pre-flight script `scripts/preflight-entitlements-vs-portal.sh` that uses the ASC API to fetch each App ID's capability set and diff it against `Config/*.entitlements`. Run as a non-blocking PR CI job and as a manual `gh workflow run preflight.yml` before tagging an rc.
+- When (not if) we add a new entitlement, the runbook must include "revoke any pre-existing distribution profiles for the affected bundle IDs in the portal" as Step 0 of the rc tag. Update `docs/dev/testflight-setup.md` accordingly (Scribe or Amber, on next docs sweep).
+
+### Confidence
+
+**High.** The asymmetric Watch-pass / iOS-fail pattern is a textbook fingerprint for the "reuse cached profile" path. Web-research corroboration is consistent across multiple independent sources (Apple docs, Stack Overflow, fastlane documentation). The fix is reversible (worst case: re-tag rc8 with `fastlane sigh --force` if revoke-and-mint doesn't work).
+
+— Richards, 2026-05-17T23:09Z
+## D-RICHARDS-TF-13 — rc6 corrected diagnosis: most-likely root cause is App Store Connect API key role insufficient for Distribution profile minting (refines & supersedes TF-12)
+
+**Date:** 2026-05-17T23:16Z
+**Author:** Richards (Lead / Architect)
+**Status:** Proposed — Joe action: verify API key role in App Store Connect; rotate key if role is "Developer"
+**Supersedes:** D-RICHARDS-TF-12 (the stale-cached-profile diagnosis was wrong — see "What TF-12 got wrong" below)
+**Refines:** D-RICHARDS-TF-11 (App ID capabilities — necessary, still correct, still in force)
+**Context tag:** TestFlight CI hardening — rc6 (run 26005442467)
+
+---
+
+### What TF-12 got wrong (acknowledged up front)
+
+TF-12 claimed two things that disconfirmation by user evidence has now invalidated:
+
+1. **"Stale Distribution profiles are cached server-side at App Store Connect for `com.arrunner.phone` and `com.arrunner.phone.widgets`, and `-allowProvisioningUpdates` is reusing them."**
+   - **Disconfirmed.** Joe checked <https://developer.apple.com/account/resources/profiles/list> with the correct team selected (only one team on the account). The profile list is **empty**. There are no stale profiles to revoke. The reuse-if-present mechanism is real, but in this case there is nothing being reused — the trap fires elsewhere.
+
+2. **"Watch targets succeeded with fresh mints — the asymmetry is the smoking-gun fingerprint for cached-profile reuse."**
+   - **Reasoning flaw.** The rc6 error log mentions only the two iOS targets, and I treated "absence of an error message about Watch targets" as "Watch targets succeeded." That was an unwarranted inferential leap: `xcodebuild` aborts at the first failed target, so the absence of a Watch-target error is equally consistent with "Watch was never reached." I had **zero positive evidence** that the Watch path succeeded. The "asymmetric target failure" diagnostic fingerprint I documented in SKILL.md was built on this flawed reading and has been removed.
+
+Lesson: do not treat "no error logged" as "success" when the command-runner has stop-at-first-error semantics. This lesson is captured in `agents/richards/history.md`.
+
+---
+
+### Updated context (corrected)
+
+- All four App IDs have the required capabilities enabled in the developer portal (D-RICHARDS-TF-11 was correctly applied, then extended for the watchKit App IDs):
+  - `com.arrunner.phone` → App Groups + HealthKit ✅
+  - `com.arrunner.phone.widgets` → App Groups ✅
+  - `com.arrunner.phone.watchkitapp` → App Groups + HealthKit ✅
+  - `com.arrunner.phone.watchkitapp.widgets` → App Groups ✅
+- Apple Developer Portal **Profile** list (correct team selected): **empty** — no Distribution profiles exist for any of the four bundle IDs.
+- rc6 (run 26005442467) failed during `xcodebuild archive` with:
+  ```
+  error: "ARRunnerPhone" requires a provisioning profile with the App Groups and HealthKit features.
+  error: "ARRunnerWidgetsPhone" requires a provisioning profile with the App Groups feature.
+  ```
+- The workflow uses `xcodebuild -allowProvisioningUpdates` with an App Store Connect API key passed via `-authenticationKeyID` / `-authenticationKeyIssuerID` / `-authenticationKeyPath` (.p8). See `.github/workflows/release-testflight.yml` lines 154–174 (key install) and 293–307 (archive invocation).
+
+So: capabilities are in place, but profiles do not exist, and `-allowProvisioningUpdates` is failing to mint them. The archive error is a downstream symptom — Xcode wants a profile, none exists, and the API call that should create one is not succeeding.
+
+---
+
+### Most likely root cause (high confidence)
+
+**The App Store Connect API key currently stored as `APP_STORE_CONNECT_API_KEY_ID` does not have a sufficient role to *create* Distribution provisioning profiles via the App Store Connect API.**
+
+Per Apple's role-based access docs and convergent third-party sources (fastlane docs + multiple high-upvote answers on the same failure mode):
+
+| Role on the API key | Can read profiles | Can **create** Distribution profile |
+|---|---|---|
+| Developer | ✅ | ❌ |
+| App Manager | ✅ | ✅ |
+| Admin | ✅ | ✅ |
+
+`-allowProvisioningUpdates` calls the same App Store Connect REST endpoints used by `fastlane sigh` / `fastlane match`. A **Developer-role** key can read existing profiles but the `POST .../profiles` call to create one is rejected. xcodebuild does not surface the REST-layer 403 as a useful error — it simply falls through to the generic "requires a provisioning profile with the <Capability> feature" message because, from its perspective, no profile satisfying the entitlements is available.
+
+This is consistent with **every** piece of evidence we have:
+
+- Empty profile list (Apple never created one because the API call was denied).
+- Capabilities verified correct (rules out TF-11 recurrence).
+- Identical "requires a profile with X" error after TF-11 fix (consistent with "profile minting never happens" — the *same* failure mode you'd see with a totally missing API key, just one layer in).
+- The fact that *no* profiles exist for *any* of the four bundle IDs (not just the iOS ones) — strongly suggests the key has never successfully minted anything, ever.
+- Fastlane's documentation explicitly states the key must be **App Manager** for creation; that documentation exists because this exact failure has burned the fastlane community repeatedly.
+
+The TF-12 "asymmetric Watch vs. iOS" claim that pointed me at cached profiles was not real (see above), so the symmetry of the failure (nothing minted for *any* bundle ID) supports this diagnosis cleanly.
+
+---
+
+### Trade-off named
+
+The cheap, correct fix is to rotate the API key to one with the App Manager role. The trade-off is **blast radius** — App Manager keys can also manage app metadata, TestFlight builds, internal testers, etc. For a solo project this is fine; in a multi-team org you'd want a separate "build automation" user (also with App Manager) so the key's scope is at least nominally narrower. Apple does not offer a finer-grained "manage profiles only" role; you take App Manager or you don't mint.
+
+Alternative — keep a Developer key and pre-create profiles manually (Option B below) — sidesteps the role requirement but resurrects the original problem the workflow was designed to avoid: profiles drifting from entitlements over time. Acceptable as a one-shot bootstrap; bad as a long-term posture.
+
+Switching to fastlane match (Option C) trades one secret for several (match-encryption-key, profile-storage-repo URL, an extra cert) and requires a second private repo. Not justified for a four-bundle-ID solo project unless A and B both fail.
+
+---
+
+### Decision (Joe action required — three options in priority order)
+
+#### Option A (recommended) — Verify and, if necessary, rotate the API key to App Manager role
+
+1. Open <https://appstoreconnect.apple.com/access/integrations/api> (the "Users and Access → Integrations → App Store Connect API" tab — formerly `/access/api`).
+2. Find the row for the key whose **Key ID** matches the value stored in the GitHub secret `APP_STORE_CONNECT_API_KEY_ID`.
+3. Read the **Access** (a.k.a. **Role**) column for that key.
+   - If it says **App Manager** or **Admin** → the key is fine; go to Option B.
+   - If it says **Developer** (or anything else) → this is the root cause. Proceed with rotation:
+     a. Click **Generate API Key** (top right). Name it e.g. `arrunner-ci-app-manager`.
+     b. **Access:** select **App Manager**.
+     c. Download the new `.p8` (you can only download it once).
+     d. Copy the new **Key ID** and the **Issuer ID** (issuer is account-wide; it does not change).
+     e. Update the three GitHub repository secrets:
+        - `APP_STORE_CONNECT_API_KEY_ID` ← new Key ID
+        - `APP_STORE_CONNECT_API_ISSUER_ID` ← unchanged (verify it matches what's shown)
+        - `APP_STORE_CONNECT_API_KEY_P8` ← contents of the new `.p8` (paste verbatim, including `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----` lines)
+     f. Revoke the old Developer-role key in the same UI (cleanup; not strictly required for the fix to work).
+4. Re-tag `v0.2.0-rc7`. Expected: `-allowProvisioningUpdates` successfully mints four App Store Distribution profiles (one per bundle ID), the archive proceeds, and the export + altool upload to TestFlight succeed.
+
+#### Option B (fallback if the key is already App Manager / Admin)
+
+If the key role is already sufficient and the auto-mint is still failing, manually pre-create the profiles in the portal so `-allowProvisioningUpdates` only has to *read* them on its first run:
+
+1. <https://developer.apple.com/account/resources/profiles/add>
+2. **Distribution → App Store** → Continue.
+3. **App ID:** select `com.arrunner.phone` → Continue.
+4. **Certificate:** select your Apple Distribution certificate → Continue.
+5. **Profile Name:** `ARRunnerPhone App Store` (any descriptive name).
+6. Generate, then download (download is optional; xcodebuild fetches it).
+7. Repeat steps 2–6 for `com.arrunner.phone.widgets`, `com.arrunner.phone.watchkitapp`, and `com.arrunner.phone.watchkitapp.widgets`.
+8. Re-tag `v0.2.0-rc7`. `-allowProvisioningUpdates` will read the four existing profiles and use them; subsequent entitlement changes will then require either revoke-and-remint or an upgraded key.
+
+#### Option C (deferred) — switch to fastlane match
+
+Only if A and B both fail. Larger change, separate decision required (would supersede the current pure-xcodebuild design). Not proposed today.
+
+---
+
+### Diagnostic if rc7 still fails after Option A
+
+If rotating to an App Manager key still produces the same error, the next thing to check is whether the Apple Distribution **certificate** referenced by the new profile actually exists in the portal and matches the `.p12` imported into the runner keychain. We can confirm by reading the runner log section:
+
+```
+Installed signing identities:
+  1) <SHA> "Apple Distribution: <name> (<TEAMID>)"
+```
+
+If that identity is present but the portal has no matching certificate (or it has expired), the API call to create a profile binds to a non-existent cert and Apple rejects with a generic error. This is unlikely (the cert worked through rc1–rc5's signing iterations) but worth checking before chasing further hypotheses.
+
+---
+
+### Why this diagnosis is more credible than TF-12
+
+- It explains **all four bundle IDs having no profile** (TF-12 only explained iOS).
+- It is consistent with the **empty portal** (TF-12 contradicted it).
+- It does not rely on the false "Watch succeeded" inference.
+- It has **two independent authoritative citations** (vs. TF-12's one Stack Overflow + one inferred-from-flag-existence argument).
+- It predicts a falsifiable next step: if Joe finds the key is already App Manager, this diagnosis is wrong and we move to Option B.
+
+### Citations
+
+- Apple — [Roles reference for App Store Connect API](https://developer.apple.com/documentation/appstoreconnectapi/roles): defines which role can perform `POST /profiles`.
+- fastlane — [App Store Connect API permissions](https://docs.fastlane.tools/app-store-connect-api/#permissions): states "the API Key should have at least the App Manager role" specifically for profile/cert creation flows. fastlane's `sigh` and `match` call the same endpoints `-allowProvisioningUpdates` does, so the requirement transfers.
+
+— Richards, 2026-05-17T23:16Z
+# D-RICHARDS-TF-14 — rc7 diagnostic: capability checkbox vs cert binding
+
+**Date:** 2026-05-17T23:25Z
+**Author:** Richards (Lead/Architect)
+**Status:** Proposed (diagnostic, not a fix)
+**Supersedes:** none. **Refines:** TF-11.
+**Retracts:** TF-13 (App Manager role is confirmed sufficient; Joe's key role checked out).
+
+## Context
+
+rc7 archived with profiles **manually pre-created** in the portal (Joe took Option B from TF-13). Same error as rc5/rc6:
+
+```
+"ARRunnerPhone" requires a provisioning profile with the App Groups and HealthKit features.
+"ARRunnerWidgetsPhone" requires a provisioning profile with the App Groups feature.
+```
+
+Run: <https://github.com/jkrilov/AR-Runner/actions/runs/26005770911>.
+
+Workflow is **Manual signing** (xcconfig appends `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = Apple Distribution`) with `-allowProvisioningUpdates` + ASC API key.
+
+## Error wording — disambiguation
+
+`"<Target>" requires a provisioning profile with the <Capability> feature` is what Xcode/IDEProvisioningLogging emits whenever no profile in its candidate set satisfies (bundleID ∧ entitlements ∧ usable cert). It does NOT distinguish "profile not found" from "profile found but lacks entitlement" from "profile found but cert in keychain doesn't match the profile's `DeveloperCertificates`." All three collapse to the same string. So the error is **necessary but not sufficient** evidence for any single root cause — we must probe further.
+
+## Hypotheses ranked
+
+| # | Hypothesis | Likelihood | Falsifier |
+|---|---|---|---|
+| A | App ID capabilities not actually saved (App Groups / HealthKit checkbox not committed, or App Group assigned at group-level only without enabling on App ID). Profile Joe minted therefore lacks the entitlement in its baked `Entitlements` dict. | **HIGH** — literal reading of the error; Joe just touched these settings; portal has multiple App-Groups surfaces that are easy to confuse. | Portal capability page shows checkmarks AND configured group ID. |
+| B | Cert mismatch: profile binds DistCert-A; `.p12` in keychain contains DistCert-B. Xcode reads the profile, rejects it (no matching private key), falls back to "no usable profile." | **MEDIUM** — possible if Joe has >1 Distribution cert. Less likely because this error variant usually also surfaces `"No signing certificate found"`, which is absent. | Profile's `DeveloperCertificates` SHA1 == `.p12` cert SHA1. |
+| C | Portal propagation lag. | **LOW** — Joe waited minutes. | Re-archive without changes → same failure. |
+| D | None found in research. | — | — |
+
+**Cannot decide between A and B from the build log alone.** Need one probe.
+
+## THE diagnostic (one click)
+
+Open in browser:
+<https://developer.apple.com/account/resources/identifiers/list>
+
+Click `com.arrunner.phone`. Scroll to **Capabilities**. Verify:
+1. ☑ **App Groups** is checked, AND clicking its **Configure** / **Edit** shows `group.com.arrunner.shared` selected (not just present in the master App Groups list).
+2. ☑ **HealthKit** is checked.
+
+This is one page, two checkboxes, binary outcome. It cleanly cleaves A from B.
+
+## Contingent next-action
+
+- **If either box is unchecked, or App Groups Configure does not show `group.com.arrunner.shared` selected:** Hypothesis A confirmed. Fix: check the boxes, click Save (portal often shows a confirm modal — confirm it), then **revoke the existing distribution profile for that bundle ID** (it was minted without the entitlement and Apple will keep serving the stale one), then re-create. Repeat for `com.arrunner.phone.widgets` (App Groups only — no HealthKit on extension), `com.arrunner.phone.watchkitapp` (App Groups + HealthKit), and `com.arrunner.phone.watchkitapp.widgets` (App Groups only). Retag rc8.
+
+- **If all four App IDs show both capabilities correctly configured:** Hypothesis A is dead → Hypothesis B is now top. Joe runs locally:
+  ```
+  security cms -D -i ~/Downloads/ARRunnerPhone_App_Store.mobileprovision \
+    | plutil -extract DeveloperCertificates xml1 -o - - \
+    | grep -c '<data>'
+  ```
+  and visits <https://developer.apple.com/account/resources/certificates/list> filtered to Distribution. If there are 2+ Distribution certs and the profile binds one Joe didn't export to `.p12`, re-export the correct `.p12` (matching SHA1 to the profile's `DeveloperCertificates[0]`), rotate `BUILD_CERTIFICATE_P12_BASE64` and `BUILD_CERTIFICATE_P12_PASSWORD`, retag rc8. If there's only one Distribution cert, B is also dead and we escalate to D (file a sysdiagnose-grade probe: dump `xcodebuild -showBuildSettings` for the Release config under the CI keychain to see which `PROVISIONING_PROFILE_SPECIFIER` Xcode is even attempting — currently we set none, which under Manual signing may itself be the problem; would re-open as TF-15).
+
+## Trade-off named
+
+The "one click" diagnostic trusts the portal UI to be honest about App ID state. The profile-inspection diagnostic (`security cms -D -i <profile>`) is more authoritative (ground truth = profile bytes) but costs one extra step (Joe must download a `.mobileprovision`). Choosing the portal click because: (a) Joe just modified these settings — recall bias makes a missed-Save plausible; (b) if A is true, the portal is the *cause*, so checking the cause directly is cleanest; (c) the contingent path falls into the profile-bytes probe automatically if A is refuted, so we lose nothing.
+
+## Falsifiability of THIS decision
+
+If both diagnostics return "everything looks correct" AND rc8 still fails identically, TF-14 is wrong and the model is under-constrained — escalate to TF-15 with a workflow change to add `xcodebuild -showBuildSettings -showdestinations` diagnostic output and a `security cms -D` dump of every fetched profile to the run log, so we stop guessing at xcodebuild's hidden state.
+
+## Lesson reinforced from TF-12/TF-13
+
+I was wrong twice. The pattern in both: I claimed a *mechanism* (cached-profile reuse; insufficient API key role) without a probe that would distinguish it from its near-neighbors. TF-14 is structured so that the probe's two possible answers each map to a different fix — if I can't articulate that mapping, I shouldn't ship the decision.
