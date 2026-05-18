@@ -136,6 +136,65 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertLessThan(RunningHUDFrame.Layout.paceY,     RunningHUDFrame.Layout.screenHeight)
         XCTAssertLessThan(RunningHUDFrame.Layout.leftMargin, RunningHUDFrame.Layout.screenWidth)
     }
+
+    // MARK: - rc4 regression: power-on prefix
+
+    /// Engo 2 boots into a low-power display state after a fresh BLE
+    /// link-up. PR #49 cleared the firmware splash without first sending
+    /// `power(on:true)` (cmdID 0x00), which left the screen blank on
+    /// connect and during the run. Every "first frame of a connection"
+    /// path must lead with the power-on command.
+    func test_connectFrames_leadWithPowerOnBeforeAnyDraw() {
+        let frames = RunningHUDFrame.connectFrames()
+        XCTAssertGreaterThanOrEqual(frames.count, 2)
+        // First frame is power(on:true) — cmdID 0x00, payload [0x01].
+        XCTAssertEqual(frames[0], [0xFF, 0x00, 0x00, 0x06, 0x01, 0xAA])
+        // Second frame is clear (cmdID 0x01).
+        XCTAssertEqual(frames[1][1], ActiveLookCommand.ID.clear.rawValue)
+    }
+
+    func test_connectFrames_paintBannerSoUserSeesPairingSucceeded() {
+        let frames = RunningHUDFrame.connectFrames(banner: "AR-Runner Ready")
+        XCTAssertEqual(frames.count, 4)
+        // Frame index 2: txt with the banner string in its UTF-8 region.
+        let bannerFrame = frames[2]
+        XCTAssertEqual(bannerFrame[1], ActiveLookCommand.ID.textUpdate.rawValue)
+        let needle = Array("AR-Runner Ready".utf8)
+        let needleEnd = bannerFrame.count - 2 // exclusive (skip 0x00 + 0xAA)
+        let needleStart = needleEnd - needle.count
+        XCTAssertEqual(Array(bannerFrame[needleStart..<needleEnd]), needle)
+    }
+
+    func test_framesWithPowerOn_prependsPowerOnToPlainFrames() {
+        let payload = RunningHUDFrame.Payload(time: "0:00", distance: "0.00 mi", pace: "--:--/mi")
+        let plain = RunningHUDFrame.frames(for: payload)
+        let withPower = RunningHUDFrame.framesWithPowerOn(for: payload)
+        XCTAssertEqual(withPower.count, plain.count + 1)
+        XCTAssertEqual(withPower[0], [0xFF, 0x00, 0x00, 0x06, 0x01, 0xAA])
+        // Tail is identical to plain frames(for:).
+        XCTAssertEqual(Array(withPower.dropFirst()), plain)
+    }
+
+    func test_summaryFramesWithPowerOn_prependsPowerOnToSummaryFrames() {
+        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+        let plain = RunningHUDFrame.summaryFrames(for: payload)
+        let withPower = RunningHUDFrame.summaryFramesWithPowerOn(for: payload)
+        XCTAssertEqual(withPower.count, plain.count + 1)
+        XCTAssertEqual(withPower[0], [0xFF, 0x00, 0x00, 0x06, 0x01, 0xAA])
+        XCTAssertEqual(Array(withPower.dropFirst()), plain)
+    }
+
+    /// Belt-and-braces test that would have caught the rc4 regression: a
+    /// fresh `RunningHUDPushPolicy` must allow the very first send through
+    /// without waiting out the 1Hz throttle window. If the throttle ever
+    /// gets a "lastSentAt initialized to now" bug, the first workout-start
+    /// frame would wait a full second before reaching the glasses.
+    func test_pushPolicy_firstSendAtT0PassesImmediatelyNotAfter1Second() {
+        var policy = RunningHUDPushPolicy()
+        let p = RunningHUDFrame.Payload(time: "0:00", distance: "0.00 mi", pace: "--:--/mi")
+        // No prior send → first call must pass at t=0, not require Δt ≥ 1s.
+        XCTAssertTrue(policy.shouldSend(p, now: Date(timeIntervalSince1970: 0)))
+    }
 }
 
 /// Push-policy contract: 1Hz minimum + change-detection. Mirrors the gate

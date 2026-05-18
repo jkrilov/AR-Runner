@@ -125,6 +125,52 @@ public enum RunningHUDFrame {
         ]
     }
 
+    /// First frame batch after a fresh BLE link comes up.
+    ///
+    /// **Why this exists (rc4 regression).** Engo 2 ships with a firmware
+    /// splash ("Connection Successful") that's visible immediately after
+    /// connect, but the *display* is in a low-power state — subsequent
+    /// `txt` draws are no-ops until we explicitly send `power(on:true)`
+    /// (cmdID 0x00). PR #49 began clearing the splash without first
+    /// powering the display on, which is why Joe's rc4 bench test saw a
+    /// blank screen on connect AND no HUD during the run.
+    ///
+    /// The sequence below: power on → clear → render a "Ready" line so
+    /// the wearer immediately sees that the pairing succeeded. Same `txt`
+    /// primitive as the running HUD, so no extra encoder surface.
+    public static func connectFrames(banner: String = "AR-Runner Ready") -> [[UInt8]] {
+        [
+            ActiveLookCommand.power(on: true),
+            ActiveLookCommand.clear(),
+            ActiveLookCommand.text(
+                x: Layout.leftMargin, y: Layout.timeY,
+                rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
+                string: banner
+            ),
+            ActiveLookCommand.text(
+                x: Layout.leftMargin, y: Layout.distanceY,
+                rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
+                string: "Start a run"
+            )
+        ]
+    }
+
+    /// Same as `frames(for:)` but prepended with `power(on:true)`. Used
+    /// for the first HUD push of a connection (workout start, or first
+    /// per-tick frame after a (re)connect) as a belt-and-braces guarantee
+    /// that the display is powered on. Subsequent ticks reuse plain
+    /// `frames(for:)` to keep the BLE write volume minimal.
+    public static func framesWithPowerOn(for payload: Payload) -> [[UInt8]] {
+        [ActiveLookCommand.power(on: true)] + frames(for: payload)
+    }
+
+    /// Same as `summaryFrames(for:)` but prepended with `power(on:true)`
+    /// so the end-of-workout splash renders even if the display happened
+    /// to power down between the last tick and the save tap.
+    public static func summaryFramesWithPowerOn(for payload: Payload) -> [[UInt8]] {
+        [ActiveLookCommand.power(on: true)] + summaryFrames(for: payload)
+    }
+
     /// Convenience for the end-of-workout splash: a single centred-ish
     /// "Workout Complete" line with the final stats below. Same `txt`
     /// primitive so no extra protocol surface needed.

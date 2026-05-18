@@ -2,6 +2,10 @@
 
 > **Owner:** Weiss
 > **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP)
+> **Confidence:** medium (rc4 surfaced a missing display-power-on trap;
+> see "Display power" section below — PR #53 fixed it but two
+> consecutive bench sessions still owed before this re-promotes to
+> high)
 > **Sibling to:** `activelook-bluetooth-pairing` (pairing UX) — this
 > skill covers what to draw on the glasses *after* the link is up.
 
@@ -126,6 +130,35 @@ runner stands still (every field's payload is identical).
 | Workout save             | Push a "Workout Complete" summary frame      |
 | Workout cancel           | Skip the HUD splash (user explicitly bailed) |
 
+### 7a. Display power — **always send `power(on:true)` before the first draw** (PR #53)
+
+**This is the trap rc4 caught.** Engo 2 firmware boots with the display
+in a low-power state after every BLE link-up. The "Connection
+Successful" splash is visible because firmware paints it as part of
+the link-up handshake — but every host-driven `txt` (cmdID 0x37) is
+silently dropped until the host sends `power(on:true)` (cmdID 0x00)
+at least once per connection. `clear` (cmdID 0x01) operates on the
+display buffer regardless of power state, so it visibly removes the
+splash, leaving a *clean blank panel* that masks the real cause.
+
+Implementation contract:
+
+1. Add a **per-connection `needsHUDPowerOn: Bool` flag** that resets
+   to true on every `.disconnected / .reconnecting / .failed` edge.
+2. On `.connected`, push a one-shot connect screen led by `power(on:
+   true)`: `[power on, clear, txt("Ready"), txt("Start a run")]`.
+   Use `RunningHUDFrame.connectFrames()`.
+3. **First per-tick / first summary frame after (re)connect** uses
+   `framesWithPowerOn(for:)` / `summaryFramesWithPowerOn(for:)`
+   (prepend `power(on:true)`) as a belt-and-braces guarantee, in
+   case the on-connect push raced or failed. Clear the flag after
+   any successful power-on send.
+4. Subsequent ticks use plain `frames(for:)` — keep BLE writes
+   minimal.
+
+Don't infer "display is on" from "I can see text". The splash is the
+only host-independent visible state.
+
 ### 8. Default-no-op protocol extension for the transport capability
 
 When adding a new capability to `GlassesFrameTransport` (here:
@@ -147,6 +180,17 @@ extension GlassesFrameTransport {
 
 ## Anti-patterns to avoid
 
+- **Don't send `clear` / `txt` without first sending `power(on:true)`
+  on every BLE connection (rc4 regression, PR #53).** Engo 2's display
+  is in a low-power state after link-up; `clear` works on the buffer
+  but `txt` is silently dropped until the display is powered on. The
+  symptom is a clean blank panel — looks like a render bug, is
+  actually a power-state bug. Track with a `needsHUDPowerOn` flag
+  that resets on every disconnect edge; prepend `power(on:true)` to
+  the first frame of every connection.
+- **Don't infer "display is on" from "I can see text on the glasses".**
+  Firmware splashes bypass the display-power gate; only host-driven
+  draws prove the display is actually powered on.
 - **Don't activate placeholder layout slot IDs on real hardware.**
   `CuratedLayoutCatalog.placeholderDeviceIDs` lists the trap. Pair
   any "shouldn't ship" debug `assert` with a behavioural guard
@@ -213,3 +257,5 @@ to on-device bench validation for the actual rendering.
   flag of the placeholder-layout-ID trap that PR #49 finally retired.
 - AR-Runner PR #41 — `RunMetricFormatting` shared formatters.
 - AR-Runner PR #49 — initial implementation.
+- AR-Runner PR #53 — rc4 regression fix: display-power-on prefix +
+  on-connect "Ready" screen.
