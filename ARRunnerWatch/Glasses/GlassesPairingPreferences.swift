@@ -18,6 +18,7 @@ public final class GlassesPairingPreferences: @unchecked Sendable {
 
     private let defaults: UserDefaults
     private static let pairedKey = "com.arrunner.glasses.hasPairedAtLeastOnce"
+    private static let lastKnownPeripheralIDKey = "glasses.lastKnownPeripheralIdentifier"
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -31,9 +32,33 @@ public final class GlassesPairingPreferences: @unchecked Sendable {
         defaults.set(true, forKey: Self.pairedKey)
     }
 
+    /// The `CBPeripheral.identifier` (UUID) captured the last time we
+    /// completed a connect handshake with the user's glasses. Persisting
+    /// this lets the next launch skip scanning entirely and go straight
+    /// to `central.retrievePeripherals(withIdentifiers:)` →
+    /// `central.connect(peripheral)` — matching ActiveLook's own iOS SDK
+    /// fast-reconnect path (see
+    /// `Sources/Classes/Public/ActiveLookSDK.swift:368, 240–298`).
+    public var pairedPeripheralID: UUID? {
+        get {
+            guard let raw = defaults.string(forKey: Self.lastKnownPeripheralIDKey) else {
+                return nil
+            }
+            return UUID(uuidString: raw)
+        }
+        set {
+            if let newValue {
+                defaults.set(newValue.uuidString, forKey: Self.lastKnownPeripheralIDKey)
+            } else {
+                defaults.removeObject(forKey: Self.lastKnownPeripheralIDKey)
+            }
+        }
+    }
+
     /// Test/debug-only path to clear the flag (e.g. for a "Forget Glasses"
     /// affordance — not yet exposed in v0.2 UI).
     public func clear() {
         defaults.removeObject(forKey: Self.pairedKey)
+        defaults.removeObject(forKey: Self.lastKnownPeripheralIDKey)
     }
 }

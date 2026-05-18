@@ -52,20 +52,30 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
 
     private let backoff: ExponentialBackoff
     private let scanTimeout: TimeInterval
+    private let knownPeripheralConnectTimeout: TimeInterval
     private let maxReconnectAttempts: Int
     private let defaultPreset: RunningHUDPreset?
+    private let prefs: GlassesPairingPreferences
     private let logger = Logger(subsystem: "com.arrunner.watch", category: "ActiveLookGlasses")
+    /// Dedicated category for the scan-filter + fast-reconnect logs added
+    /// alongside the manufacturer-data fix. Keeps the firehose searchable
+    /// (`category:Glasses`) without mixing into the broader adapter log.
+    private let glassesLogger = Logger(subsystem: "com.arrunner.watch", category: "Glasses")
 
     public init(
         backoff: ExponentialBackoff = ExponentialBackoff(),
         scanTimeout: TimeInterval = 15.0,
+        knownPeripheralConnectTimeout: TimeInterval = 8.0,
         maxReconnectAttempts: Int = 30,
-        defaultPreset: RunningHUDPreset? = .default
+        defaultPreset: RunningHUDPreset? = .default,
+        prefs: GlassesPairingPreferences = .shared
     ) {
         self.backoff = backoff
         self.scanTimeout = scanTimeout
+        self.knownPeripheralConnectTimeout = knownPeripheralConnectTimeout
         self.maxReconnectAttempts = maxReconnectAttempts
         self.defaultPreset = defaultPreset
+        self.prefs = prefs
         // Pre-seed the active layout so the first connect (and every
         // subsequent reconnect) auto-applies the v0.2 #5 default preset
         // without callers having to call `selectLayout(...)` themselves.
@@ -87,6 +97,12 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
     private var rxCharacteristic: CBCharacteristic?
+    /// Set when we attempted a known-peripheral direct connect (without
+    /// scanning) via `retrievePeripherals(withIdentifiers:)`. If the
+    /// connect doesn't complete within `knownPeripheralConnectTimeout`,
+    /// we drop the peripheral and fall back to the manufacturer-data
+    /// scan path.
+    private var fastReconnectAttempted = false
     /// Captured peripheral name at successful connect time. Held independently
     /// of `peripheral` so the pre-run UI can keep showing
     /// `Glasses: {name}` between auto-reconnect attempts when `peripheral`
@@ -193,6 +209,7 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     fileprivate func handleCentralStateUpdate(_ state: CBManagerState) {
         switch state {
         case .poweredOn:
+            if tryRetrieveKnownPeripheral() { return }
             startScan()
         case .poweredOff, .unauthorized, .unsupported, .resetting, .unknown:
             failPendingConnect(with: GlassesTransportError.bluetoothUnavailable)
@@ -203,10 +220,70 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         }
     }
 
+    /// Fast-reconnect path mirroring ActiveLook's own iOS SDK (lines 368,
+    /// 240–298 in `ActiveLookSDK.swift`). When we have a persisted
+    /// `peripheral.identifier` from a prior successful pair AND the system
+    /// still knows that peripheral, we can skip scanning entirely and go
+    /// straight to `connect(peripheral)`.
+    ///
+    /// Returns `true` if we kicked off a known-peripheral connect (caller
+    /// must not also start a scan). Returns `false` to mean "no saved
+    /// peripheral OR the system has evicted it from its cache — fall back
+    /// to the scan path."
+    private func tryRetrieveKnownPeripheral() -> Bool {
+        guard let central, let savedID = prefs.pairedPeripheralID else {
+            return false
+        }
+        let known = central.retrievePeripherals(withIdentifiers: [savedID])
+        guard let peripheral = known.first else {
+            glassesLogger.info("Known peripheral \(savedID.uuidString, privacy: .public) not in system cache; falling back to scan")
+            return false
+        }
+
+        glassesLogger.info("Fast-reconnect: retrieved known peripheral \(savedID.uuidString, privacy: .public); skipping scan")
+        self.peripheral = peripheral
+        peripheral.delegate = coordinator
+        transition(to: .connecting)
+        fastReconnectAttempted = true
+        central.connect(peripheral, options: nil)
+
+        // Safety net: if the system never delivers `didConnect` (e.g.
+        // glasses are powered off / out of range), don't hang forever —
+        // tear this attempt down and fall back to the scan-with-filter
+        // path so the user still sees a result within ~scanTimeout.
+        Task { [weak self, knownPeripheralConnectTimeout] in
+            try? await Task.sleep(nanoseconds: UInt64(knownPeripheralConnectTimeout * 1_000_000_000))
+            await self?.timeoutFastReconnectIfStillConnecting()
+        }
+        return true
+    }
+
+    private func timeoutFastReconnectIfStillConnecting() {
+        guard fastReconnectAttempted else { return }
+        guard case .connecting = connectionState else { return }
+        fastReconnectAttempted = false
+        glassesLogger.warning("Fast-reconnect timed out after \(self.knownPeripheralConnectTimeout, privacy: .public)s; falling back to manufacturer-data scan")
+        if let central, let peripheral {
+            central.cancelPeripheralConnection(peripheral)
+        }
+        peripheral = nil
+        transition(to: .scanning)
+        startScan()
+    }
+
     private func startScan() {
         guard let central else { return }
-        let serviceUUID = CBUUID(string: ActiveLookGATT.commandService)
-        central.scanForPeripherals(withServices: [serviceUUID], options: nil)
+        // ActiveLook / Engo 2 glasses do NOT advertise their 128-bit
+        // command service UUID — it lives only on the GATT table after
+        // connect — so a `withServices: [commandServiceUUID]` filter
+        // would never match. Scan with nil services and filter by
+        // manufacturer-data company-ID (`0xFA 0xDA`) inside
+        // `handleDiscovered`. Mirrors ActiveLook's own iOS SDK
+        // (`Sources/Classes/Public/ActiveLookSDK.swift:192`).
+        central.scanForPeripherals(
+            withServices: nil,
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+        )
 
         Task { [weak self, scanTimeout] in
             try? await Task.sleep(nanoseconds: UInt64(scanTimeout * 1_000_000_000))
@@ -221,8 +298,15 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         transition(to: .failed)
     }
 
-    fileprivate func handleDiscovered(_ peripheral: CBPeripheral) {
+    fileprivate func handleDiscovered(_ peripheral: CBPeripheral, manufacturerData: Data?) {
         guard self.peripheral == nil else { return }
+
+        guard GlassesAdvertisementFilter.isActiveLookPeripheral(manufacturerData: manufacturerData) else {
+            glassesLogger.info("Discovery filter rejected peripheral \(peripheral.identifier.uuidString, privacy: .public) — manufacturer data did not match Microoled 0xFA 0xDA prefix")
+            return
+        }
+
+        glassesLogger.info("Discovery filter accepted ActiveLook peripheral \(peripheral.identifier.uuidString, privacy: .public)")
         central?.stopScan()
         self.peripheral = peripheral
         peripheral.delegate = coordinator
@@ -231,6 +315,10 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     }
 
     fileprivate func handleConnected(_ peripheral: CBPeripheral) {
+        // Successful connect cancels any pending fast-reconnect timeout
+        // (it's now this peripheral's job to drive the rest of the
+        // handshake via service/characteristic discovery).
+        fastReconnectAttempted = false
         peripheral.discoverServices([
             CBUUID(string: ActiveLookGATT.commandService),
             CBUUID(string: ActiveLookGATT.batteryService)
@@ -299,6 +387,14 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
             // display.
             if let name = peripheral?.name, !name.isEmpty {
                 lastConnectedName = name
+            }
+            // Persist the peripheral identifier so the next launch can take
+            // the fast-reconnect path (`retrievePeripherals(withIdentifiers:)`
+            // → `connect`) and skip scanning entirely. Mirrors ActiveLook's
+            // own iOS SDK fast-reconnect (`ActiveLookSDK.swift:368, 240–298`).
+            if let id = peripheral?.identifier {
+                prefs.pairedPeripheralID = id
+                glassesLogger.info("Persisted peripheral identifier \(id.uuidString, privacy: .public) for fast reconnect")
             }
             // If we were reconnecting after a drop, emit a `.reconnected` status.
             if let dropAt = lastDropAt {
@@ -493,7 +589,14 @@ extension ActiveLookGlassesAdapter {
             advertisementData: [String: Any],
             rssi RSSI: NSNumber
         ) {
-            Task { [weak adapter] in await adapter?.handleDiscovered(peripheral) }
+            // Extract the manufacturer-data blob on the CB delegate queue so
+            // we only ship a `Data?` (Sendable) across the actor boundary —
+            // the full `[String: Any]` advertisementData dictionary is not
+            // Sendable under Swift 6 strict concurrency.
+            let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data
+            Task { [weak adapter] in
+                await adapter?.handleDiscovered(peripheral, manufacturerData: manufacturerData)
+            }
         }
 
         func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
