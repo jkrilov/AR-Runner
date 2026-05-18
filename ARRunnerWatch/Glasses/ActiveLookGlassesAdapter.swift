@@ -67,7 +67,7 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         scanTimeout: TimeInterval = 15.0,
         knownPeripheralConnectTimeout: TimeInterval = 8.0,
         maxReconnectAttempts: Int = 30,
-        defaultPreset: RunningHUDPreset? = .default,
+        defaultPreset: RunningHUDPreset? = nil,
         prefs: GlassesPairingPreferences = .shared
     ) {
         self.backoff = backoff
@@ -76,10 +76,17 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         self.maxReconnectAttempts = maxReconnectAttempts
         self.defaultPreset = defaultPreset
         self.prefs = prefs
-        // Pre-seed the active layout so the first connect (and every
-        // subsequent reconnect) auto-applies the v0.2 #5 default preset
-        // without callers having to call `selectLayout(...)` themselves.
-        if let preset = defaultPreset, let id = preset.deviceLayoutID {
+        // v0.3 HUD MVP: do NOT auto-pre-seed `activeLayoutDeviceID` from
+        // `RunningHUDPreset.default` any more. The curated catalog only
+        // ships placeholder slot IDs (0x01–0x03) — activating one on real
+        // hardware is exactly the bug Joe's bench test hit (glasses stuck
+        // on "Connection Successful"). The v0.3 raw-text HUD renders via
+        // `sendCommands(_:)` and does not depend on a pre-baked layout.
+        // Callers that want the curated path back (once Config-Generator
+        // bakes real slots) pass an explicit `defaultPreset:` again.
+        if let preset = defaultPreset,
+           let id = preset.deviceLayoutID,
+           !CuratedLayoutCatalog.placeholderDeviceIDs.contains(id) {
             self.activeLayoutDeviceID = id
         }
     }
@@ -185,6 +192,21 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
             value: update.value
         )
         try await write(frame)
+    }
+
+    /// v0.3 raw-text HUD path. Writes pre-encoded ActiveLook frames straight
+    /// to the RX characteristic in order. No `CuratedLayoutCatalog` lookup —
+    /// these frames are already complete `[clear, txt, txt, txt]` sequences
+    /// produced by `RunningHUDFrame.frames(for:)`. If a write fails mid-batch
+    /// we surface the error to the caller (the workout pipeline swallows it
+    /// per D4 — BLE noise stays in BLE).
+    public func sendCommands(_ frames: [[UInt8]]) async throws {
+        guard case .connected = connectionState else {
+            throw GlassesTransportError.notConnected
+        }
+        for frame in frames {
+            try await write(frame)
+        }
     }
 
     // MARK: - Internal

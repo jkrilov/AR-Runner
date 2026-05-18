@@ -25,6 +25,7 @@ public actor StubGlassesTransport: GlassesFrameTransport {
     public private(set) var connectionState: GlassesConnectionState = .disconnected
     public private(set) var activeLayoutID: String?
     public private(set) var receivedUpdates: [HUDFieldUpdate] = []
+    public private(set) var receivedHUDFrameBatches: [[[UInt8]]] = []
     public private(set) var connectCallCount = 0
     public private(set) var disconnectCallCount = 0
 
@@ -92,6 +93,13 @@ public actor StubGlassesTransport: GlassesFrameTransport {
             throw GlassesTransportError.notConnected
         }
         receivedUpdates.append(update)
+    }
+
+    public func sendCommands(_ frames: [[UInt8]]) async throws {
+        guard connectionState == .connected else {
+            throw GlassesTransportError.notConnected
+        }
+        receivedHUDFrameBatches.append(frames)
     }
 
     // MARK: - Test affordances
