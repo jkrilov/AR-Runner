@@ -265,6 +265,17 @@ jobs:
         run: xcodegen generate
 
       - name: Prepare ExportOptions.plist
+        # Export-time signing resolution is INDEPENDENT from build/archive-time
+        # signing. xcodebuild's `-exportArchive` ignores the archive's
+        # PROVISIONING_PROFILE_SPECIFIER and reads its profile map exclusively
+        # from this plist. The template at scripts/ExportOptions.plist pins
+        # signingStyle=manual and lists all four bundle-id → profile-name
+        # mappings; profile names must stay in sync with project.yml's
+        # PROVISIONING_PROFILE_SPECIFIER values and with App Store Connect.
+        # rc10 trap (D-RICHARDS-TF-17): when this map is missing, exportArchive
+        # falls back to "cloud signing" and fails with the misleading
+        # "Cloud signing permission error" + "No profiles for '<bundle id>'
+        # were found" pair, despite the archive having been signed correctly.
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
