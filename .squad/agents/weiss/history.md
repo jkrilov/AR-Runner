@@ -523,3 +523,90 @@ squash-merged as `5849343`. Real-device validation queued.
    2026-05-16 audit. Reading my own audit before chasing Joe's
    symptom would have saved 10 minutes of confused
    `central?.scanForPeripherals` re-skimming.
+
+### 2026-05-18: PR #53 — rc4 HUD regression (blank screen on connect, no draws during run)
+
+Joe installed v0.3.0-rc4 (build 19, PR #49 HUD MVP) on real Engo 2
+hardware. Three symptoms: connect works (PR #45 holding), but the
+glasses go **blank** on connect (was "Connection Successful" pre-#49),
+and the HUD never renders during a workout — stays blank end-to-end.
+
+**Root cause:** Engo 2 firmware paints "Connection Successful" as part
+of the BLE link-up handshake, but the **display itself is in a low-
+power state** until the host sends `power(on:true)` (cmdID 0x00) at
+least once. Subsequent `txt` draws are silently dropped. PR #49 began
+clearing the splash via `clear()` on connect / workout start, but
+never sent `power(on:true)` first — so `clear` worked (operates on
+the display buffer regardless of power state) and the splash visibly
+disappeared, but every `txt` after that was a no-op. Pre-#49 builds
+*looked* fine only because they never cleared the splash, so the
+firmware text remained visible by default; #49 unmasked the missing
+power-on by removing the splash without replacing it.
+
+**Fix shipped (PR #53):**
+- `RunningHUDFrame.connectFrames(banner:)` — `[power on, clear,
+  txt("AR-Runner Ready"), txt("Start a run")]`. Painted on every
+  `.connected` edge so the wearer sees pairing succeeded.
+- `RunningHUDFrame.framesWithPowerOn(for:)` /
+  `summaryFramesWithPowerOn(for:)` — prepend `power(on:true)` to
+  existing per-tick / end-of-workout frames.
+- `WorkoutViewModel.needsHUDPowerOn: Bool` — per-BLE-connection flag.
+  Set true on every `.disconnected/.reconnecting/.failed` edge.
+  Cleared by either the connect-screen push or the first per-tick
+  HUD frame after a (re)connect. Subsequent ticks use plain frames
+  to keep BLE writes minimal.
+- On `.connected` edge: push `connectFrames` first; if a workout is
+  already running, follow up with the live HUD so we don't sit on
+  the splash.
+
+**Tests:** ARRunnerCore 140 → 145 passing. Five new tests pin the
+power-on byte sequence, the banner string placement, the prepend
+contract, and the throttle init (first send at t=0 must pass
+immediately — guards a hypothetical `lastSentAt = now` regression
+that would delay the first frame by 1s).
+
+**Patterns I want to remember:**
+
+* **For a peripheral with a "display power" concept, send `power(on:
+  true)` once per BLE connection BEFORE the first draw.** Track it
+  with a `needsPowerOn` flag that resets on every disconnect edge.
+  Belt-and-braces: prepend it to the first per-tick frame too, so
+  even if the on-connect path skipped it (race / failure), the
+  workout still renders.
+* **A firmware splash is not the same as a host-driven render.** If
+  the user can see *something* before our first command lands, that
+  thing is being painted by firmware bypassing the host display-
+  power state. Don't infer "display is on" from "I can see text".
+* **`clear` operates on the buffer; `txt` requires the display to be
+  powered on.** This is the asymmetry that masked the bug — `clear`
+  worked, `txt` didn't, so the screen went blank rather than
+  staying-splash or rendering. Any time a peripheral has a clear-vs-
+  draw asymmetry, the first symptom of a power/init bug is a clean
+  blank screen, not a garbled one.
+
+**Lessons:**
+
+1. **"Works on any stock device today" must include the device's
+   own power-on handshake.** PR #49's raw-`txt` path was supposed
+   to bypass the curated-layout dependency — and it did — but it
+   inherited a different deferred dependency: the assumption that
+   the display was already on. The skill (`activelook-hud-rendering`)
+   captured the layout-bake-step trap; it did NOT capture the
+   display-power trap. Updated to medium confidence with that
+   caveat now.
+2. **A skill at "high" confidence after the first bench validation
+   is premature.** PR #49's skill was high-confidence after CI but
+   before real-hardware proof. The rc4 regression is exactly the
+   class of bug a CI green can't catch. Demote new skills to medium
+   until two consecutive bench sessions pass.
+3. **When the symptom is "screen went from showing-X to blank", the
+   cause is almost always a clear/erase command landing without a
+   matching draw/render path.** Next time, my first hypothesis
+   should be the matching-side missing render, not the rendering
+   code itself.
+4. **Add a watch-side test target for `WorkoutViewModel`.** The
+   on-connect-produces-non-empty-write and first-frame-fires-
+   immediately invariants are currently covered only indirectly via
+   Core pure-function tests. Flagged as a follow-up — when it lands,
+   we can assert the full byte sequence the VM hands to
+   `transport.sendCommands(...)` end-to-end.
