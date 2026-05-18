@@ -47,6 +47,21 @@ public protocol GlassesFrameTransport: Sendable {
     /// adapters may override to coalesce into a single BLE write.
     func updateFields(_ updates: [HUDFieldUpdate]) async throws
 
+    /// v0.3 raw-text HUD path: write a sequence of pre-encoded ActiveLook
+    /// command frames straight to the RX characteristic. Sidesteps the
+    /// curated-layout machinery, which is unusable until Config-Generator
+    /// bakes real layout slots onto the glasses
+    /// (`CuratedLayoutCatalog` ships placeholder IDs in v0.2/v0.3).
+    ///
+    /// Built for `RunningHUDFrame.frames(for:)` output: `[clear, txt, txt,
+    /// txt]`. Implementations should write frames in order; per-frame BLE
+    /// failures may abort the rest of the sequence (the next tick will
+    /// retry from the start).
+    ///
+    /// Default impl is a silent no-op so stubs / previews don't have to
+    /// model BLE state. Real adapters override.
+    func sendCommands(_ frames: [[UInt8]]) async throws
+
     /// Human-readable name of the currently-connected peripheral, if any.
     /// Returns `nil` when no link is established (or the underlying transport
     /// cannot supply a name — e.g. test stubs that don't model one). Used by
@@ -61,6 +76,10 @@ extension GlassesFrameTransport {
             try await updateField(update)
         }
     }
+
+    /// Default: no-op. Adapters that talk to real glasses override; test
+    /// stubs that want to assert on the frame sequence also override.
+    public func sendCommands(_ frames: [[UInt8]]) async throws {}
 
     /// Default: transports that don't model a device name (Linux test stubs,
     /// fakes) return `nil`. Real adapters override.

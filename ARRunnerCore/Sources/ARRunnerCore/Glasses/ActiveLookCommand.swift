@@ -75,6 +75,45 @@ public enum ActiveLookCommand {
         return encode(id: .widgetUpdate, payload: payload)
     }
 
+    /// Draw a UTF-8 string at an absolute (x, y) coordinate on the HUD.
+    /// (CmdID 0x37 — `txt`.) Used by the v0.3 raw-text running HUD that
+    /// renders time / distance / pace without needing a pre-baked on-device
+    /// layout slot.
+    ///
+    /// Payload layout (per `Activelook-API-Documentation/ActiveLook_API.md`
+    /// §5.7 and `Activelook-ios-sdk` `Commands.swift` `txt`):
+    /// ```text
+    /// x(i16 BE) | y(i16 BE) | rotation(u8) | font(u8) | color(u8) | bytes | 0x00
+    /// ```
+    ///
+    /// Defaults match ActiveLook's iOS sample app for landscape, head-up
+    /// reading orientation on Engo 2 (rotation = 4 → bottom-RL, the natural
+    /// orientation when the glasses sit on a runner's nose; font = 3 →
+    /// largest stock font; color = 15 → full white on the monochrome OLED).
+    public static func text(
+        x: Int16,
+        y: Int16,
+        rotation: UInt8 = 4,
+        fontSize: UInt8 = 3,
+        color: UInt8 = 15,
+        string: String
+    ) -> [UInt8] {
+        let xBits = UInt16(bitPattern: x)
+        let yBits = UInt16(bitPattern: y)
+        var payload: [UInt8] = []
+        payload.reserveCapacity(7 + string.utf8.count + 1)
+        payload.append(UInt8((xBits >> 8) & 0xFF))
+        payload.append(UInt8(xBits & 0xFF))
+        payload.append(UInt8((yBits >> 8) & 0xFF))
+        payload.append(UInt8(yBits & 0xFF))
+        payload.append(rotation)
+        payload.append(fontSize)
+        payload.append(color)
+        payload.append(contentsOf: Array(string.utf8))
+        payload.append(0x00)
+        return encode(id: .textUpdate, payload: payload)
+    }
+
     // MARK: - Frame builder
 
     /// Wraps `payload` in the ActiveLook framing bytes.

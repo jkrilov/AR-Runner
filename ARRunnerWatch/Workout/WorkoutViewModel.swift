@@ -170,6 +170,11 @@ final class WorkoutViewModel {
             startElapsedTicker()
             startMirrorTicker()
             await mirror?.sendLifecycle(.started(activity))
+            // v0.3 HUD MVP: paint the first frame so the wearer sees
+            // `0:00 / 0.00 mi / --:--/mi` immediately instead of the
+            // lingering "Connection Successful" splash. Safe to call when
+            // glasses are disconnected — pushHUDFrameIfConnected no-ops.
+            await pushHUDFrameIfConnected()
         } catch {
             launchState = .failed(String(describing: error))
         }
@@ -218,6 +223,9 @@ final class WorkoutViewModel {
             let summary = try await controller.end()
             launchState = .ended(summary)
             await mirror?.sendLifecycle(.ended)
+            // v0.3 HUD MVP: end-of-workout splash on the glasses before we
+            // tear the transport down. Best-effort — no-op if disconnected.
+            await pushHUDSummaryIfConnected()
             stopRuntimeTasks()
             await teardownTransport()
         } catch {
@@ -360,6 +368,10 @@ final class WorkoutViewModel {
         }
     }
 
+    // v0.3 HUD push policy — 1Hz minimum + change detection. Reset on
+    // (re)connect so the first frame after the link comes up always ships.
+    private var hudPushPolicy = RunningHUDPushPolicy()
+
     func attachGlasses(transport: any GlassesFrameTransport, service: GlassesService? = nil) {
         glassesStateTask?.cancel()
         glassesStatusTask?.cancel()
@@ -374,15 +386,20 @@ final class WorkoutViewModel {
             for await state in stream {
                 await self?.updateGlassesLinkState(state, transport: transport)
                 await self?.reportGlasses(.from(state))
-                // P1.2 (audit 2026-05-16): activate the default curated preset
-                // the moment we transition to `.connected` so subsequent
-                // per-tick `apply(metric:)` calls have a layout to address.
-                // Reset the throttle on every (re)connect so the first
-                // update for each field lands immediately.
                 if state == .connected {
-                    try? await resolvedService.selectLayout(preset: .default)
+                    // v0.3 HUD MVP: skip `selectLayout(preset: .default)` —
+                    // the curated catalog only ships placeholder slot IDs
+                    // (see ReconnectPolicy.swift `placeholderDeviceIDs`),
+                    // which is exactly why Joe's bench test saw the glasses
+                    // freeze on "Connection Successful". Instead, push an
+                    // initial raw-text HUD frame so the wearer immediately
+                    // sees live stats (or the zero-state if no workout is
+                    // active yet — gated inside `pushHUDFrameIfConnected`).
+                    await self?.resetHUDPushPolicy()
+                    await self?.pushHUDFrameIfConnected(transport: transport)
                 } else if state == .disconnected || state == .reconnecting || state == .failed {
                     await resolvedService.resetThrottle()
+                    await self?.resetHUDPushPolicy()
                 }
             }
         }
@@ -393,6 +410,43 @@ final class WorkoutViewModel {
             }
         }
     }
+
+    fileprivate func resetHUDPushPolicy() {
+        hudPushPolicy.reset()
+    }
+
+    /// Build the v0.3 raw-text HUD payload from current state and push it
+    /// to the glasses if (a) a transport is wired, (b) the link is up, and
+    /// (c) the push policy says we're due for a frame. Silent no-op
+    /// otherwise — never blocks the workout pipeline (D4). Called every
+    /// second from `tickElapsed` plus once on workout start, on glasses
+    /// (re)connect, and on workout end.
+    fileprivate func pushHUDFrameIfConnected(transport overrideTransport: (any GlassesFrameTransport)? = nil) async {
+        guard let transport = overrideTransport ?? self.transport else { return }
+        let payload = RunningHUDFrame.payload(
+            elapsedSeconds: elapsed,
+            distanceMeters: distanceMeters ?? 0
+        )
+        guard hudPushPolicy.shouldSend(payload, now: now()) else { return }
+        guard await transport.connectionState == .connected else { return }
+        let frames = RunningHUDFrame.frames(for: payload)
+        try? await transport.sendCommands(frames)
+    }
+
+    /// End-of-workout splash — single fire-and-forget push with the final
+    /// stats. Bypasses the throttle (it's a one-shot lifecycle event) but
+    /// still no-ops if the link is down.
+    fileprivate func pushHUDSummaryIfConnected() async {
+        guard let transport else { return }
+        guard await transport.connectionState == .connected else { return }
+        let payload = RunningHUDFrame.payload(
+            elapsedSeconds: elapsed,
+            distanceMeters: distanceMeters ?? 0
+        )
+        let frames = RunningHUDFrame.summaryFrames(for: payload)
+        try? await transport.sendCommands(frames)
+    }
+
 
     /// MainActor-isolated handler for transport status events. Per D4:
     /// * `.dropped` during an active workout → forward signal to the
@@ -540,6 +594,11 @@ final class WorkoutViewModel {
         guard let startedAt else { return }
         if case .running = launchState {
             elapsed = Date().timeIntervalSince(startedAt)
+            // v0.3 HUD MVP: render the time/distance/pace HUD at 1Hz off
+            // the elapsed ticker. The push policy gates on minimum-interval
+            // + payload-change so a frozen pace (`--:--/mi` while distance
+            // < 0.01 mi) doesn't generate redundant BLE traffic.
+            Task { [weak self] in await self?.pushHUDFrameIfConnected() }
         }
     }
 
