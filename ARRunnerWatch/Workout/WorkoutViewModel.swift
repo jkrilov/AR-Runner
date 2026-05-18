@@ -368,6 +368,21 @@ final class WorkoutViewModel {
         }
     }
 
+    /// rc4 regression fix: Engo 2 firmware boots with the display in a
+    /// low-power state after a fresh BLE connect. The splash text
+    /// ("Connection Successful") is visible because the firmware paints
+    /// it as part of the link-up sequence, but subsequent `txt` draws
+    /// from the host are silently dropped until we send `power(on:true)`
+    /// (cmdID 0x00) at least once.
+    ///
+    /// PR #49 cleared the splash without sending `power(on:true)` first —
+    /// which is exactly what put Joe's rc4 device into the "blank screen
+    /// on connect, nothing during the run" state. We track per-connection
+    /// whether power-on has been sent and prepend it to the very next HUD
+    /// frame as a belt-and-braces guarantee. Reset on every disconnect
+    /// edge so a reconnect re-sends it.
+    private var needsHUDPowerOn: Bool = true
+
     // v0.3 HUD push policy — 1Hz minimum + change detection. Reset on
     // (re)connect so the first frame after the link comes up always ships.
     private var hudPushPolicy = RunningHUDPushPolicy()
@@ -396,10 +411,12 @@ final class WorkoutViewModel {
                     // sees live stats (or the zero-state if no workout is
                     // active yet — gated inside `pushHUDFrameIfConnected`).
                     await self?.resetHUDPushPolicy()
-                    await self?.pushHUDFrameIfConnected(transport: transport)
+                    await self?.markNeedsHUDPowerOn()
+                    await self?.pushHUDConnectScreenIfConnected(transport: transport)
                 } else if state == .disconnected || state == .reconnecting || state == .failed {
                     await resolvedService.resetThrottle()
                     await self?.resetHUDPushPolicy()
+                    await self?.markNeedsHUDPowerOn()
                 }
             }
         }
@@ -413,6 +430,31 @@ final class WorkoutViewModel {
 
     fileprivate func resetHUDPushPolicy() {
         hudPushPolicy.reset()
+    }
+
+    fileprivate func markNeedsHUDPowerOn() {
+        needsHUDPowerOn = true
+    }
+
+    /// One-shot post-connect screen: `power on → clear → "AR-Runner Ready"`.
+    /// Painted as soon as the BLE link comes up so the wearer can confirm
+    /// pairing without having to also start a workout. Bypasses the push
+    /// policy (which is workout-scoped) and consumes the `needsHUDPowerOn`
+    /// flag so the next HUD frame doesn't redundantly re-send power-on.
+    fileprivate func pushHUDConnectScreenIfConnected(transport overrideTransport: (any GlassesFrameTransport)? = nil) async {
+        guard let transport = overrideTransport ?? self.transport else { return }
+        guard await transport.connectionState == .connected else { return }
+        let frames = RunningHUDFrame.connectFrames()
+        try? await transport.sendCommands(frames)
+        // connectFrames already includes power(on:true).
+        needsHUDPowerOn = false
+        // If a workout is already running when (re)connect lands, also
+        // paint the current live HUD so the wearer doesn't sit on the
+        // "Ready" splash mid-run. The frame builder is cheap; the push
+        // policy was just reset so this will fire immediately.
+        if case .running = launchState {
+            await pushHUDFrameIfConnected(transport: transport)
+        }
     }
 
     /// Build the v0.3 raw-text HUD payload from current state and push it
@@ -429,7 +471,17 @@ final class WorkoutViewModel {
         )
         guard hudPushPolicy.shouldSend(payload, now: now()) else { return }
         guard await transport.connectionState == .connected else { return }
-        let frames = RunningHUDFrame.frames(for: payload)
+        // rc4 regression: the very first frame of a connection prepends
+        // `power(on:true)` so Engo 2's display is guaranteed to be active
+        // before any `txt` draws land. Subsequent ticks use plain frames
+        // to keep BLE writes minimal.
+        let frames: [[UInt8]]
+        if needsHUDPowerOn {
+            frames = RunningHUDFrame.framesWithPowerOn(for: payload)
+            needsHUDPowerOn = false
+        } else {
+            frames = RunningHUDFrame.frames(for: payload)
+        }
         try? await transport.sendCommands(frames)
     }
 
@@ -443,7 +495,16 @@ final class WorkoutViewModel {
             elapsedSeconds: elapsed,
             distanceMeters: distanceMeters ?? 0
         )
-        let frames = RunningHUDFrame.summaryFrames(for: payload)
+        // Same power-on belt-and-braces as the per-tick path: if the
+        // display drifted into low-power between the last tick and the
+        // save tap, the splash would otherwise render into a dark panel.
+        let frames: [[UInt8]]
+        if needsHUDPowerOn {
+            frames = RunningHUDFrame.summaryFramesWithPowerOn(for: payload)
+            needsHUDPowerOn = false
+        } else {
+            frames = RunningHUDFrame.summaryFrames(for: payload)
+        }
         try? await transport.sendCommands(frames)
     }
 
