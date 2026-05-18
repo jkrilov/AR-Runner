@@ -70,11 +70,11 @@ targets:
       path: Config/ARRunnerWatch-Info.plist
       properties:
         CFBundleDisplayName: AR-Runner
+        CFBundleIconName: AppIcon
         NSHealthShareUsageDescription: AR-Runner reads workout metrics so your watch can drive the HUD and summary experience.
         NSHealthUpdateUsageDescription: AR-Runner saves completed workouts and summaries to Health.
         NSBluetoothAlwaysUsageDescription: AR-Runner connects your Apple Watch directly to ActiveLook glasses during workouts.
         UIBackgroundModes:
-          - workout-processing
           - bluetooth-central
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.arrunner.phone
