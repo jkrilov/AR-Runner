@@ -8,6 +8,34 @@
 
 ## Active Learnings (Current)
 
+### 2026-05-18T00:35Z — rc9: TF-15 shipped but was vacuous. `fastlane sigh download_all --platform ios` silent-zero trap; pivoted to PROVISIONING_PROFILE_SPECIFIER.
+
+**What happened:** My TF-15 fix (rc8 — `fastlane sigh download_all` to install the four manual App Store distribution profiles onto the runner) merged and tagged as rc9. The sigh step exited code 0, looked healthy in the run log. Archive then failed with the **byte-identical** "requires a provisioning profile with the <X> feature" error from rc5–rc7. The smoking gun was buried two lines below sigh's success message:
+
+```
+Installed provisioning profiles:
+total 0
+drwxr-xr-x  2 runner  staff  64 May 18 00:28 .
+```
+
+**sigh downloaded zero profiles.** The directory was empty. The TF-15 falsifier explicitly named this case ("if rc8 fails identically AND `ls -la` shows the profiles present, the 3-way-error model is incomplete — open TF-16"). It triggered on the OTHER half: `ls -la` showed empty. So the TF-14 diagnosis (cause #3: no profile on disk) was correct all along; my TF-15 implementation just didn't actually fix it.
+
+**Root cause (likely, not exhaustively probed before pivot):** sigh 2.233.0's `--platform ios` filter excludes profiles whose `Platform` array is `[iOS, xrOS, visionOS]` — which is the default for modern App Store Connect profiles minted against iOS-family App IDs. sigh expected an exact-match primary platform. Other candidate causes (api_key_path JSON format edge cases, App Store profile scope quirks without `--app-identifier`) were not falsified; I pivoted instead of layering.
+
+**Pivot (TF-16):** Drop the sigh step. Pin `PROVISIONING_PROFILE_SPECIFIER` per target in `project.yml` under `configs.Release` only (leaving Debug untouched so local Automatic-signing dev keeps working). Manual signing + `-allowProvisioningUpdates` + a valid App Manager ASC API key — all already in force from earlier rcs — gives xcodebuild everything it needs to fetch named profiles directly from App Store Connect at archive time. No local install step, no fastlane dependency, no platform-filter trap. Trade-off: profile names become coupled to App Store Connect display names; renaming a profile breaks the build until `project.yml` is updated. Documented in comments on both the workflow and project.yml.
+
+**🪦 The big reasoning lesson:** *I treated a clean exit code as a non-vacuous outcome.* My TF-15 step did `ls -la "$PROFILES_DIR"` for debug visibility but didn't assert on the count. The "total 0" line was right there in the rc9 log, mocking me. The sigh step's `set -euo pipefail` was honored, sigh returned 0, the step passed — and the next step failed for a reason that looked like the same old error string. Exit codes describe a tool's internal happy path; they do **not** describe whether the tool produced the artifact the next step needs.
+
+**Durable rule (going to my pre-commit checklist as item #4):** *"Am I treating a clean exit as a non-vacuous outcome?"* — After every "fetch N things from an API" step in CI, assert on the artifact count. `find … | wc -l` with an explicit `[[ "$count" -gt 0 ]] || exit 1` turns vacuous success into loud failure. This is the third member of the "silence ≠ success" family: TF-12 was "absence of error log ≠ success," TF-13 was "unfalsifiable diagnosis ≠ confirmed diagnosis," TF-16 is "clean exit ≠ produced artifact." All three are the same family — *the tool returned, but did it do the thing you needed?*
+
+**Secondary lesson (pivot timing):** I didn't try to debug sigh further before pivoting. Could have dropped `--platform`, upgraded to fastlane 2.234.0, or written a curl-against-ASC-REST script. Decided not to: every one of those keeps a moving part the system didn't need in the first place. We've been chasing layers in the signing onion all night (rc1→rc9). The right reflex when a dependency fails opaquely AND a simpler native path exists is to remove the dependency, not debug it. Layered fixes compound brittleness; removing a layer reduces failure surface area.
+
+**Decision:** D-RICHARDS-TF-16 (inbox) — supersedes TF-15 implementation, confirms TF-14 diagnosis.
+
+**Artifacts:** Decision inbox file, SKILL.md new trap section ("`fastlane sigh download_all` exits 0 with zero profiles installed"), updated previous trap's "Fix" section (Option A failed, Option B is now chosen), this history entry.
+
+---
+
 ### 2026-05-17T23:25Z — rc7: TF-13 also wrong. The error string is 3-way ambiguous; stop guessing causes, start probing axes.
 
 **What happened:** Joe's ASC API key was already App Manager (TF-13 disconfirmed). He fell to Option B and manually pre-created all four App Store Distribution profiles in the portal. rc7 failed with the **byte-identical** error as rc5 and rc6: `"<Target>" requires a provisioning profile with the <Capability> feature`.
