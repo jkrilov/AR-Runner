@@ -672,3 +672,83 @@ Two observations from aligning `ci-build.yml` + `codeql.yml` onto Richards's mac
 **Implication for verifying a workflow change post-merge:** don't rely on the natural main-push run being the verifying run if main is busy. Either (a) re-trigger explicitly via `workflow_dispatch` once main is quiet, (b) push a no-op commit to a quiet branch to exercise the workflow on PR, or (c) inspect the next-following push's run — which is what worked here, because the iPad-orientation push then ran the same updated workflow file (workflow-file edits take effect on the next run regardless of which commit triggered it).
 
 **Cross-reference:** D-LAUGHLIN-CI-01 (alignment decision); D-RICHARDS-rc12 family (the original macos-26 move).
+
+---
+
+## Trap class — Watch companion app not embedded in iOS bundle (rc14 — Laughlin, 2026-05-18)
+
+**Symptom.** Archive builds, signs, exports, and uploads to TestFlight cleanly with zero errors and zero warnings. Apple's validator accepts the IPA. The TestFlight install of the iOS app works. **But** the Watch app does **not** appear on the paired Apple Watch and is **not** listed in the Watch app's "Available Apps" section on iPhone. No watchOS-side action (re-pair, reboot, install-on-demand) recovers it — the watch payload is genuinely absent from the IPA.
+
+**Root cause.** In an xcodegen-managed project, the iOS app target must declare the watchOS app target as an `embed: true` dependency:
+
+```yaml
+targets:
+  ARRunnerPhone:
+    type: application
+    platform: iOS
+    dependencies:
+      - target: ARRunnerWidgetsPhone
+        embed: true
+      - target: ARRunnerWatch          # ← required, easy to omit
+        embed: true
+      - package: ARRunnerCore
+```
+
+Without that, xcodegen does not emit the `PBXCopyFilesBuildPhase "Embed Watch Content"` and the archive ships with no `Payload/<App>.app/Watch/<WatchApp>.app/`. **No tool in the chain — xcodebuild, codesign, altool, App Store Connect validator — flags missing watch content as an error.** It's optional from Apple's perspective; you only see it when a real user installs and notices the watch app missing.
+
+**Why it's a trap.** All five of the watch target's *own* configuration knobs can be correct (`WKApplication: true`, `WKCompanionAppBundleIdentifier` matching parent bundle ID, parent-bundle-ID + `.watchkitapp` PRODUCT_BUNDLE_IDENTIFIER, `TARGETED_DEVICE_FAMILY: 4`, `platform: watchOS`) — and the watch app will build fine in isolation and pass CI's per-scheme matrix — yet still fail to embed because the *host* doesn't pull it in. Reading the watch target's config tells you nothing about whether the host embeds it.
+
+**Verification (local).** After editing `project.yml`, run `xcodegen generate` and grep the regenerated pbxproj:
+
+```bash
+grep -E "Embed Watch|in Embed Watch Content" AR-Runner.xcodeproj/project.pbxproj
+```
+
+You should see entries like:
+
+```
+C1254A4BD2DEFD6C50EA106B /* ARRunnerWatch.app in Embed Watch Content */ = { ... };
+9BE729EF766C5642D90A2855 /* Embed Watch Content */ = {
+    isa = PBXCopyFilesBuildPhase;
+    ...
+}
+```
+
+If those lines are absent, the embed phase didn't materialise and the IPA will silently ship without the watch app.
+
+**Verification (post-archive).** Decompose the IPA:
+
+```bash
+unzip -l build/export/<App>.ipa | grep -iE "Watch/.*\.app/Info\.plist"
+```
+
+Expected:
+
+```
+Payload/<App>.app/Watch/<WatchApp>.app/Info.plist
+```
+
+If absent → IPA is missing the watch companion. Do not upload; fix `project.yml` first.
+
+**Recommended CI guard (future work).** Add a post-archive step to `release-testflight.yml` to fail loudly when the watch payload is missing:
+
+```yaml
+- name: Verify watch companion is embedded
+  run: |
+    if ! unzip -l "$IPA_PATH" | grep -q 'Watch/[^/]*\.app/Info\.plist'; then
+      echo "::error::Watch companion app not embedded in IPA (missing Payload/.../Watch/<App>.app)"
+      exit 1
+    fi
+```
+
+Catches the failure pre-upload and saves a TestFlight round-trip.
+
+**User-facing remediation after the fix lands.** When a new TestFlight build *with* the embed is published, the user must:
+
+1. Delete the existing TestFlight install on iPhone.
+2. Reinstall from TestFlight.
+3. The Watch app should auto-install on the paired Apple Watch within ~30s–2min. If not, open Watch app → My Watch → Available Apps → **Install** next to the app name.
+
+The iPhone-side reinstall is what triggers the system to re-discover and push the newly-present watch payload to the paired watch. Re-pairing the watch is not necessary.
+
+**Cross-reference:** `.squad/skills/wkcompanion-bundle-id-prefix-rule` (the *other* watch-companion trap — bundle-ID naming); `.squad/skills/xcodegen-shared-widget-per-platform` (sibling pattern for per-platform extension targets).
