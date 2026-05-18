@@ -3,6 +3,21 @@
   ExportOptions.plist for App Store Connect uploads (TestFlight + future App Store).
   Used by `xcodebuild -exportArchive`. The teamID placeholder __APPLE_TEAM_ID__
   is replaced from the $APPLE_TEAM_ID secret by the release-testflight workflow.
+
+  signingStyle = manual + provisioningProfiles map (rc10 fix — D-RICHARDS-TF-17):
+  The build/archive step uses Manual signing with PROVISIONING_PROFILE_SPECIFIER
+  per target (set in project.yml under configs.Release). The `-exportArchive`
+  step resolves signing INDEPENDENTLY from this plist — it does NOT inherit
+  the archive's build settings — so the four profile mappings must be
+  duplicated here. Without them, xcodebuild falls back to "cloud signing"
+  and fails with the misleading "Cloud signing permission error" + "No
+  profiles for '<bundle id>' were found" pair.
+
+  ⚠️  Profile NAMES below must stay identical to the PROVISIONING_PROFILE_SPECIFIER
+  values in project.yml AND to the profile display names in App Store Connect.
+  Renaming a profile in the portal requires updating BOTH project.yml AND this
+  file. (Single-source-of-truth refactor is tracked separately; the duplication
+  is intentional for now — keeps both signing pathways readable in isolation.)
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -12,9 +27,20 @@
     <key>destination</key>
     <string>export</string>
     <key>signingStyle</key>
-    <string>automatic</string>
+    <string>manual</string>
     <key>teamID</key>
     <string>__APPLE_TEAM_ID__</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>com.arrunner.phone</key>
+        <string>AR-Runner</string>
+        <key>com.arrunner.phone.widgets</key>
+        <string>AR-Runner Widgets</string>
+        <key>com.arrunner.phone.watchkitapp</key>
+        <string>AR-Runner Watch</string>
+        <key>com.arrunner.phone.watchkitapp.widgets</key>
+        <string>AR-Runner Watch Widgets</string>
+    </dict>
     <key>uploadSymbols</key>
     <true/>
     <key>stripSwiftSymbols</key>

@@ -8,6 +8,28 @@
 
 ## Active Learnings (Current)
 
+### 2026-05-18T00:45Z — rc10: TF-17. Archive finally succeeded; export failed on a separate signing pass. ExportOptions.plist needs its own `provisioningProfiles` map.
+
+**What happened:** TF-16 (rc10 tag) worked — the archive built cleanly for the first time in nine rcs. Per-target `PROVISIONING_PROFILE_SPECIFIER` + `-allowProvisioningUpdates` + the ASC API key fetched the four App Store distribution profiles from App Store Connect at archive time and signed every bundle. Then the very next step, `xcodebuild -exportArchive`, blew up with `Cloud signing permission error` and `No profiles for 'com.arrunner.phone' were found`. Same job, same keychain, same API key, same secrets — but a brand-new failure mode that the previous nine rcs had never reached because Archive had always died first.
+
+**Root cause:** `xcodebuild -exportArchive` does not inherit signing configuration from the archive it's processing. It re-resolves signing from scratch using **only** the file passed to `-exportOptionsPlist`. `ExportOptions.plist` had `signingStyle = automatic` and no `provisioningProfiles` map, so xcodebuild fell through to Apple's "cloud signing" pathway (Xcode Cloud), which fails on a generic runner with no Xcode Cloud entitlement. The "Cloud signing permission error" string is xcodebuild's confusing way of saying *"automatic style, tried cloud, no entitlement, no local fallback map"*. The "No profiles for <bundle id>" line that follows is technically true (no usable profile at export time) but reads as if the archive itself had no profiles — which is the opposite of what actually happened.
+
+**Fix:** Surgical. Updated only `scripts/ExportOptions.plist` to use `signingStyle = manual` plus a four-entry `provisioningProfiles` dict mapping each bundle ID to its App Store Connect profile name (matching `PROVISIONING_PROFILE_SPECIFIER` in `project.yml`). Added a 12-line documentation comment on the workflow's `Prepare ExportOptions.plist` step explaining the export-vs-archive signing split. Did NOT touch project.yml, the archive command, cert handling, or anything else. Profile names are now duplicated across project.yml and ExportOptions.plist; called out the constraint in both files; deferred centralization (low value, real risk, three sources is the soft cap before refactoring).
+
+**🪦 The reasoning lesson:** *"the archive succeeded so signing is fine"* is a category error. Archive signing and export signing are **two independent resolution passes** that share some inputs (cert in keychain, ASC API key) but consult **different configuration sources** (build settings + xcconfig for archive; `-exportOptionsPlist` only for export). I had vaguely assumed export would inherit from the archive bundle's signed metadata — it does not. xcodebuild treats export as a fresh signing job that happens to take an already-built archive as input.
+
+**Durable rule (going to my pre-commit checklist as item #5):** *"When I fix a build/CI step that has never previously succeeded, what's the NEXT step downstream and have I verified its preconditions?"* — TF-16's success unmasked an entirely latent defect in TF-17 territory. The signing onion has at least two layers (archive + export) and any "first time this step ran" is also "first time downstream steps are exercised." This is the inverse of the silence-as-success family from TF-12/TF-13/TF-16: those were *"the tool returned, did it do the thing?"*; this is *"the upstream tool finally worked, what's now the new critical path?"*
+
+**Sub-lesson on error-string archaeology:** "Cloud signing permission error" had nothing to do with Apple account permissions or cloud accounts. It was xcodebuild's transliteration of "automatic signingStyle defaulted to cloud, cloud was unavailable, no manual fallback configured." Apple's CLI error strings often describe the **last thing that was tried** rather than the **misconfiguration that caused the cascade**. Treat them as crime-scene evidence (what happened last), not as forensic conclusions (why).
+
+**Pivot timing reflection:** I did NOT do speculative work this round. Read the error, recognized the export-vs-archive split immediately (Apple docs are unambiguous on this), proposed the canonical fix, shipped. No new traps invented mid-flight, no layering of additional cleverness. After nine rcs of compounded onion-peeling, the discipline of *"is the fix described in the official manual? then ship that exact fix"* is paying off. Save the speculation budget for problems that aren't already solved.
+
+**Decision:** D-RICHARDS-TF-17 (inbox) — names this trap; ships as PR for rc11.
+
+**Artifacts:** branch `fix/v02-rc10-export-options-profiles`, PR (URL pending), decision inbox `richards-tf-rc10-export-options.md`, SKILL.md (new trap section: "exportArchive signing is resolved from ExportOptions.plist, NOT from the archive's build settings"), this history entry.
+
+---
+
 ### 2026-05-18T00:35Z — rc9: TF-15 shipped but was vacuous. `fastlane sigh download_all --platform ios` silent-zero trap; pivoted to PROVISIONING_PROFILE_SPECIFIER.
 
 **What happened:** My TF-15 fix (rc8 — `fastlane sigh download_all` to install the four manual App Store distribution profiles onto the runner) merged and tagged as rc9. The sigh step exited code 0, looked healthy in the run log. Archive then failed with the **byte-identical** "requires a provisioning profile with the <X> feature" error from rc5–rc7. The smoking gun was buried two lines below sigh's success message:
