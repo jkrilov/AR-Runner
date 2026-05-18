@@ -92,3 +92,34 @@ Post-merge verification on main:
 - **The runner version drift would have silently masked SDK breakage.** Before #31 + #32, PR builds were compiling against iOS 18.5 / watchOS 11.5 SDKs but rc tags were archiving against iOS 26.4 / watchOS 26.4. Any iOS-26-only deprecation, removed API, or behavior shift would only have surfaced at tag time (release-testflight.yml), past the point of cheap correction. Aligning all three macOS workflows on the same image+SDK closes that drift window. Generalizes: **whenever a release workflow moves to a new toolchain, every PR-gating workflow that compiles the same code must move with it in the same campaign — runner-version skew between PR CI and release CI is a defect category, not a config preference.**
 
 - **`gh pr merge --auto --delete-branch` can complete instantly when branch protection allows it.** PR #32 reported `mergedAt` populated on the first call rather than enqueueing an `autoMergeRequest`, presumably because there are no required status checks blocking main. Useful to know: if you want CI to validate the change *before* merge specifically, you can't rely on `--auto` alone — you'd need to add a required check at the branch-protection level, or push to a dummy branch first.
+- 2026-05-18: v0.2.0 shipped to TestFlight via rc13 (final release campaign milestone)
+
+## 2026-05-18T10:24:15-04:00 — rc14: Watch companion app embed (silent rc13 pairing failure)
+
+Joe installed rc13 from TestFlight: iOS app launched fine, but the AR-Runner Watch app was completely absent from the paired Apple Watch — not auto-installed, not even listed under the Watch app's "Available Apps" section. Diagnosed and shipped rc14 (PR #36, merged; tag v0.2.0-rc14 pushed; release workflow queued).
+
+### Root cause
+
+`project.yml` declared `ARRunnerWatch` as a top-level target but never wired it as a dependency of the iOS app target. The `ARRunnerPhone` `dependencies:` block listed only `ARRunnerWidgetsPhone` (embed) and `ARRunnerCore` (SPM). Without an `embed: true` dep on the watch app, xcodegen never emits the **Embed Watch Content** `PBXCopyFilesBuildPhase`, so the archive build produces a phone .app with no `Watch/ARRunnerWatch.app/` subdirectory. The resulting IPA is internally consistent and signs/uploads cleanly — Apple's validator does not flag missing watch content because watch-companion embedding is optional from its perspective. The watch app's own Info.plist + bundle ID + WKCompanionAppBundleIdentifier were already correct (Weiss + I had set them right back in v0.1). Embed phase was the single missing piece.
+
+### Fix
+
+11 lines added to `project.yml` (with explanatory comment block):
+```yaml
+dependencies:
+  - target: ARRunnerWidgetsPhone
+    embed: true
+  - target: ARRunnerWatch          # ← new
+    embed: true
+  - package: ARRunnerCore
+```
+
+Verified locally: `xcodegen generate` now produces `PBXCopyFilesBuildPhase "Embed Watch Content"` containing `ARRunnerWatch.app` in the generated pbxproj. Pre-fix that phase was absent.
+
+### Learnings
+
+- **The "silent embed gap" failure mode.** A missing watch-app embed dependency in xcodegen-managed projects causes zero build errors, zero warnings, zero signing failures, zero TestFlight upload rejections. Every CI gate passes green. The only symptom surfaces on-device when the user installs the phone app and notices the watch app never appears. Validation idea for future release campaigns: add a post-archive grep step in `release-testflight.yml`: `unzip -l "$IPA" | grep -q 'Watch/.*\.app/Info\.plist' || (echo "::error::Watch companion app not embedded in IPA" && exit 1)`. This would catch the same failure pre-upload and save a TestFlight round-trip. (Worth a decision proposal if Joe wants it for v0.3.)
+- **Verify embed dependencies by inspecting the generated pbxproj after xcodegen, not just by reading project.yml.** The xcodegen DSL makes it easy to express target dependencies (`- target: X`) without `embed: true` and have them still work as a link/build-order constraint — but link-only deps don't put the product into the parent bundle. Grep the generated pbxproj for `Embed Watch Content` / `PBXCopyFilesBuildPhase` whenever you add or modify a host-of-host (phone-hosts-watch, watch-hosts-extension) relationship.
+- **All five "is the watch app correctly configured?" preconditions were already in place** from v0.1 setup (WKApplication, WKCompanionAppBundleIdentifier matching parent bundle ID, watch bundle ID = parent + `.watchkitapp` suffix, TARGETED_DEVICE_FAMILY=4, platform: watchOS). The only thing missing was the embed wiring on the *iOS* side. This split — "watch target self-config is right, but the host doesn't include it" — is the canonical xcodegen watch-companion trap.
+- **Joe-facing remediation pattern for embedded-watch-app fixes.** After the fixed IPA reaches TestFlight, the user must: (1) delete the existing TestFlight install on iPhone, (2) reinstall from TestFlight. The Watch app then auto-installs on the paired Apple Watch within ~30s–2min. If it doesn't, open Watch app → My Watch → Available Apps → Install next to AR-Runner. No watchOS-side action required first; the iPhone-side reinstall is what triggers re-discovery of the newly-embedded watch payload.
+- **`gh pr merge --auto --squash` completes instantly on this repo (again).** Same as rc12: branch protection blocks direct pushes to main but PRs auto-merge without required status checks. CI runs *after* the merge. For this task that was fine — the change is config-only and xcodegen-verified locally — but for a riskier change I'd add a required-checks gate at the repo-protection level first. Cross-ref the rc12 history entry on this same gotcha.
