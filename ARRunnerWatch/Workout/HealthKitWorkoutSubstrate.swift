@@ -245,8 +245,25 @@ extension HealthKitWorkoutSubstrate: HKLiveWorkoutBuilderDelegate {
     ) {
         for type in collectedTypes {
             guard let quantityType = type as? HKQuantityType,
-                  let stats = workoutBuilder.statistics(for: quantityType),
-                  let quantity = stats.mostRecentQuantity() else { continue }
+                  let stats = workoutBuilder.statistics(for: quantityType) else { continue }
+
+            // v0.2.0 device feedback (Joe): distance was jumping per sample
+            // instead of monotonically increasing because we used
+            // `mostRecentQuantity()`, which is a single per-sample reading.
+            // Cumulative HK types (distance, active energy) must source
+            // from `sumQuantity()`; instantaneous types (heart rate) still
+            // want the most-recent reading. See
+            // `.squad/skills/healthkit-derived-metrics-watchos`.
+            let quantity: HKQuantity?
+            switch quantityType {
+            case HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning),
+                 HKQuantityType.quantityType(forIdentifier: .distanceCycling),
+                 HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned):
+                quantity = stats.sumQuantity()
+            default:
+                quantity = stats.mostRecentQuantity()
+            }
+            guard let quantity else { continue }
 
             let sample = Self.metric(for: quantityType, quantity: quantity, timestamp: stats.endDate)
             if let sample {
