@@ -96,6 +96,17 @@ targets:
     dependencies:
       - target: ARRunnerWidgetsPhone
         embed: true
+      # rc14 — embed the Watch companion app into the iOS bundle so it
+      # installs to the paired Apple Watch via the Watch app. Without this
+      # dependency xcodegen never emits the "Embed Watch Content" build
+      # phase and the IPA ships with no Payload/.../Watch/ARRunnerWatch.app,
+      # which silently breaks watch pairing (rc13 symptom: iOS app present,
+      # watch app missing from "Available Apps"). The Watch target's
+      # WKCompanionAppBundleIdentifier must equal ARRunnerPhone's bundle ID
+      # and its PRODUCT_BUNDLE_IDENTIFIER must be the phone bundle ID +
+      # ".watchkitapp" (see .squad/skills/wkcompanion-bundle-id-prefix-rule).
+      - target: ARRunnerWatch
+        embed: true
       - package: ARRunnerCore
     settings:
       base:
