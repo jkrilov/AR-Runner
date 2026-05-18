@@ -166,3 +166,67 @@ Pivoted to option A' (drop the standalone matrix entry). ARRunnerWatch's `embed:
 - **Iterating in PR-CI is slow and expensive.** Three xcodebuild iterations on this PR alone (~14 min each for the matrix job, plus 20+ min CodeQL queues). For a "fix the destination" task this approached the runtime of writing the actual code. Lesson: for CI changes that hinge on runtime introspection (which destinations exist, which runtimes are present), it's worth pushing a one-off diagnostic commit early that does `xcodebuild -showdestinations` + `xcrun simctl list runtimes` + `ls /Library/Developer/CoreSimulator/Profiles/Runtimes/` and prints the results, then iterate locally on the fix based on real output. Cheaper than iterating on the fix itself in CI.
 
 - **Shared-working-tree hazard hit AGAIN.** Weiss's agent checked out `feat/watch-glasses-connect` mid-task and my next `edit` calls failed because the file content no longer matched my `old_str`. Recovery: re-fetch, re-checkout my branch, redo the edits. **Reinforcement of the earlier lesson:** in shared-working-tree multi-agent sessions, verify `git branch --show-current` before every batch of file edits, especially after any non-trivial wait (CI polls, sleeps).
+---
+
+## 2026-05-18 — Watch in-run display fixes (Joe's v0.2.0 device feedback)
+
+Three concrete problems Joe hit on his first real run with v0.2.0
+installed: distance in the wrong unit, distance jumping per-sample
+instead of cumulative, avg pace missing.
+
+### Learnings
+
+- **The HK `sumQuantity()` vs `mostRecentQuantity()` trap.** The substrate
+  was using `mostRecentQuantity()` for every quantity type in
+  `workoutBuilder(_:didCollectDataOf:)`. For instantaneous types
+  (heart rate) that's right; for cumulative HK types
+  (`distanceWalkingRunning`, `distanceCycling`, `activeEnergyBurned`)
+  it returns the **last individual sample** rather than the running
+  total — so the watch UI showed a few meters at a time instead of a
+  monotonically growing distance. Always source cumulative HK metrics
+  from `stats.sumQuantity()`. New skill captured under
+  `healthkit-derived-metrics-watchos/`.
+
+- **HealthKit does not store derived metrics.** Avg pace is the canonical
+  example: there is no `HKQuantityType` for it. You must compute it
+  client-side from `(elapsedSeconds, distanceMeters)`. Same applies to
+  splits, lap pace, kcal/hour, anything per-unit-of-something-else.
+
+- **Divide-by-zero guard for derived metrics.** Naive pace at the start
+  of a run is `elapsed / 0 = +inf`, which `String(format:)` renders as
+  `"inf:00/mi"` on-wrist. Always guard, return a placeholder
+  (`"--:--/mi"`).
+
+- **First-sample spike guard.** Even after the first distance sample
+  lands (5m in 8s ≈ 42:00/mi), the number flickers wildly for the
+  first few seconds. Add a small distance threshold (0.01 mi worked
+  here) below which the placeholder stays visible. Joe specifically
+  asked for the placeholder, but the threshold matters even when
+  formatting is "valid".
+
+- **Put pure formatters in `ARRunnerCore`, not the watch target.** The
+  watch test scheme has no Linux/macOS host; ARRunnerCoreTests does.
+  Putting `RunMetricFormatting` in Core gave us full XCTest coverage
+  (9 cases — conversion, formatting, divide-by-zero, spike,
+  non-finite) that the swift-test-linux CI job catches automatically.
+  Same pattern Amber used for `HealthKitMetricMapping`.
+
+- **Existing assumptions revealed the substrate as the buggy layer.**
+  The iPhone-mirror tick already computed
+  `pace = elapsed / (distanceMeters / 1000.0)`, treating
+  `distanceMeters` as cumulative. That was a strong signal the rest of
+  the pipeline expected cumulative meters and the substrate was the
+  odd one out. When you find a metrics bug, grep the downstream
+  consumers first — they often encode the right contract.
+
+- **Single-checkout, multiple concurrent agents = silent file loss.**
+  Mid-session another agent (likely Weiss on `feat/watch-glasses-connect`)
+  branched in the same working tree. `git reset --hard` from that
+  agent's path wiped my uncommitted edits to RunMetricFormatting.swift,
+  the tests, and the skill file. Decision-inbox files survived only
+  because they're gitignored. Lesson: when you spot another agent's
+  files appearing in `git status`, commit immediately. For future
+  long-running concurrent work, prefer `git worktree add` so each
+  agent gets its own checkout — but in this session the right move was
+  to just batch-recreate and commit fast.
+

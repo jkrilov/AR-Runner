@@ -95,13 +95,24 @@ struct WorkoutView: View {
         }
         HStack {
             Image(systemName: "ruler").foregroundStyle(.blue)
-            Text(viewModel.distanceMeters.map { String(format: "%.0f m", $0) } ?? "—")
+            Text(viewModel.distanceMeters.map { RunMetricFormatting.formatMiles(meters: $0) } ?? "—")
                 .font(.title3.monospacedDigit())
         }
         HStack {
             Image(systemName: "clock").foregroundStyle(.secondary)
             Text(formatElapsed(viewModel.elapsed))
                 .font(.title3.monospacedDigit())
+            // v0.2.0 device feedback (Joe): show avg pace MM:SS/mi to
+            // the right of elapsed time. `--:--/mi` placeholder until
+            // we have a stable distance sample (see
+            // `RunMetricFormatting.formatAveragePacePerMile`).
+            Text(RunMetricFormatting.formatAveragePacePerMile(
+                elapsedSeconds: viewModel.elapsed,
+                distanceMeters: viewModel.distanceMeters ?? 0
+            ))
+                .font(.title3.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Average pace")
         }
         HStack {
             Image(systemName: "flame.fill").foregroundStyle(.orange)
