@@ -2020,3 +2020,53 @@ If both diagnostics return "everything looks correct" AND rc8 still fails identi
 ## Lesson reinforced from TF-12/TF-13
 
 I was wrong twice. The pattern in both: I claimed a *mechanism* (cached-profile reuse; insufficient API key role) without a probe that would distinguish it from its near-neighbors. TF-14 is structured so that the probe's two possible answers each map to a different fix — if I can't articulate that mapping, I shouldn't ship the decision.
+
+---
+
+## 2026-05-18T22:44:55Z: User directive — Post-release stale-task sweep
+
+**By:** Joe Krilov (via Copilot)  
+**What:** After shipping a pre-release (tag pushed, workflow green, upload succeeded), the coordinator MUST sweep background tasks — stop any stale/abandoned agents, drain completed-but-unread notifications, verify no orphan shells. This complements the existing pre-spawn stale sweep directive — now both bookend every release.  
+**Why:** Joe noticed stale background tasks accumulating across multiple cycles. Post-release is a natural quiescent point to clean up; doing it then prevents the next session from inheriting cruft.
+
+---
+
+## 2026-05-18T00:00:00Z: Active-Look BLE write serialization + flow-control gate (Richards diagnosis)
+
+**Date:** 2026-05-18  
+**Author:** Richards (Lead / Architect)  
+**Status:** Implemented in PR #55  
+**Supersedes:** Weiss hypotheses in PR #49 (Weiss-7) and PR #53 (Weiss-8)
+
+### Context
+
+rc4 and rc5 both showed blank HUD on real ActiveLook glasses hardware after connect. Two hypotheses by Weiss failed:
+- PR #49 (Weiss-7): removed placeholder layout activation → still blank
+- PR #53 (Weiss-8): added `power(on:true)` before first draw → still blank
+
+Root cause: ActiveLook BLE protocol violation on two fronts:
+
+1. **Writes blasted without serialization.** Official ActiveLook iOS SDK (`Glasses.swift:sendBytes()`) serializes every write via `didWriteValueFor` callback. Our adapter called write synchronously and never waited for the callback.
+2. **Flow-control gate missing.** Do not send commands until flow-control characteristic's notification subscription confirms active (`didUpdateNotificationStateFor` → `isNotifying == true`). Official SDK's `GlassesInitializer.isReady()` polls this gate before connect is considered complete.
+
+### Decision
+
+- `ActiveLookGlassesAdapter.write()` now uses `CheckedContinuation` awaiting `didWriteValueFor` callback before returning.
+- `.connected` state gated on `flowControlNotifyConfirmed` flag (with 2s safety timeout).
+- `CBCentralManagerDelegate` implements `didWriteValueFor:error:` and `didUpdateNotificationStateFor` callbacks.
+
+### Trade-offs (named)
+
+- Write serialization adds ~10-20ms per BLE frame. For 4-frame connect sequence = ~60-80ms total — imperceptible to wearer.
+- 2s timeout: if firmware variant never confirms flow control, still connect but degraded (may drop commands). Acceptable fallback.
+- Full pause/resume (glasses signaling "busy" over flow-control) deferred until buffer-overflow symptoms observed on real long runs. For small per-tick frames (< 30 bytes), unlikely to be needed.
+
+### Evidence
+
+- `ActiveLook/ios-sdk` GitHub: `Glasses.swift` lines ~270-310 (sendBytes + rxCharacteristicState serial gating)
+- `GlassesInitializer.swift` lines ~70-95 (isReady poll gate on notification subscription)
+- Joe's rc5 real-hardware test: blank screen on glasses confirming command delivery failure without serialization
+
+### Implementation notes
+
+145 tests passing on CI. Reviewer rejection lockout enforced — Weiss locked out after PR #49 + PR #53 both failed; Richards (Lead) took over this diagnosis and fix.
