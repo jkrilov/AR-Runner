@@ -23,3 +23,19 @@ Bug pattern (file under "Core enum gaps → silent downstream drop"):
 ## Archive
 
 See `history-archive.md` for learnings from 2026-05-14 through 2026-05-15 (scaffold validation, multi-agent merge, anticipatory contract tests, Linux CI debugging).
+
+---
+
+### 2026-05-19T09:00:00Z — v0.4.0-rc1 HealthKit observer pattern assignment
+
+**Context:** v0.4.0 scope locked. rc1 = Live HR with HealthKit HR observer.
+
+**Amber's role:** Implement HealthKit HR observer pattern to feed live heart-rate samples into the workout view model. Observer will:
+- Start on workout begin
+- Stream `HKQuantityType.quantityType(forIdentifier: .heartRateVariability)` samples to ViewModel observable
+- Format as `String` for display (`RunningHUDFrame.Payload.heartRate`)
+- Collaborate with Killian (HUD frame builder) for rendering coordinates
+
+**Scope notes:** Live HR is a primary running metric. Finish screen (rc2) will reference this observer pattern (steady-state HR vs. final HR). Battery indicator (rc3) follows similar subscription architecture.
+
+**Next:** Coordinate with Killian on `RunningHUDFrame.Payload` extension and with Weiss on glasses-side `txt` command timing once rc9 is bench-validated.

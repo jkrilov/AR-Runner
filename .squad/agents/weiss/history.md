@@ -47,3 +47,16 @@ Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in histo
 - `Sources/Classes/Internal/GlassesInitializer.swift` — `isReady()` flow-control gate
 
 **Recovery path:** Lockout ends when Richards completes PR #55 (now shipping in rc6) and the feature is re-tested on hardware. At that point, Weiss can be re-engaged for follow-up HUD rendering work.
+
+---
+
+### 2026-05-19T09:00:00Z — v0.4.0 work queued (Glasses HUD frame builder ownership)
+
+**Context:** v0.4.0 scope locked by Joe. Features:
+- rc1: Live HR (client-side font metrics, watch-side rendering)
+- rc2: Finish screen (imgDisplay + trophy asset)
+- rc3: Battery indicator
+
+**Weiss's role:** Once rc9 is bench-validated, v0.4.0-rc1 will require the Glasses HUD frame builder to integrate Live HR and subsequent metrics. The "raw txt + new imgDisplay primitive" strategy (vs. the curated-layout bugs reported earlier) means the glasses-side plumbing stays light — just one additional `txt` command per metric added. The seven-PR working stack from v0.3.0-rc9 remains the reference implementation.
+
+**Note:** The prior curated-layout bugs (dormant, not blocking v0.4.0) are no longer relevant given the decision to stick with raw txt + imgDisplay rather than attempt a full layout-switching framework. Future gesture-driven layout work (v0.5.0) is where that architectural question resurfaces.

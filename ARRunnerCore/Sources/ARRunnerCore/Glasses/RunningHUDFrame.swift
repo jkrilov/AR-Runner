@@ -50,15 +50,16 @@ public enum RunningHUDFrame {
         /// length through the projection.
         public static let fontSize: UInt8 = 3
 
-        /// 2 = topRL (180° from bottomRL); accounts for Engo 2 lens flip
-        /// per real-device test. rc8 shipped rotation=0 (bottomRL) expecting
-        /// it to read naturally, but Joe's bench confirmed the text rendered
-        /// upside-down through the waveguide. The Engo 2 optical projection
-        /// flips/mirrors the framebuffer relative to what the wearer sees,
-        /// so the "natural reading" rotation depends on perceived
-        /// orientation, not framebuffer orientation. 2 = topRL is 180° from
-        /// 0 and produces right-side-up text from the wearer's POV.
-        public static let rotation: UInt8 = 2
+        /// 0 = bottomRL; rotation=2 in rc9 went blank (likely not a valid
+        /// enum value per Engo 2 firmware); reverting until calibration cycle.
+        /// rc8 shipped rotation=0 with text upside-down + per-second flicker;
+        /// rc9 attempted to fix both (rotation 0→2, plus holdFlush wrap) and
+        /// the screen went blank. rc10 bisects: revert rotation only, keep
+        /// holdFlush. If rc10 renders upside-down text without flicker,
+        /// holdFlush is good and we'll iterate rotation values (1, 3, 6, 7)
+        /// one-at-a-time in rc11+. If rc10 is still blank, holdFlush is
+        /// the culprit and gets reverted too.
+        public static let rotation: UInt8 = 0
 
         /// 15 = full white on the monochrome OLED. Anything dimmer hurts
         /// readability outdoors.

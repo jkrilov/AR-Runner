@@ -47,3 +47,24 @@ Richards completed a full public-repo readiness audit (verdict: 🟡 Go ahead wi
 Three parallel agents (Weiss, Laughlin, Amber) are executing the v0.1 foundation spike. Expected completion: concurrent PRs will land (BLE adapter, WorkoutController, integration test scaffolding). Post-merge, small reconciliation pass for protocol naming alignment (not blocking).
 
 Joe explicitly greenlit parallel kickoff after public-repo flip; all three agents running on claude-opus-4.7-1m-internal.
+
+---
+
+### 2026-05-19T09:00:00Z — v0.4.0 roadmap proposal + scope decision
+
+**Work:** Delivered complete v0.4.0 roadmap proposal with five open questions for Joe, covering:
+- Core features (Live HR, Finish Screen)
+- Suggested additions (Battery, HR zone brightness, Gesture layout switch)
+- Iterative rc-per-feature release strategy matching v0.3.0 pattern
+- Effort estimates and dependencies
+
+**Joe's answers (2026-05-19T12:50:00Z):** All 5 questions answered and v0.4.0 scope locked:
+1. HR zone brightness → DEFERRED to v0.4.1 (keep HR text at default brightness for v0.4.0)
+2. Finish screen asset ID 10 → Confirmed, use Path B1 (imgDisplay)
+3. Gesture layout switch → DEFERRED to v0.5.0 (Weiss needs bench time)
+4. Release timing → Iterative rc-per-feature confirmed
+5. GA target → No fixed deadline; iterative cadence
+
+**Scope locked:** rc1 = Live HR, rc2 = Finish Screen, rc3 = Battery indicator. All v0.4.0 work blocked on Joe's rc9 bench confirmation.
+
+**Learnings:** Roadmap proposals with explicit open questions are more valuable to leadership than narrative proposals. Joe answered all 5 questions in a single pass, suggesting the question structure made decision-making faster. The "pick 0-2" suggestions framework (with effort/signal labels) enables product trade-offs at the decision point rather than mid-implementation.
