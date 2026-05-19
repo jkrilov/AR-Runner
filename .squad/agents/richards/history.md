@@ -92,3 +92,51 @@ Procedural checklist: `.squad/skills/release-mechanics-bundle-bump/SKILL.md`
 **Recommendation:** Add a pre-flight coordinate validation step to any txt debug flow: check all glyphs fit on-screen before assuming protocol/firmware issue.
 
 ---
+
+## Learnings — 2026-05-19 — rc13→rc16 HUD layout+icons architectural review
+
+**Scope reviewed:** PRs #72/#74/#75/#76 (tags v0.3.0-rc13..rc16). Tests: 176/176 (1 skipped) on `swift test` against `ARRunnerCore`.
+
+**What's solid (promote / canonicalize):**
+1. **Lens-flip transform is now empirically pinned, not derived.** rc16 corrected the rc12-era `y_fb = 255 − T − font_height` to the correct `y_fb = 255 − T` after Joe's "1 pixel at bottom" bench evidence proved the prior derivation was coincidence. Worth canonicalizing as the single source of truth: anchor=top-right (topLR), `y_fb = 255 − wearer_top`, `x_fb = 303 − wearer_right` for text; for images (no rotation flag) it's `x_fb = 303 − wearer_left − w`, `y_fb = 255 − wearer_top − h`. The arithmetic shows up inline as comments next to every constant — that's readable today but a `LayoutGeometry` helper (or even a `WearerRect → FramebufferAnchor` mapper) would prevent the next coordinate-system regression.
+2. **Per-tick HUD pushes await the BLE actor (rc13 Bug B fix).** The "MainActor caller must `await`, not `Task { … }`" rule for any actor that's reentrant between `await`s inside a multi-frame `holdFlush` burst is now load-bearing. Already extracted into the `activelook-ble-adapter-pitfalls` skill; worth re-reading on any new burst-emitting code path.
+3. **Preloaded ALooK flash IDs sidestep the cfgWrite/imgSave iceberg.** rc15's research correctly flagged custom-image upload as multi-rc work, but rc16 found that the 4 runner icons we needed (chrono/heart/distance/pace) ship preloaded — `imgDisplay(id, x, y)` is one BLE write, no chunk-split, no `cfgWrite`. Decisive simplification. **Architectural rule going forward:** any new icon proposal MUST first check whether an ALooK preloaded asset covers the semantic before invoking the upload pipeline.
+4. **Live HUD = 4 fields / finish HUD = 2 fields.** Settled in rc14; the dedicated `summaryFrames(for:)` discards HR + pace at the encoder, callers pass full Payload for symmetry. Two surfaces, distinct evolution paths. Canonicalize.
+5. **Bundled-bump release pattern.** Five releases in a row (rc12→rc16) under one PR per RC (feature + `CURRENT_PROJECT_VERSION` + xcodegen regen + tag + TestFlight). Now an established team default — `release-mechanics-bundle-bump` skill captures it.
+
+**Tech debt accruing (not yet a fire, but watch):**
+- **`Layout` enum is becoming a god-bag.** `RunningHUDFrame.Layout` now holds 25+ constants spanning splash, live HUD (3 lines × ≈3 attrs each + font), finish screen, 4 icon IDs, 8 icon coords, lens/rotation/color globals. It's still navigable because each cluster has a `MARK:` divider, but a third HUD screen (cue / split / pre-run) will push past the manageable threshold. **When v0.4.x adds another screen, factor into `SplashLayout` / `LiveHUDLayout` / `FinishLayout` / `IconCatalog` siblings.** Not now — the cost of restructuring without a third concrete consumer is speculative; current shape is still legible.
+- **Font-width estimates are hardcoded in prose comments**, not code. "Font 2 ≈ 18 px/char", "Font 3 ≈ 28 px/char" appear in derivations but nothing in the build asserts text-block widths against the 304-px framebuffer. The rc15→rc16 cycle's root cause was a height under-estimate; the next cycle's risk is a width under-estimate (a long pace string like "12:34/mi" + a wider HR like "180" colliding on line 1). **Recommend:** lift the font height + advance-width table into a `ALookFontMetrics` value type with assertions, sourced from the Visual-Assets repo README. Single source of truth, and we get compile-time-ish guards on layout math.
+- **rc13 push-policy reset is defensive but undocumented at the API surface.** `hudPushPolicy.reset()` + `needsHUDPowerOn = true` at every `start()` papers over potential bugs (stale payload, splash clearing power-on flag). It's the right belt-and-braces but it means we no longer trust the connect-state task's invariants. Eventually worth a state-machine review of `WorkoutViewModel` ↔ `RunningHUDPushPolicy` ↔ adapter connect-state, but only when a fourth caller appears.
+- **Icon-rotation hypothesis is unverified-in-test.** The rc16 doc block (line 137-149 of RunningHUDFrame.swift) says "preloaded ALooK icons ship pre-rotated 180°… if build 31 shows icons upside-down, rc17 will pre-rotate at upload time." Joe's confirmation that "we got the layout working, even have icons showing" implicitly validates this — but nothing in the test suite would catch a regression where someone swaps in a non-pre-rotated icon. Acceptable for now (we only use 4 preloaded IDs), but document the convention in the SKILL when we promote it.
+
+**Risks specific to the rapid rc13→rc16 cadence (5 releases in ~6 days):**
+- **Coordinate constants now have two contradictory historical derivations.** The file documents BOTH the rc12 `y_fb = 206 − T` (still used for `timeY/distanceY/paceY` of the finish screen at lines 60-62) AND the corrected rc16 `y_fb = 255 − T` (used for live HUD lines 150-153). They produce the same screen-on-bench result only because the finish-screen Ys were chosen to fit by trial; nobody has gone back to validate that the finish-screen coordinates are *correct* under the rc16 formula — they may also be off by a font-height that we haven't noticed because the finish frame is short and the slop happens to fit. **Worth a deliberate pass** to recompute timeY/distanceY/paceY using the rc16 formula before v0.4 ships, even if the bench shows it's fine today.
+- **`summaryFrames(for:)` reuses `paceY` as the *distance* line's y-anchor** (line 498). That's a tripwire — the constant name no longer matches its usage. Either rename to `summaryLine3Y` or assert via test name what each anchor is wired to.
+- **rc17 (in-flight, per Amber's inbox) deletes `teardownTransport`**, leaving BLE up indefinitely past workout end. Architecturally sound (the wearer wants to read stats; user has explicit disconnect affordance) but it shifts BLE lifecycle ownership entirely onto the user. Worth an ADR before v0.4 GA to declare "the BLE link is user-managed, not workout-scoped" as the canonical contract — Battery indicator (Weiss's v0.4 work) will live or die on this assumption.
+
+**Decisions worth canonicalizing in `.squad/decisions.md` (Scribe to merge):**
+- The lens-flip formulas (text + image variants) as the project's authoritative coordinate-system contract.
+- Live HUD = 4 fields, finish HUD = 2 fields as a stable surface contract.
+- Preloaded ALooK icons preferred over custom upload pipeline (rule: check Visual-Assets repo first).
+- BLE link lifecycle is user-managed post-rc17, not workout-scoped.
+
+
+### 2026-05-19T18:35:00-04:00 — ADR drafted: BLE link is user-managed, not workout-scoped
+
+**Trigger:** Joe reported the rc16 (and prior) behavior where workout-finish dropped the BLE link, finish screen never landed, manual reconnect required. Confirmed NOT a regression — that was always the implicit contract. rc17's `WorkoutViewModel.confirmSave`/`confirmCancel` already comply (no `teardownTransport()`), but the contract was undocumented and would not survive the next refactor.
+
+**What I wrote:** `.squad/decisions/inbox/richards-adr-ble-link-lifecycle.md` — full ADR with 4 invariants (I1–I4), 5 tear-down rules (R1–R5), 5 reconnect-policy clauses (P1–P5), 4 subscription rules (S1–S4), 3 phone-optional clauses (PO1–PO3). Five rejected alternatives (A–E), each named with the reason it lost.
+
+**Architectural insight worth keeping:** The right mental model for paired peripheral hardware is "**peripheral session ⊥ application session**" — they observe each other but neither owns the other's lifecycle. Once you let an application-domain event (workout-finish) drive peripheral lifecycle, you've created an implicit coupling that will break every adjacent feature (finish HUD, battery telemetry, post-workout review). The fix is not to find the bug — it's to declare the orthogonality as a contract.
+
+**Heuristic for next time I see this anti-pattern:** If a tear-down lives in the application-domain shutdown path, ask "who else needs this resource after the application event?" — if anyone (UI, telemetry, user attention), the resource is mis-scoped. Promote it to user-managed.
+
+**Promoted to skill:** `.squad/skills/paired-hardware-lifecycle-contract/SKILL.md` — generalizes the pattern (it applies to any paired BLE peripheral, USB device, HID controller, etc., not just AR glasses).
+
+**Implications dispatched:**
+- Weiss: audit adapter for stray `disconnect()` call sites; implement P1–P5 backoff; make subscriptions idempotent per `.connected`; wire battery 0x2A19 into on-connect setup.
+- Laughlin: no new work, but add regression test asserting `disconnect()` is NOT called in `confirmSave`/`confirmCancel`.
+- Amber: battery-on-phone is a `WatchConnectivityService` mirror, never on the critical path.
+
+**Recommendation count update:** #5 from rc13→rc16 review is now canonical. #1 (lens-flip geometry helper) and #2 (`ALookFontMetrics` width table) still open as the "two other blocking" items Joe referenced.

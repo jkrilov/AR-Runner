@@ -63,10 +63,10 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     private let glassesLogger = Logger(subsystem: "com.arrunner.watch", category: "Glasses")
 
     public init(
-        backoff: ExponentialBackoff = ExponentialBackoff(),
+        backoff: ExponentialBackoff = .adrV04,
         scanTimeout: TimeInterval = 15.0,
         knownPeripheralConnectTimeout: TimeInterval = 8.0,
-        maxReconnectAttempts: Int = 30,
+        maxReconnectAttempts: Int = .max,
         defaultPreset: RunningHUDPreset? = nil,
         prefs: GlassesPairingPreferences = .shared
     ) {
@@ -131,6 +131,13 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     private var lastDropAt: Date?
     private var activeLayoutDeviceID: UInt8?
     private var userDisconnectRequested = false
+
+    /// Standard BLE Battery Service (0x180F / 0x2A19) filter — clamps
+    /// out-of-range bytes and suppresses identical consecutive
+    /// notifications (the firmware re-publishes the same percent every
+    /// ~30 s). Reset on every transition out of `.connected` so the first
+    /// post-reconnect read always lands.
+    private var batteryFilter = BatteryLevelFilter()
 
     // MARK: - Write serialization (ActiveLook protocol requirement)
     //
@@ -197,6 +204,7 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         flowControlAllowsWrite = true
         flowControlNotifyConfirmed = false
         nextQueryID = 0x01
+        batteryFilter.reset()
 
         if let central, let peripheral {
             central.cancelPeripheralConnection(peripheral)
@@ -540,6 +548,12 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         peripheral = nil
         rxCharacteristic = nil
         flowControlNotifyConfirmed = false
+        // The battery characteristic is per-link (ADR I3) — its
+        // subscription dies with the link. Clearing the dedup memory means
+        // the first post-reconnect notify (or the explicit initial read)
+        // always lands so the UI doesn't sit on a stale percent while the
+        // link is recovering.
+        batteryFilter.reset()
         // Cancel any in-flight write so it doesn't hang forever.
         pendingWrite?.resume(throwing: GlassesTransportError.notConnected)
         pendingWrite = nil
@@ -572,8 +586,29 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         scheduleReconnect()
     }
 
-    fileprivate func handleBatteryLevel(_ level: Int) {
-        emit(.batteryLevel(level))
+    /// Battery Service (0x180F) → Battery Level (0x2A19) notification.
+    /// Spec: single `uint8` percent in `[0, 100]`. The firmware fires every
+    /// ~30 s after `setNotifyValue(true, ...)`; we also issue an explicit
+    /// `readValue(for:)` on subscribe so the first value lands within
+    /// seconds of pairing instead of waiting a full notify interval.
+    ///
+    /// Routed through `BatteryLevelFilter` (Core) so:
+    ///   * out-of-range bytes drop with a warning (firmware bug; do not
+    ///     forward to the UI),
+    ///   * identical consecutive percents drop silently (no need to spam
+    ///     the WC sender / on-watch indicator with redundant updates).
+    fileprivate func handleBatteryLevel(_ rawByte: UInt8) {
+        switch batteryFilter.process(byte: rawByte) {
+        case .emit(let level):
+            emit(.batteryLevel(level))
+        case .dropDuplicate:
+            // Hot path — quiet by design.
+            break
+        case .dropInvalid(let raw):
+            logger.warning(
+                "Battery characteristic published out-of-range byte 0x\(String(raw, radix: 16), privacy: .public) (>100). Dropping."
+            )
+        }
     }
 
     private func scheduleReconnect() {
@@ -922,8 +957,7 @@ extension ActiveLookGlassesAdapter {
             // Battery level (Standard Battery Service 0x2A19).
             if uuid == CBUUID(string: ActiveLookGATT.batteryLevelChar),
                let data = characteristic.value, let firstByte = data.first {
-                let level = Int(firstByte)
-                Task { [weak adapter] in await adapter?.handleBatteryLevel(level) }
+                Task { [weak adapter] in await adapter?.handleBatteryLevel(firstByte) }
                 return
             }
         }

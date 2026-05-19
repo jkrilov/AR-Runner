@@ -89,3 +89,38 @@ Procedural checklist: `.squad/skills/release-mechanics-bundle-bump/SKILL.md`
 **Action:** When debugging blank txt outputs, check coordinates against the rotation's anchor point + add a spec-driven bounding-box validation step before filing firmware issues.
 
 ---
+
+### 2026-05-19T19:45:00Z — v0.4.0-rc1: Standard BLE Battery Service Subscription (Phone-Optional Indicator)
+
+**Context:** Joe asked for glasses battery level on the iPhone (when reachable). Glasses publish via the **standard Bluetooth SIG Battery Service** (0x180F, characteristic 0x2A19), not the ActiveLook custom profile.
+
+**Pattern — stock-GATT alongside custom services:**
+- `discoverServices([commandService, batteryService])` in one call. CoreBluetooth invokes `didDiscoverServices` once with both services attached; we route each to its own `discoverCharacteristics([…], for:)`.
+- Battery characteristic uses `setNotifyValue(true, for:)` — CoreBluetooth automatically writes the CCCD (0x2902 descriptor) under the hood. No manual descriptor write required.
+- **Issue an initial `readValue(for:)` immediately after notify is enabled** so the first value lands within seconds of pairing instead of waiting 30 s for the spec-mandated notify cadence.
+- Parse the notification payload as `Data.first` → `UInt8` → `Int` (0–100 percent).
+- Surface as a side-channel `GlassesStatusEvent.batteryLevel(Int)` so the view-model can route to the WC mirror without coupling BLE to WC.
+
+**Watch → phone delivery (low-frequency, phone-optional):**
+- `WCMessage.glassesBattery(level: Int)` — new case in schema v3 (additive, backward compatible).
+- `WatchConnectivityService.sendGlassesBattery(_:)` uses `transferUserInfo` with `preferQueued: true` — queued, reliable, low priority. Perfect for once-per-30s telemetry.
+- **Phone-optional invariant:** if WCSession is unsupported, unactivated, or unreachable, every send is a silent no-op. The watch run never blocks waiting on the phone.
+
+**iPhone presentation:**
+- Added `glassesBatteryLevel: Int?` to `WorkoutMirrorViewModel` (clamped 0–100) and a battery row in `WorkoutMirrorView` using `battery.{100,75,50,25,0}percent` SF Symbols with green/orange/red tint thresholds (>30 / >15 / ≤15). Renders "—" until the first notification arrives.
+- New helper `GlassesBatteryIcon.swift` keeps the symbol/tint switch in one place so a future Settings or status-bar widget reuses it.
+
+**Tests:**
+- `WCMessageTests.testGlassesBatteryRoundTrip` — Codable wire-format guard.
+- `WCMessageTests.testV2EncodedSnapshotIsDecodableByV3` — schema v2 (rc16 watch) → v3 (rc1 phone) compat.
+- `ActiveLookCommandTests.testStandardBatteryServiceUUIDsMatchBluetoothSIG` — pins the stock-GATT UUIDs (0x180F / 0x2A19) so a typo can't silently break service discovery.
+- Adapter coordinator behavior (setNotifyValue + readValue on subscription) remains hardware-gated (`AR_RUNNER_HARDWARE_TESTS`) since CoreBluetooth can't be mocked without a watch test target.
+
+**Build:** Bumped `CURRENT_PROJECT_VERSION` 31 → 32 and `MARKETING_VERSION` 0.3.0 → 0.4.0 in `project.yml` (first v0.4.0 release). `xcodegen generate` MUST be re-run before the PR (running shell was unavailable in this session).
+
+**Scope guards held:** No edits to cfgSet, queryID, holdFlush, write serialization, flow-control, power-on, custom ActiveLook encoders, rotation, leftMargin, lens-flip coords, font choices, HUD render math, or the rc16 icon `imgDisplay` path. Battery indicator is intentionally **phone-side only** — not added to the live HUD.
+
+**Skill captured:** `.squad/skills/ble-gatt-stock-services/SKILL.md` — patterns for subscribing to standard BLE services alongside custom vendor profiles.
+
+---
+

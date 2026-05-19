@@ -19,6 +19,7 @@ struct WorkoutMirrorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
+            glassesBatteryRow
             metricsGrid
             footer
             Spacer()
@@ -27,6 +28,25 @@ struct WorkoutMirrorView: View {
         .navigationTitle("Live")
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+    }
+
+    @ViewBuilder
+    private var glassesBatteryRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: GlassesBatteryIcon.symbol(for: viewModel.glassesBatteryLevel))
+                .foregroundStyle(GlassesBatteryIcon.tint(for: viewModel.glassesBatteryLevel))
+                .imageScale(.large)
+            Text("Glasses Battery")
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(viewModel.glassesBatteryLevel.map { "\($0)%" } ?? "—")
+                .font(.title3.monospacedDigit())
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            viewModel.glassesBatteryLevel.map { "Glasses battery \($0) percent" }
+                ?? "Glasses battery unknown"
+        )
     }
 
     @ViewBuilder

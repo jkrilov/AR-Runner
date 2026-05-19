@@ -52,3 +52,18 @@ See `history-summary.md` for condensed learnings. Full technical details (rc13 a
 ---
 
 **Session note:** This file was summarized 2026-05-19 to consolidate pattern learnings (33 KB → ~2 KB) while retaining technical load-bearing patterns. Pre-summary detail archived in history-pre-summary.md for reference during coordinate-system / layout work.
+
+### 2026-05-19T18:19:51-04:00 — rc17 QA scenarios (BLE keep-alive + battery + phone-optional)
+
+Wrote acceptance criteria for rc17 (Weiss + Laughlin in parallel): bench-test checklist + unit-test recommendations. Grouped A (BLE lifecycle — workout-stop must NOT teardown), B (finish screen renders + persists, two-field discipline), C (battery 0x180F/2A19 — subscribe, initial-read, cadence, sanity, reconnect-survival, low-battery), D (phone-optional contract — full workout with phone powered off; airplane-mode invariance; non-blocking WC send; tier selection per `wcsession-three-tier-delivery`), E (regression guards — 176/176, rc16 HUD coords, bundled-bump, splash+icons).
+
+**QA patterns reinforced:**
+- **"Failure mode" diagnostic hooks** beat pure pass/fail prose — each scenario names the most likely defect class if it fails (e.g., "if HUD reappears after 30 s rather than immediately, subscription survived but pushes didn't"). Lets Joe triage on the bench without re-deriving.
+- **Phone-optional QA pattern:** any feature involving the companion must be tested THREE ways — phone reachable, phone unreachable-but-present (airplane mode), phone absent (powered off). The third one is the load-bearing test — `isReachable == false` and "no phone exists" must be indistinguishable to watch-side code. Anti-test: declare phone permanently absent for an entire workout cycle; ANY "waiting" indicator is a bug.
+- **Battery-characteristic acceptance:** subscribe within 2 s, initial read before first notification (else 30 s blank window), cadence ±5 s, range [0,100], dedup, survives auto-reconnect, low-battery LUT defined (defer if scope-cut but explicit in log).
+- **Lifecycle-removal QA:** when deleting a teardown call, the inverse must still work — A6 (user-initiated disconnect) is the regression test for "we removed teardownTransport from workout-stop but didn't accidentally remove the disconnect affordance too."
+- **Two-field discipline:** finish frame must filter HR + pace explicitly; pin in a test that composes summary frames and asserts only Time/Distance bytes appear.
+
+**Bench-test execution order recommendation:** baseline regression first (E), core fix second (A1+A2), expected outcome third (B), battery happy-path fourth (C1-C6), THEN power off the phone and re-run subset (D1), THEN out-of-range walking tests (A7, A8, C7), THEN edge cases. This minimizes wasted bench time if the core fix regressed.
+
+Output: `.squad/decisions/inbox/amber-rc17-qa-scenarios.md` — becomes rc17 PR acceptance criteria.
