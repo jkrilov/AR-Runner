@@ -75,3 +75,17 @@ Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in histo
 5. Do NOT open a separate bump PR after merge
 
 Procedural checklist: `.squad/skills/release-mechanics-bundle-bump/SKILL.md`
+
+### 2026-05-19T15:55:00Z — Meta-Learning: Blank Symptoms May Signal Coordinate Errors, Not Firmware Rejection
+
+**Context:** rc12's forensic analysis resolved the rc11 blank as a **coordinate out-of-bounds clipping** bug, not a firmware rejection of rotation=4.
+
+**Diagnostic pattern to remember:**
+- When a `txt` command goes blank with NO 0xE2 error thrown, first suspect off-screen clipping (spec §5.5.6: off-screen coordinates are silently clipped).
+- Rotation + anchor corner interact subtly: `topLR` (rotation=4) anchors at TOP-RIGHT and extends LEFT and DOWN. Low x values (e.g., x=20) put the entire text block at negative framebuffer x → silently clipped.
+- Before escalating to firmware hypothesis, verify the entire text bounding box stays inside framebuffer space (0..303 × 0..255 for Engo 2).
+- Use the lens-flip transform `x_wearer = 303 − x_fb` to convert between wearer-perceived and framebuffer coordinates.
+
+**Action:** When debugging blank txt outputs, check coordinates against the rotation's anchor point + add a spec-driven bounding-box validation step before filing firmware issues.
+
+---

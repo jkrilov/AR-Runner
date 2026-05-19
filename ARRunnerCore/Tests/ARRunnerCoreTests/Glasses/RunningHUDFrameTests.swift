@@ -238,6 +238,63 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertEqual(Array(bannerFrame[needleStart..<needleEnd]), needle)
     }
 
+    /// rc13 Bug A (Joe's bench: "last letter on each line is cutoff"):
+    /// splash banner MUST render at font 2 (38 px tall, ~18 px wide), not
+    /// font 3 (49 px tall, ~28 px wide). The default banner
+    /// "AR-Runner Ready" is 15 chars; at font 3 ≈ 420 px which extends
+    /// from `x_fb = 284` to `x_fb ≈ −136` and gets silently clipped per
+    /// spec §5.5.6. At font 2 it spans ~270 px, fully inside `0 ≤ x_fb`.
+    /// Per-tick run-HUD strings ("0:00", "0.00 mi", "8:30/mi") stay on
+    /// font 3 — short enough to fit.
+    func test_connectFrames_useShorterFontSoFullBannerFits() {
+        let frames = RunningHUDFrame.connectFrames(banner: "AR-Runner Ready")
+        // Frames 3 and 4 are the two banner txt frames; both must use
+        // bannerFontSize (2), at bannerLine1Y / bannerLine2Y respectively.
+        // txt layout: 0xFF | cmd | fmt | len | queryID | x_hi x_lo |
+        //             y_hi y_lo | rot | font | color | bytes | 0x00 | 0xAA
+        // → font byte is at index 10.
+        XCTAssertEqual(frames[3][10], RunningHUDFrame.Layout.bannerFontSize,
+                       "banner line 1 must render at bannerFontSize, not fontSize")
+        XCTAssertEqual(frames[4][10], RunningHUDFrame.Layout.bannerFontSize,
+                       "banner line 2 must render at bannerFontSize, not fontSize")
+        XCTAssertEqual(RunningHUDFrame.Layout.bannerFontSize, 2,
+                       "bannerFontSize must be 2 (38 px) to fit 15-char banner at leftMargin=284")
+        // Y coords must use the banner-specific values, NOT the run-HUD
+        // ones (which assume font 3's 49 px height).
+        let line1Y = Int16(bitPattern: (UInt16(frames[3][7]) << 8) | UInt16(frames[3][8]))
+        let line2Y = Int16(bitPattern: (UInt16(frames[4][7]) << 8) | UInt16(frames[4][8]))
+        XCTAssertEqual(line1Y, RunningHUDFrame.Layout.bannerLine1Y)
+        XCTAssertEqual(line2Y, RunningHUDFrame.Layout.bannerLine2Y)
+    }
+
+    /// Pin the lens-flip arithmetic for the banner so a future font/Y
+    /// retune can't silently drift off-screen. With font 2 (38 px tall),
+    /// `bannerLine1Y` must equal `255 − T − 38` for the same wearer-y
+    /// target T = 40 that the run HUD's `timeY` uses with font 3.
+    func test_bannerYCoords_compensateForShorterFontHeight() {
+        // Font 2 is 38 px tall per spec §5.9; line 1 targets wearer-y=40,
+        // line 2 targets wearer-y=120 (mirroring run-HUD `timeY`/`distanceY`).
+        XCTAssertEqual(RunningHUDFrame.Layout.bannerLine1Y, 255 - 40 - 38)
+        XCTAssertEqual(RunningHUDFrame.Layout.bannerLine2Y, 255 - 120 - 38)
+    }
+
+    /// Run-HUD font (fontSize) must stay at 3 — short per-tick strings
+    /// ("0:00", "0.00 mi", "8:30/mi") fit at font 3 and are more readable
+    /// at arm's length. Only the splash drops to font 2 for the long
+    /// "AR-Runner Ready" / "Start a run" banners. Guards against a future
+    /// "make everything font 2" mass-edit regression.
+    func test_runHUDFont_staysAtFont3() {
+        XCTAssertEqual(RunningHUDFrame.Layout.fontSize, 3,
+                       "run HUD must stay at font 3 for readability at arm's length")
+        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+        let frames = RunningHUDFrame.frames(for: payload)
+        // frames[2..4] are the three txt commands; font byte is at index 10.
+        for i in 2...4 {
+            XCTAssertEqual(frames[i][10], 3,
+                           "run-HUD txt[\(i)] must use font 3 (was \(frames[i][10]))")
+        }
+    }
+
     func test_framesWithPowerOn_prependsCfgSetAndPowerOnToPlainFrames() {
         let payload = RunningHUDFrame.Payload(time: "0:00", distance: "0.00 mi", pace: "--:--/mi")
         let plain = RunningHUDFrame.frames(for: payload)

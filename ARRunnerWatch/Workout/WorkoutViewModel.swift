@@ -167,6 +167,18 @@ final class WorkoutViewModel {
             startedAt = state.startedAt
             sessionID = state.sessionID
             launchState = .running
+            // rc13 Bug B defensive: a stale push-policy `lastPayload` could
+            // gate the first per-tick frame of this workout if the prior
+            // workout ended with an identical zero-state payload (e.g.,
+            // user starts → immediately cancels → starts again). And the
+            // splash path cleared `needsHUDPowerOn` on connect, so the
+            // first run after pre-pair would NOT re-assert cfgSet+power.
+            // Reset both at every workout start so the first live HUD
+            // frame is guaranteed to ship `cfgSet → power(on:true) →
+            // holdFlush → clear → 3×txt → flush`, fully restoring the
+            // display state regardless of what happened pre-workout.
+            hudPushPolicy.reset()
+            needsHUDPowerOn = true
             startElapsedTicker()
             startMirrorTicker()
             await mirror?.sendLifecycle(.started(activity))
@@ -645,13 +657,13 @@ final class WorkoutViewModel {
         elapsedTask?.cancel()
         elapsedTask = Task { [weak self] in
             while !Task.isCancelled {
-                self?.tickElapsed()
+                await self?.tickElapsed()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
 
-    private func tickElapsed() {
+    private func tickElapsed() async {
         guard let startedAt else { return }
         if case .running = launchState {
             elapsed = Date().timeIntervalSince(startedAt)
@@ -659,7 +671,23 @@ final class WorkoutViewModel {
             // the elapsed ticker. The push policy gates on minimum-interval
             // + payload-change so a frozen pace (`--:--/mi` while distance
             // < 0.01 mi) doesn't generate redundant BLE traffic.
-            Task { [weak self] in await self?.pushHUDFrameIfConnected() }
+            //
+            // rc13 Bug B fix: await the push directly (was previously
+            // spawned as a fire-and-forget `Task { … }`). The spawned
+            // pattern raced with the `start()`-time explicit push AND
+            // with the connect-state-task's `pushHUDConnectScreenIfConnected`
+            // → two `sendCommands(_:)` calls could interleave their
+            // per-frame `try await write(_:)` loops on the
+            // `ActiveLookGlassesAdapter` actor (reentrant between writes),
+            // smearing a per-tick `holdFlush → clear → 3×txt → flush`
+            // sequence across BLE writes from another sequence. A premature
+            // `holdFlush(hold:false)` from one sequence would commit the
+            // partial buffer of the other, leaving the display stuck on
+            // whatever pre-tick frame was visible (the splash, in Joe's
+            // bench scenario). Awaiting serializes per-tick pushes on the
+            // MainActor so the BLE actor only ever sees one complete
+            // sequence at a time.
+            await pushHUDFrameIfConnected()
         }
     }
 

@@ -78,3 +78,17 @@
 5. Do NOT open a separate bump PR after merge
 
 Procedural checklist: `.squad/skills/release-mechanics-bundle-bump/SKILL.md`
+
+### 2026-05-19T15:55:00Z — Meta-Learning: Blank Text May Indicate Off-Screen Clipping, Not Firmware Rejection
+
+**Context:** rc12 forensic research (textrotation agent) resolved the rc11 blank at rotation=4 as an off-screen coordinate clipping bug per spec §5.5.6, NOT a firmware rejection.
+
+**Pattern to integrate into future debugging:**
+- Silent blank with no 0xE2 error → suspect off-screen clipping before firmware hypothesis.
+- Rotation value interacts with text anchor corner: `topLR` (rotation=4) anchors at TOP-RIGHT, extends LEFT and DOWN. Placing anchor at small x (e.g., x=20) pushes the entire text block off-screen (negative x).
+- Spec §5.5.6 guarantees silent clipping for out-of-bounds coordinates — no error thrown, just silently discarded.
+- Before opening firmware escalation, verify the text bounding box stays within framebuffer bounds (0..303 × 0..255 for Engo 2). Use lens-flip formula `x_wearer = 303 − x_fb` for coordinate transforms.
+
+**Recommendation:** Add a pre-flight coordinate validation step to any txt debug flow: check all glyphs fit on-screen before assuming protocol/firmware issue.
+
+---

@@ -2272,3 +2272,83 @@ are all working as of rc10 — untouched in rc11.
 
 **Author.** Laughlin (acting under coordinator pre-release autonomy override
 for the calibration iteration; lockout returns if rc11 fails).
+
+---
+
+## 2026-05-19 — rc12 HUD: topLR coordinates corrected for Engo 2 lens 180° flip (rotation stays at 4)
+
+**Context.** rc11 shipped `RunningHUDFrame.Layout.rotation = 4` (topLR)
+with the rc10 anchor coords (`leftMargin = 20`, `timeY = 40`,
+`distanceY = 120`, `paceY = 200`). On real hardware the HUD went
+completely blank — same symptom as rc9's blank at `rotation = 2`. The
+working hypothesis going into the investigation was "rotation byte 4 is
+also firmware-rejected; ship rotation 0 and live with upside-down text."
+
+**Decision.** Keep `rotation = 4` and move the anchor coordinates
+instead. New values:
+
+```swift
+public static let rotation:  UInt8 = 4   // topLR — unchanged from rc11
+public static let leftMargin: Int16 = 284 // was 20
+public static let timeY:      Int16 = 166 // was 40
+public static let distanceY:  Int16 = 86  // was 120
+public static let paceY:      Int16 = 6   // was 200
+```
+
+**Evidence.** The textrotation forensic research
+(`.squad/files/hud-rotation-research.md`) — combining the official
+ActiveLook iOS SDK enum (`ActiveLookTypes.swift:41-50`, all 8 rotation
+values are documented; the prior "only 0 and 4" note was wrong), the
+ALooK system layout #10 (the demo app's running-time layout, which
+ships `rotation = 4` at `textX = 238`), the demo app's
+`LayoutCommandsViewController.swift:55-57`, and spec §5.5.6 (off-screen
+coords are SILENTLY clipped — no 0xE2 error) — proved the rc11 blank
+was off-screen clipping, not firmware rejection.
+
+**The lens-flip formula.** Engo 2 applies a point-symmetric 180° flip
+between framebuffer and wearer-perceived coords:
+`x_wearer = 303 − x_fb`, `y_wearer = 255 − y_fb`.
+
+`topLR` (rotation=4) renders glyphs 180°-rotated in the framebuffer
+(which cancels the lens flip → right-side-up to the wearer) and
+anchors its `(x, y)` at the **top-RIGHT** of the text block. The block
+extends LEFT and DOWN.
+
+To place the wearer-visible LEFT edge of text at wearer-x = 20:
+`x_fb = 303 − 20 = 283 ≈ 284`.
+
+To place the wearer-visible TOP edge at wearer-y = T using font 3
+(49 px tall): `y_fb = 255 − T − 49 = 206 − T`.
+- T = 40 (top line, time) → 166
+- T = 120 (middle line, distance) → 86
+- T = 200 (bottom line, pace) → 6
+
+At rc11's `leftMargin = 20` the right anchor sat at wearer-x = 283 and
+the ~200 px string extended into wearer-x = 83 down to wearer-x ≈ −120
+(framebuffer-x ≈ −120 to 20), so spec §5.5.6 dropped it silently.
+
+**Recipe for future coordinate fixes on Engo 2.** When choosing a
+`txt` rotation + anchor combo:
+1. Pick rotation based on glyph orientation × anchor corner needed
+   (topLR for left-aligned wearer text starting at small x_wearer; see
+   the SKILL.md updated table).
+2. Apply the lens-flip transform to your wearer-space target coords to
+   get framebuffer coords.
+3. Add/subtract font height to compensate for top-vs-bottom-of-glyph
+   anchoring per the rotation.
+4. Verify the entire bounding box stays inside `0..303` × `0..255` in
+   framebuffer space — if any part goes negative, it's silently
+   clipped and the screen will be blank with NO 0xE2 error.
+
+**Process note (first release under bundled-bump pattern).** Per Joe's
+`copilot-directive-bundle-version-bump.md`, the
+`CURRENT_PROJECT_VERSION: 26 → 27` bump shipped in the SAME PR as the
+coordinate fix (not a separate follow-up PR). xcodegen regen + Info.plist
+placeholder check ran inside the same commit. This is the new release
+contract; the separate-bump-PR pattern is retired.
+
+**Owner:** Laughlin
+**PR:** rc12 feature+bump PR (single PR)
+**Tag:** `v0.3.0-rc12`
+**Validates:** the off-screen-clipping diagnostic recipe; the bundled-
+bump release pattern.
