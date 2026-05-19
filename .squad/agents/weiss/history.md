@@ -25,3 +25,25 @@ Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in histo
 **Significance:** The skill lesson from rc4 (display power-on state must be managed end-to-end through the render path) is now baked into the code. Confidence in activelook-hud-rendering raised to high after this bench validation + fix cycle.
 
 **Next:** Monitor rc5 tester feedback for any HUD rendering regression or power-state edge cases in the field.
+
+---
+
+### 2026-05-18T23:00:00Z — Lockout After rc5 Failure; Richards Took Over HUD Diagnosis
+
+**Status:** Locked out per reviewer rejection protocol (PR #49 + PR #53 both failed on same artifact).
+
+**What happened:** Weiss's rc5 HUD power-on hypothesis (PR #53) shipped and Joe tested on real hardware — same blank screen as rc4. After two consecutive failed attempts on the same artifact (HUD on-connect), the reviewer rejection protocol locked Weiss out. Richards took over root-cause analysis.
+
+**Root cause (discovered by Richards):** The ActiveLook BLE protocol violation was at the **delivery layer**, not the command layer. Both of Weiss's hypotheses (placeholder layout removal in PR #49, power-on handshake in PR #53) addressed command *content*, but the real problem was that commands never reached the glasses' processor:
+
+1. **Write serialization missing** — Official SDK (`Glasses.swift:sendBytes()`) waits for `didWriteValueFor` callback before sending the next command. Our adapter blasted all 4 frames back-to-back synchronously. Glasses firmware drops commands arriving before prior response is processed.
+
+2. **Flow control gate absent** — SDK's `GlassesInitializer.isReady()` polls waiting for `flowControlCharacteristic.isNotifying == true`. Our adapter transitioned to `.connected` before this gate was confirmed, then fired writes into an unprepared peripheral.
+
+**Lesson for Weiss:** This is not a failure of you-the-agent but of hypothesis-driven diagnosis without observability. The ActiveLook protocol has two serialization layers (ATT + application-layer flow control). Without reading the vendor SDK's write-path implementation, we attributed blank screen to your hypothesized content problems. The vendor SDK reference pattern is now the canonical approach for future integrations.
+
+**Canonical reference for future:** `ActiveLook/ios-sdk` on GitHub:
+- `Sources/Classes/Public/Glasses.swift` — `sendBytes()` serialization via `didWriteValueFor`
+- `Sources/Classes/Internal/GlassesInitializer.swift` — `isReady()` flow-control gate
+
+**Recovery path:** Lockout ends when Richards completes PR #55 (now shipping in rc6) and the feature is re-tested on hardware. At that point, Weiss can be re-engaged for follow-up HUD rendering work.

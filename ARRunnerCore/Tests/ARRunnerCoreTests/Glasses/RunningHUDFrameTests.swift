@@ -67,10 +67,8 @@ final class RunningHUDFrameTests: XCTestCase {
         let frames = RunningHUDFrame.frames(for: payload)
         XCTAssertEqual(frames.count, 4, "v1 HUD = clear + 3 lines")
 
-        // 0: clear command, exact byte sequence pinned in
-        // ActiveLookCommandTests already, but re-verify here so a future
-        // re-ordering of `frames(for:)` is caught.
-        XCTAssertEqual(frames[0], [0xFF, 0x01, 0x00, 0x05, 0xAA])
+        // 0: clear command (now 6 bytes with the queryID byte at index 4).
+        XCTAssertEqual(frames[0], [0xFF, 0x01, 0x01, 0x06, 0x00, 0xAA])
 
         // 1..3: txt commands (cmdID 0x37) with the payload strings
         // appearing verbatim in the UTF-8 region.
@@ -80,6 +78,7 @@ final class RunningHUDFrameTests: XCTestCase {
             XCTAssertEqual(frame.last, 0xAA)
             XCTAssertEqual(frame[1], ActiveLookCommand.ID.textUpdate.rawValue,
                            "frame \(i + 1) must be a txt (0x37) command")
+            XCTAssertEqual(frame[2], 0x01, "frame \(i + 1) must include 1-byte queryID")
             // Last byte before the trailing 0xAA is the null terminator.
             XCTAssertEqual(frame[frame.count - 2], 0x00)
             // UTF-8 bytes appear before the null+footer.
@@ -93,9 +92,8 @@ final class RunningHUDFrameTests: XCTestCase {
     func test_frames_textPayloadGeometryMatchesEngo2Layout() {
         let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.frames(for: payload)
-        // x(i16 BE) | y(i16 BE) | rotation | font | color | bytes | 0x00
-        // starts at index 4 (0xFF, cmd, fmt, len).
-        // For our defaults: x=20, rotation=4, fontSize=3, color=15.
+        // 0xFF | cmd | fmt | len | queryID | x(i16 BE) | y(i16 BE) | rotation | font | color | bytes | 0x00 | 0xAA
+        // payload starts at index 5 (after the 1-byte queryID at index 4).
         let expectedY: [Int16] = [
             RunningHUDFrame.Layout.timeY,
             RunningHUDFrame.Layout.distanceY,
@@ -103,16 +101,17 @@ final class RunningHUDFrameTests: XCTestCase {
         ]
         for i in 0..<3 {
             let frame = frames[i + 1]
+            XCTAssertEqual(frame[4], 0x00) // queryID placeholder
             // x: big-endian 0x00 0x14 (20)
-            XCTAssertEqual(frame[4], 0x00)
-            XCTAssertEqual(frame[5], 0x14)
+            XCTAssertEqual(frame[5], 0x00)
+            XCTAssertEqual(frame[6], 0x14)
             // y: big-endian 16-bit signed
-            let y = Int16(bitPattern: (UInt16(frame[6]) << 8) | UInt16(frame[7]))
+            let y = Int16(bitPattern: (UInt16(frame[7]) << 8) | UInt16(frame[8]))
             XCTAssertEqual(y, expectedY[i])
             // rotation, font, color
-            XCTAssertEqual(frame[8],  RunningHUDFrame.Layout.rotation)
-            XCTAssertEqual(frame[9],  RunningHUDFrame.Layout.fontSize)
-            XCTAssertEqual(frame[10], RunningHUDFrame.Layout.color)
+            XCTAssertEqual(frame[9],  RunningHUDFrame.Layout.rotation)
+            XCTAssertEqual(frame[10], RunningHUDFrame.Layout.fontSize)
+            XCTAssertEqual(frame[11], RunningHUDFrame.Layout.color)
         }
     }
 
@@ -147,8 +146,9 @@ final class RunningHUDFrameTests: XCTestCase {
     func test_connectFrames_leadWithPowerOnBeforeAnyDraw() {
         let frames = RunningHUDFrame.connectFrames()
         XCTAssertGreaterThanOrEqual(frames.count, 2)
-        // First frame is power(on:true) — cmdID 0x00, payload [0x01].
-        XCTAssertEqual(frames[0], [0xFF, 0x00, 0x00, 0x06, 0x01, 0xAA])
+        // First frame is power(on:true) — cmdID 0x00, format 0x01, len 7,
+        // queryID placeholder 0x00, payload [0x01].
+        XCTAssertEqual(frames[0], [0xFF, 0x00, 0x01, 0x07, 0x00, 0x01, 0xAA])
         // Second frame is clear (cmdID 0x01).
         XCTAssertEqual(frames[1][1], ActiveLookCommand.ID.clear.rawValue)
     }
@@ -170,7 +170,7 @@ final class RunningHUDFrameTests: XCTestCase {
         let plain = RunningHUDFrame.frames(for: payload)
         let withPower = RunningHUDFrame.framesWithPowerOn(for: payload)
         XCTAssertEqual(withPower.count, plain.count + 1)
-        XCTAssertEqual(withPower[0], [0xFF, 0x00, 0x00, 0x06, 0x01, 0xAA])
+        XCTAssertEqual(withPower[0], [0xFF, 0x00, 0x01, 0x07, 0x00, 0x01, 0xAA])
         // Tail is identical to plain frames(for:).
         XCTAssertEqual(Array(withPower.dropFirst()), plain)
     }
@@ -180,7 +180,7 @@ final class RunningHUDFrameTests: XCTestCase {
         let plain = RunningHUDFrame.summaryFrames(for: payload)
         let withPower = RunningHUDFrame.summaryFramesWithPowerOn(for: payload)
         XCTAssertEqual(withPower.count, plain.count + 1)
-        XCTAssertEqual(withPower[0], [0xFF, 0x00, 0x00, 0x06, 0x01, 0xAA])
+        XCTAssertEqual(withPower[0], [0xFF, 0x00, 0x01, 0x07, 0x00, 0x01, 0xAA])
         XCTAssertEqual(Array(withPower.dropFirst()), plain)
     }
 
@@ -254,14 +254,15 @@ final class ActiveLookTextCommandTests: XCTestCase {
         let frame = ActiveLookCommand.text(
             x: 20, y: 40, rotation: 4, fontSize: 3, color: 15, string: "HI"
         )
-        // 0xFF | cmd 0x37 | format 0x00 | length | x_hi x_lo | y_hi y_lo | rot | font | color | 'H' 'I' | 0x00 | 0xAA
-        // Total = 1+1+1+1+ 2+2+1+1+1 +2+1 +1 = 15 bytes.
-        XCTAssertEqual(frame.count, 15)
+        // 0xFF | cmd 0x37 | format 0x01 | length | queryID 0x00 | x_hi x_lo | y_hi y_lo | rot | font | color | 'H' 'I' | 0x00 | 0xAA
+        // Total = 1+1+1+1+ 1 +2+2+1+1+1 +2 +1 +1 = 16 bytes.
+        XCTAssertEqual(frame.count, 16)
         XCTAssertEqual(frame, [
             0xFF,
             0x37,
-            0x00,
-            UInt8(15),
+            0x01,         // format: 1-byte queryID
+            UInt8(16),
+            0x00,         // queryID placeholder (adapter stamps a real one)
             0x00, 0x14,   // x=20 BE
             0x00, 0x28,   // y=40 BE
             0x04,         // rotation
@@ -275,9 +276,10 @@ final class ActiveLookTextCommandTests: XCTestCase {
 
     func test_textFrame_negativeYEncodesAsTwosComplement() {
         // ActiveLook coordinates are signed; verify -1 → 0xFF 0xFF.
+        // With the 1-byte queryID prefix, y now sits at indices 7..8.
         let frame = ActiveLookCommand.text(x: 0, y: -1, string: "")
-        XCTAssertEqual(frame[6], 0xFF) // y_hi
-        XCTAssertEqual(frame[7], 0xFF) // y_lo
+        XCTAssertEqual(frame[7], 0xFF) // y_hi
+        XCTAssertEqual(frame[8], 0xFF) // y_lo
     }
 
     func test_textFrame_emptyStringStillCarriesNullTerminator() {

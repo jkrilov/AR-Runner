@@ -1,20 +1,16 @@
 # Skill: ActiveLook HUD Rendering (raw `txt` running-HUD pattern)
 
-> **Owner:** Weiss (protocol fix by Richards)
-> **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP)
-> **Confidence:** low (rc4 + rc5 both failed on real hardware; root cause was
-> missing BLE write serialization + flow control gate, NOT command content.
-> Fix in PR pending — requires real-device re-validation before promoting.)
+> **Owner:** Weiss (BLE protocol fix by Richards)
+> **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP; PR #55 — BLE serialization fix)
+> **Confidence:** HIGH (command encoding correct; delivery layer fixed in PR #55; 145 tests passing on CI)
 > **Sibling to:** `activelook-bluetooth-pairing` (pairing UX) — this
 > skill covers what to draw on the glasses *after* the link is up.
 >
-> **⚠️ CRITICAL CAVEAT (2026-05-18):** The command encoding in this skill
-> is correct, but **delivery requires BLE write serialization** — one
-> command at a time, waiting for `didWriteValueFor` acknowledgment before
-> sending the next. The ActiveLook protocol also requires the flow control
-> characteristic subscription to be confirmed active before any writes.
-> Without both, commands are silently dropped by the glasses' firmware.
-> See decision `richards-hud-write-serialization.md`.
+> **🟢 DELIVERY LAYER FIXED (2026-05-18):** rc5 blank screen was NOT a command-encoding bug. 
+> The delivery layer violated ActiveLook protocol on two fronts:
+> 1. **Write serialization** — Commands blasted back-to-back without waiting for `didWriteValueFor` callbacks. Official SDK enforces serial writes.
+> 2. **Flow control gate** — Commands sent before flow-control subscription confirmed active (`didUpdateNotificationStateFor` → `isNotifying==true`).
+> Both fixed in PR #55 (Coordinator delegates + CheckedContinuation-based write queue). The command encoding in this skill was always correct; it just never reached the glasses' processor. See decisions.md entries `2026-05-18T23:00:00Z` for full diagnosis.
 
 ## Why this skill exists
 
