@@ -18,6 +18,20 @@ import Foundation
 /// `length` is the **total** frame size including the start byte and the
 /// trailing 0xAA footer.
 ///
+/// **queryID is implicitly required by Engo 2 firmware.** Although the spec
+/// marks queryID as 0–15 bytes (optional), the official ActiveLook iOS SDK
+/// (`Glasses.sendCommand`) ALWAYS attaches a 1-byte queryID for every
+/// application command — `withoutQueryId: true` is only passed for three DFU
+/// ops (`qspiErase`, `qspiWrite`, `reset`). Mirror that exactly: the encoder
+/// defaults to `format = 0x01` with a 1-byte queryID. PRs #49, #53, #55 all
+/// shipped `format = 0x00` frames; the Engo 2 firmware then misread the first
+/// payload byte as the queryID — `power(on:true)` became a no-op, `txt`
+/// coordinates shifted by 1 byte rendered text 5000+ px off-screen.
+///
+/// The adapter is responsible for stamping a unique incrementing queryID on
+/// each frame just before write; this encoder emits `queryID = 0x00` as a
+/// deterministic placeholder so unit tests can pin exact byte sequences.
+///
 /// This file is deliberately Foundation-only so it builds on the Linux CI
 /// runner; the watchOS adapter consumes these `[UInt8]` payloads directly.
 public enum ActiveLookCommand {
@@ -47,9 +61,10 @@ public enum ActiveLookCommand {
     }
 
     /// Request the glasses' battery level. Response arrives as a TX notification.
-    /// (CmdID 0x05)
-    public static func batteryQuery(queryID: UInt16 = 0) -> [UInt8] {
-        encode(id: .battery, payload: [], queryID: queryID == 0 ? nil : queryID)
+    /// (CmdID 0x05) The adapter stamps a fresh queryID on each frame so the
+    /// `queryID` parameter here is only useful for tests pinning exact bytes.
+    public static func batteryQuery(queryID: UInt8 = 0x00) -> [UInt8] {
+        encode(id: .battery, payload: [], queryID: queryID)
     }
 
     /// Set HUD luminosity (0–15 per ActiveLook spec; we clamp).
@@ -117,11 +132,30 @@ public enum ActiveLookCommand {
     // MARK: - Frame builder
 
     /// Wraps `payload` in the ActiveLook framing bytes.
+    ///
+    /// **Always emits a 1-byte queryID by default** (`format = 0x01`) to
+    /// match the official ActiveLook iOS SDK convention. Engo 2 firmware
+    /// silently mis-parses frames that omit the queryID byte (PRs #49/#53/#55
+    /// root cause). Callers pass `withoutQueryId: true` ONLY for DFU ops
+    /// (`qspiErase`, `qspiWrite`, `reset`) per the SDK's own convention —
+    /// none of those are wired in v0.3.
+    ///
+    /// The encoder writes a deterministic `queryID = 0x00` placeholder; the
+    /// adapter stamps a unique incrementing queryID on every frame just
+    /// before `peripheral.writeValue` so each command is uniquely
+    /// correlatable with its eventual response on the TX characteristic.
+    ///
     /// Exposed `internal` so tests can exercise edge cases (long payloads,
-    /// queryID variations) without going through every command-specific helper.
-    static func encode(id: ID, payload: [UInt8], queryID: UInt16? = nil) -> [UInt8] {
-        let queryBytes: [UInt8] = queryID.map { [UInt8($0 >> 8), UInt8($0 & 0xFF)] } ?? []
-        let queryLen = UInt8(queryBytes.count) // 0 or 2 in practice; spec allows 0–15
+    /// queryID variations, withoutQueryId opt-out) without going through
+    /// every command-specific helper.
+    static func encode(
+        id: ID,
+        payload: [UInt8],
+        queryID: UInt8 = 0x00,
+        withoutQueryId: Bool = false
+    ) -> [UInt8] {
+        let queryBytes: [UInt8] = withoutQueryId ? [] : [queryID]
+        let queryLen = UInt8(queryBytes.count) // 0 (DFU only) or 1 (everything else)
 
         // Total = 0xFF + cmd + format + lenBytes + queryBytes + payload + 0xAA
         // Tentatively assume 1-byte length, then promote if it overflows.

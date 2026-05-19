@@ -6,9 +6,10 @@ import XCTest
 
 final class ActiveLookCommandTests: XCTestCase {
     func testClearFrameMatchesSpec() {
-        // 0xFF | 0x01 | 0x00 | length=5 | 0xAA  → exactly 5 bytes
+        // 0xFF | 0x01 (clear) | 0x01 (format: 1-byte queryID) | length=6 |
+        // queryID=0x00 (placeholder; adapter stamps a real one) | 0xAA
         let frame = ActiveLookCommand.clear()
-        XCTAssertEqual(frame, [0xFF, 0x01, 0x00, 0x05, 0xAA])
+        XCTAssertEqual(frame, [0xFF, 0x01, 0x01, 0x06, 0x00, 0xAA])
     }
 
     func testPowerOnFrame() {
@@ -16,15 +17,16 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(frame.first, 0xFF)
         XCTAssertEqual(frame.last, 0xAA)
         XCTAssertEqual(frame[1], 0x00)            // command id
-        XCTAssertEqual(frame[2], 0x00)            // format: no query, 1-byte len
+        XCTAssertEqual(frame[2], 0x01)            // format: 1-byte queryID, 1-byte len
         XCTAssertEqual(Int(frame[3]), frame.count) // length matches actual frame size
-        XCTAssertTrue(frame.contains(0x01))        // payload byte = on
+        XCTAssertEqual(frame[4], 0x00)            // queryID placeholder
+        XCTAssertEqual(frame[5], 0x01)            // payload byte = on
     }
 
     func testLumaClampsAboveMax() {
         let frame = ActiveLookCommand.luma(level: 99)
-        // payload byte sits at index 4 (after start, cmd, format, length)
-        XCTAssertEqual(frame[4], 15)
+        // payload byte sits at index 5 (after start, cmd, format, length, queryID)
+        XCTAssertEqual(frame[5], 15)
     }
 
     func testWidgetUpdateContainsLayoutAndFieldAndUTF8Value() {
@@ -32,43 +34,60 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(frame.first, 0xFF)
         XCTAssertEqual(frame.last, 0xAA)
         XCTAssertEqual(frame[1], ActiveLookCommand.ID.widgetUpdate.rawValue)
-        // payload starts at index 4
-        XCTAssertEqual(frame[4], 0x02)
-        XCTAssertEqual(frame[5], 0x01)
+        XCTAssertEqual(frame[2], 0x01)            // format: 1-byte queryID
+        // queryID placeholder at index 4; payload starts at index 5
+        XCTAssertEqual(frame[4], 0x00)
+        XCTAssertEqual(frame[5], 0x02)
+        XCTAssertEqual(frame[6], 0x01)
         // value bytes "5:42" + null terminator
-        XCTAssertEqual(Array(frame[6..<10]), Array("5:42".utf8))
-        XCTAssertEqual(frame[10], 0x00)
+        XCTAssertEqual(Array(frame[7..<11]), Array("5:42".utf8))
+        XCTAssertEqual(frame[11], 0x00)
     }
 
     func testTwoByteLengthPromotionForLargePayload() {
-        // Force length > 255 to verify the format byte's high bit flips.
+        // Force length > 255 to verify the format byte's high bit flips
+        // while the queryID nibble stays at 0x01.
         let big = String(repeating: "x", count: 300)
         let frame = ActiveLookCommand.updateWidget(layoutID: 0x01, fieldIndex: 0x00, value: big)
         XCTAssertGreaterThan(frame.count, 0xFF)
-        // Format byte must indicate 2-byte length encoding.
+        // Format byte must indicate 2-byte length encoding AND 1-byte queryID.
         XCTAssertEqual(frame[2] & 0x10, 0x10)
-        // Length is big-endian across [3], [4]
+        XCTAssertEqual(frame[2] & 0x0F, 0x01)
+        // Length is big-endian across [3], [4]; queryID at [5].
         let encodedLen = (Int(frame[3]) << 8) | Int(frame[4])
         XCTAssertEqual(encodedLen, frame.count)
+        XCTAssertEqual(frame[5], 0x00) // queryID placeholder
     }
 
-    func testQueryIDIsEncodedWhenPresent() {
-        let frame = ActiveLookCommand.encode(id: .battery, payload: [], queryID: 0x1234)
-        // format byte low nibble = 2 (queryID length)
-        XCTAssertEqual(frame[2] & 0x0F, 0x02)
-        // queryID bytes follow length
-        XCTAssertEqual(frame[4], 0x12)
-        XCTAssertEqual(frame[5], 0x34)
-        XCTAssertEqual(frame.last, 0xAA)
+    func testEncodeIncludesQueryIDByDefault() {
+        // Critical regression guard for the PR #49/#53/#55 root cause: every
+        // application command MUST emit `format = 0x01` with a 1-byte queryID
+        // so Engo 2 firmware parses the data region from the right offset.
+        let frame = ActiveLookCommand.encode(id: .clear, payload: [])
+        XCTAssertEqual(frame[2] & 0x0F, 0x01, "default encoding must include 1 queryID byte")
+        XCTAssertEqual(frame[4], 0x00, "deterministic placeholder queryID for test stability")
+    }
+
+    func testEncodeUsesExplicitQueryIDByteWhenProvided() {
+        let frame = ActiveLookCommand.encode(id: .clear, payload: [], queryID: 0x7F)
+        XCTAssertEqual(frame[2] & 0x0F, 0x01)
+        XCTAssertEqual(frame[4], 0x7F)
+    }
+
+    func testEncodeOmitsQueryIDWhenWithoutQueryIdTrue() {
+        // DFU-style opt-out (qspiErase / qspiWrite / reset). Mirrors the
+        // ActiveLook iOS SDK convention so future DFU plumbing is byte-correct.
+        let frame = ActiveLookCommand.encode(id: .clear, payload: [], withoutQueryId: true)
+        XCTAssertEqual(frame[2] & 0x0F, 0x00, "withoutQueryId frames must have format nibble 0x00")
+        // Frame is [0xFF, 0x01, 0x00, 0x05, 0xAA] — no queryID byte at all.
+        XCTAssertEqual(frame, [0xFF, 0x01, 0x00, 0x05, 0xAA])
     }
 
     func testDisplayLayoutFrameCarriesOnlyTheLayoutID() {
         // v0.2 spec compliance: cmd 0x62 takes a single layout-ID byte as
-        // payload. Initial slot content is pushed via widgetUpdate, NOT
-        // appended here. Regression guard for the v0.1 implementation that
-        // appended UTF-8 text + a null terminator.
+        // payload. With the queryID byte, the frame is 7 bytes (was 6 in v0.1).
         let frame = ActiveLookCommand.displayLayout(id: 0x02)
-        XCTAssertEqual(frame, [0xFF, 0x62, 0x00, 0x06, 0x02, 0xAA])
+        XCTAssertEqual(frame, [0xFF, 0x62, 0x01, 0x07, 0x00, 0x02, 0xAA])
     }
 
     func testGATTUUIDsAreCanonical() {

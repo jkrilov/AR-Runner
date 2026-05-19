@@ -148,6 +148,27 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
     /// `isReady()` gate in `GlassesInitializer.swift`.
     private var flowControlNotifyConfirmed = false
 
+    /// Runtime flow-control state. The control characteristic (0xCB9)
+    /// publishes `0x01` (ON — buffer OK) and `0x02` (OFF — buffer 75% full,
+    /// client MUST stop). PRs #49/#53/#55 never read this characteristic's
+    /// value — only the notification *subscription* — so a runtime "OFF"
+    /// from the glasses would be silently dropped while writes kept landing
+    /// at the GATT layer. Default: true (assume OK until told otherwise).
+    private var flowControlAllowsWrite: Bool = true
+
+    /// Continuation awaiting the next `0x01` (ON) signal on the control
+    /// characteristic. Populated when `write(_:)` finds flow control OFF;
+    /// resumed by `handleControlValue(0x01)`.
+    private var flowControlContinuation: CheckedContinuation<Void, Never>?
+
+    /// Per-connection queryID counter. Every ActiveLook application command
+    /// frame includes a 1-byte queryID that the firmware echoes in error and
+    /// response notifications. The encoder emits `0x00` as a placeholder;
+    /// `write(_:)` stamps the next ID here just before
+    /// `peripheral.writeValue`. Wraps 0xFF → 0x01 (0x00 is reserved as the
+    /// encoder's placeholder so accidental skips remain debuggable).
+    private var nextQueryID: UInt8 = 0x01
+
     /// Continuation awaiting the current write's `didWriteValueFor` callback.
     /// Only one write is in-flight at a time — the ActiveLook protocol
     /// requires serial command delivery.
@@ -171,7 +192,11 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         // Cancel any in-flight write.
         pendingWrite?.resume(throwing: GlassesTransportError.notConnected)
         pendingWrite = nil
+        flowControlContinuation?.resume()
+        flowControlContinuation = nil
+        flowControlAllowsWrite = true
         flowControlNotifyConfirmed = false
+        nextQueryID = 0x01
 
         if let central, let peripheral {
             central.cancelPeripheralConnection(peripheral)
@@ -518,6 +543,12 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         // Cancel any in-flight write so it doesn't hang forever.
         pendingWrite?.resume(throwing: GlassesTransportError.notConnected)
         pendingWrite = nil
+        // Release any caller blocked on flow control so they error out
+        // through the next-write `notConnected` path instead of stalling.
+        flowControlContinuation?.resume()
+        flowControlContinuation = nil
+        flowControlAllowsWrite = true
+        nextQueryID = 0x01
 
         if userDisconnectRequested {
             transition(to: .disconnected)
@@ -583,14 +614,26 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
 
     // MARK: - Writes (serialized per ActiveLook protocol)
 
-    /// Serialized write: sends bytes to the RX characteristic and waits for
-    /// the `didWriteValueFor` callback before returning. This ensures only
-    /// one BLE write is in-flight at a time, matching the ActiveLook SDK's
+    /// Serialized write: gates on runtime flow control, stamps a unique
+    /// queryID, sends bytes to the RX characteristic, and waits for the
+    /// `didWriteValueFor` callback before returning. Ensures only one BLE
+    /// write is in-flight at a time, matching the ActiveLook SDK's
     /// `sendBytes()` → `rxCharacteristicState` gate.
+    ///
+    /// **queryID stamping** is done here (not in the encoder) so unit tests
+    /// can keep pinning deterministic byte sequences while the live wire is
+    /// always uniquely-correlatable with TX-channel responses/errors.
     private func write(_ bytes: [UInt8]) async throws {
         guard let peripheral, let rxCharacteristic else {
             throw GlassesTransportError.notConnected
         }
+        // Runtime flow-control gate. PRs #49/#53/#55 only honored the
+        // notification *subscription* (`flowControlNotifyConfirmed`) and
+        // ignored the actual 0x01/0x02 value the glasses publish, so a
+        // mid-burst "buffer 75% full" would silently drop writes.
+        await awaitFlowControlAllowsWrite()
+        var stamped = bytes
+        stampNextQueryID(into: &stamped)
         // Wait for any prior write to complete (serialization).
         // In practice, `sendCommands` already serializes via `for frame in
         // frames { try await write(frame) }`, but this guards against any
@@ -598,10 +641,109 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         assert(pendingWrite == nil, "Concurrent write detected — ActiveLook requires serial writes")
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.pendingWrite = continuation
-            let data = Data(bytes)
-            logger.debug("BLE write \(bytes.count) bytes: cmd=0x\(bytes.count > 1 ? String(bytes[1], radix: 16) : "?", privacy: .public)")
+            let data = Data(stamped)
+            logger.debug("BLE write \(stamped.count) bytes: cmd=0x\(stamped.count > 1 ? String(stamped[1], radix: 16) : "?", privacy: .public) queryID=0x\(stamped.count > 4 ? String(stamped[4], radix: 16) : "?", privacy: .public)")
             peripheral.writeValue(data, for: rxCharacteristic, type: .withResponse)
         }
+    }
+
+    /// Block the current `write(_:)` until flow control reports ON. No-op
+    /// if writes are already allowed (the hot path). Only one waiter is
+    /// supported at a time, which is the only configuration `write(_:)`
+    /// ever produces because writes are serialized via `pendingWrite`.
+    private func awaitFlowControlAllowsWrite() async {
+        if flowControlAllowsWrite { return }
+        logger.warning("Write gated by flow control = OFF; awaiting ON before sending")
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            self.flowControlContinuation = cont
+        }
+    }
+
+    /// Stamp the next queryID into a fully-encoded frame. The encoder
+    /// always emits `0x00` as a placeholder at the queryID position; this
+    /// method overwrites it with a unique value and bumps the counter.
+    ///
+    /// Frame layout this method assumes:
+    ///   * `frame[2] & 0x0F` is the queryID byte count (0 for DFU opt-out)
+    ///   * `frame[2] & 0x10` is the 2-byte-length flag
+    ///   * queryID byte sits at index 4 (1-byte len) or 5 (2-byte len)
+    ///
+    /// `withoutQueryId` frames (DFU ops) pass through untouched.
+    private func stampNextQueryID(into frame: inout [UInt8]) {
+        guard frame.count >= 5 else { return }
+        let format = frame[2]
+        let queryLen = Int(format & 0x0F)
+        guard queryLen >= 1 else { return } // DFU opt-out — no queryID byte
+        let twoByteLen = (format & 0x10) != 0
+        let queryIDIndex = twoByteLen ? 5 : 4
+        guard frame.count > queryIDIndex else { return }
+        frame[queryIDIndex] = nextQueryID
+        nextQueryID = nextQueryID == 0xFF ? 0x01 : nextQueryID &+ 1
+    }
+
+    /// Routed from the Coordinator's `didUpdateValueFor` for the control
+    /// characteristic (0xCB9). Single-byte value per the ActiveLook spec.
+    ///
+    ///   * `0x01` — flow control ON, buffer OK, host may send
+    ///   * `0x02` — flow control OFF, buffer 75% full, host MUST stop
+    ///   * `0x03` — control error: corrupt/incomplete command (ignored by glasses)
+    ///   * `0x04` — control error: receive queue overflow
+    ///   * `0x06` — control error: missing `cfgWrite` before config modification
+    fileprivate func handleControlValue(_ byte: UInt8) {
+        switch byte {
+        case 0x01:
+            logger.info("ActiveLook flow control: ON (buffer OK)")
+            flowControlAllowsWrite = true
+            if let cont = flowControlContinuation {
+                flowControlContinuation = nil
+                cont.resume()
+            }
+        case 0x02:
+            logger.warning("ActiveLook flow control: OFF (buffer ≥75% full — halting writes until ON)")
+            flowControlAllowsWrite = false
+        case 0x03:
+            logger.error("ActiveLook control: 0x03 corrupt/incomplete command (firmware ignored last frame)")
+        case 0x04:
+            logger.error("ActiveLook control: 0x04 receive queue overflow")
+        case 0x06:
+            logger.error("ActiveLook control: 0x06 missing cfgWrite before config modification")
+        default:
+            logger.warning("ActiveLook control: unknown value 0x\(String(byte, radix: 16), privacy: .public)")
+        }
+    }
+
+    /// Routed from the Coordinator's `didUpdateValueFor` for the TX
+    /// characteristic (0xCB8). Parses 0xE2 error notification frames per
+    /// spec §4.15 and logs at error level so an on-device console capture
+    /// can confirm whether the queryID fix worked.
+    ///
+    /// Frame layout for 0xE2: `0xFF | 0xE2 | format | length(1-2) | queryID?
+    /// | cmdId(u8) | error(u8) | subError(u8) | 0xAA`.
+    /// Error codes: 1=generic, 2=missing cfgWrite, 3=memory rw error,
+    /// 4=protocol decoding error (malformed frame / unknown cmd).
+    fileprivate func handleTXNotification(_ data: Data) {
+        guard data.count >= 5,
+              data.first == 0xFF,
+              data.last == 0xAA
+        else { return }
+        let bytes = Array(data)
+        guard bytes[1] == 0xE2 else {
+            // Other TX traffic (battery response, vers, etc.) — not surfaced
+            // in v0.3. The battery path runs off the dedicated 0x2A19 char.
+            return
+        }
+        let format = bytes[2]
+        let queryLen = Int(format & 0x0F)
+        let twoByteLen = (format & 0x10) != 0
+        let dataStart = 3 + (twoByteLen ? 2 : 1) + queryLen
+        guard bytes.count >= dataStart + 3 + 1 else {
+            logger.error("ActiveLook 0xE2 error frame truncated (\(bytes.count, privacy: .public) bytes)")
+            return
+        }
+        let cmdId = bytes[dataStart]
+        let error = bytes[dataStart + 1]
+        let subError = bytes[dataStart + 2]
+        logger.error("ActiveLook 0xE2 error: cmdId=0x\(String(cmdId, radix: 16), privacy: .public) error=\(error, privacy: .public) subError=\(subError, privacy: .public)")
     }
 
     /// Called by the Coordinator when CoreBluetooth confirms a write completed.
@@ -753,15 +895,37 @@ extension ActiveLookGlassesAdapter {
             didUpdateValueFor characteristic: CBCharacteristic,
             error: Error?
         ) {
-            // Battery level (Standard Battery Service 0x2A19) is the only TX
-            // notification we route in v0.1. Other notifications (gesture,
-            // touch, control flow) are spec'd but deferred to v1.
-            guard
-                characteristic.uuid == CBUUID(string: ActiveLookGATT.batteryLevelChar),
-                let data = characteristic.value, let firstByte = data.first
-            else { return }
-            let level = Int(firstByte)
-            Task { [weak adapter] in await adapter?.handleBatteryLevel(level) }
+            let uuid = characteristic.uuid
+            // Control characteristic (0xCB9): runtime flow-control values
+            // (0x01 ON / 0x02 OFF) and control-side error codes (0x03 / 0x04 /
+            // 0x06). PRs #49/#53/#55 silently dropped these — the resulting
+            // blind-flight is the secondary root cause of the blank-screen
+            // regression series. Now routed to the adapter for observability
+            // + runtime write gating.
+            if uuid == CBUUID(string: ActiveLookGATT.controlChar) {
+                if let data = characteristic.value, let byte = data.first {
+                    Task { [weak adapter] in await adapter?.handleControlValue(byte) }
+                }
+                return
+            }
+            // TX characteristic (0xCB8): command responses including 0xE2
+            // error notifications (`cmdId | error | subError`). Logged at
+            // error level so an on-device console capture immediately reveals
+            // whether the glasses are rejecting any of our frames.
+            if uuid == CBUUID(string: ActiveLookGATT.txCharacteristic) {
+                if let data = characteristic.value {
+                    let payload = Data(data) // detach from CB ownership for actor hop
+                    Task { [weak adapter] in await adapter?.handleTXNotification(payload) }
+                }
+                return
+            }
+            // Battery level (Standard Battery Service 0x2A19).
+            if uuid == CBUUID(string: ActiveLookGATT.batteryLevelChar),
+               let data = characteristic.value, let firstByte = data.first {
+                let level = Int(firstByte)
+                Task { [weak adapter] in await adapter?.handleBatteryLevel(level) }
+                return
+            }
         }
 
         func peripheral(
