@@ -50,16 +50,8 @@ public enum RunningHUDFrame {
         /// length through the projection.
         public static let fontSize: UInt8 = 3
 
-        /// 0 = bottomRL; rotation=2 in rc9 went blank (likely not a valid
-        /// enum value per Engo 2 firmware); reverting until calibration cycle.
-        /// rc8 shipped rotation=0 with text upside-down + per-second flicker;
-        /// rc9 attempted to fix both (rotation 0→2, plus holdFlush wrap) and
-        /// the screen went blank. rc10 bisects: revert rotation only, keep
-        /// holdFlush. If rc10 renders upside-down text without flicker,
-        /// holdFlush is good and we'll iterate rotation values (1, 3, 6, 7)
-        /// one-at-a-time in rc11+. If rc10 is still blank, holdFlush is
-        /// the culprit and gets reverted too.
-        public static let rotation: UInt8 = 0
+        // 4 = topLR per SDK enum; testing the other documented value (rc10 used 0 = bottomRL which read upside-down; rc9 used 2 which went blank — undocumented)
+        public static let rotation: UInt8 = 4
 
         /// 15 = full white on the monochrome OLED. Anything dimmer hurts
         /// readability outdoors.
