@@ -2352,3 +2352,205 @@ contract; the separate-bump-PR pattern is retired.
 **Tag:** `v0.3.0-rc12`
 **Validates:** the off-screen-clipping diagnostic recipe; the bundled-
 bump release pattern.
+
+---
+
+## 2026-05-19 — rc13 HUD: splash text fits + per-tick HUD pushes during active run (Amber's first workout+HUD-integration PR)
+
+**Context.** rc12 (PR #71) landed orientation + screen position right — text rendered right-side-up at the correct wearer-y. Joe's rc12 bench surfaced three new issues:
+
+> "2 steps forward 1 step back :) The text is now oriented correctly. The initial splash screen shows 'AR-Runner' and 'Start a run', the last letter on each line is cutoff. Once the run is started, the first time it just sits on that splash screen until I stop the run. Then it shows the final stats. The next time I start a run I see time and distance only, no HR or pace."
+
+Routed to Amber (workout-lifecycle owner) — fresh eyes on the layer; Weiss + Richards remain locked from HUD render fixes after the v0.3 saga; Laughlin already had two override turns. Two of the three bugs were in workout-lifecycle wiring, the third was a mechanical font/coords fit — Amber bundled all three per Joe's bundle-version-bump directive.
+
+**Decision (Bug A — splash text cut off).** Drop the `connectFrames()` splash banner to font 2 (38 px tall, ~18 px wide) and recompute Y coords with the font-2 lens-flip arithmetic (`y_fb = 255 − T − 38`, so `bannerLine1Y=177`, `bannerLine2Y=97`). The 15-char `"AR-Runner Ready"` banner at font 3 spanned ~420 px starting at `x_fb=284`, extending into negative x where spec §5.5.6 silently clips. At font 2 the same string spans ~270 px ≤ 284 → fully on-screen. Run HUD stays at font 3 because its strings ("0:00", "0.00 mi", "8:30/mi") are short (≤8 chars) and font 3 is more readable at arm's length.
+
+```swift
+public static let bannerFontSize: UInt8 = 2
+public static let bannerLine1Y:   Int16 = 177   // wearer-y=40,  font 2 → 255 − 40 − 38
+public static let bannerLine2Y:   Int16 = 97    // wearer-y=120, font 2 → 255 − 120 − 38
+```
+
+**Decision (Bug B — HUD frozen on splash through entire active run).** Two compounding root causes, both in the watch ViewModel (NOT the BLE actor):
+
+1. **Per-tick `frames(for:)` is wrapped in `holdFlush(hold:true) … holdFlush(hold:false)`**, so the 6-frame sequence `[hold, clear, txt, txt, txt, flush]` must arrive at the BLE actor atomically. `tickElapsed()` was spawning the push as `Task { await self?.pushHUDFrameIfConnected() }` rather than awaiting it. That fire-and-forget Task raced with (a) the explicit `pushHUDFrameIfConnected()` at the end of `start()` AND (b) the connect-state task's `pushHUDConnectScreenIfConnected` whenever the link re-emitted `.connected` mid-workout. Two concurrent `sendCommands(_:)` calls on `ActiveLookGlassesAdapter` interleave their per-frame `try await write(_:)` loops — the actor is reentrant between `await`s — smearing one sequence's `holdFlush(hold:false)` into another sequence's mid-frame buffer, committing a partial frame and stranding the rest. The ONLY frame paths that landed cleanly were the ones without holdFlush wrap (the connect splash, the end-of-workout summary), which matches Joe's symptom *exactly*: "stays on splash, summary appears at stop." **Fix:** `tickElapsed()` is now `async` and `await`s `pushHUDFrameIfConnected()` directly. The BLE actor only ever sees one complete 6-frame sequence at a time.
+
+2. **`needsHUDPowerOn` was cleared by the splash, leaving the first per-tick frame without belt-and-braces cfgSet/power-on.** When the user pre-pairs and then taps Start, `pushHUDConnectScreenIfConnected` already sent `cfgSet + power(on:true) + clear + 2×txt` and flipped `needsHUDPowerOn = false`. The first live frame then used plain `frames(for:)` — no cfgSet, no power-on. If the display drifted back into low-power between splash and workout-start, the entire first burst lands on a dark panel. **Fix:** `start()` resets `hudPushPolicy` AND sets `needsHUDPowerOn = true` so the first live frame of every workout sends `framesWithPowerOn(for:)` — re-asserting `cfgSet("ALooK") + power(on:true)` ahead of the holdFlush-wrapped clear+3×txt+flush. Both prepended commands are idempotent per-connect; cost is two extra short BLE writes per workout-start.
+
+**Decision (Bug C — second run: only 2 of 3 metric lines).** Joe noted in the task brief: *"may converge on the same root cause [as B]"*. The Bug B #1 interleaving most often clobbered the trailing portion of a sequence (the third `txt` and/or the closing `holdFlush(hold:false)`), which matches "missing the third line" precisely. Awaiting the per-tick push (Bug B fix #1) eliminates the interleaving so this *should* resolve along with B. Deferred re-evaluation to Joe's rc13 bench; if pace is still selectively missing, treat as a separate v0.4.0 investigation.
+
+**Process recipe (file under "MainActor patterns for actor-serialized BLE bursts").** When a per-tick async push needs to deliver a multi-frame sequence atomically to an actor that is reentrant between `await`s, **the caller MUST `await` the push, not spawn it.** A `Task { await foo() }` from a MainActor-isolated timer doesn't serialize against other Tasks issued from the same timer or other actors — it just hands them to the global cooperative pool. If the receiving actor only enforces serial writes WITHIN a single function call (e.g., `for frame in frames { try await write(frame) }`), two concurrent callers will interleave their writes mid-function. Either:
+- The caller serializes (await the call so the next tick can't issue until prior completes), OR
+- The actor adds a coarser "burst" lock that holds across the entire multi-frame sequence.
+For AR-Runner, awaiting is simpler and avoids touching the load-bearing BLE adapter.
+
+**Scope-guard compliance.** rotation, leftMargin, timeY/distanceY/paceY, holdFlush, cfgSet, queryID, BLE serialization, flow-control, and power-on encoders — ALL untouched. The fix is in the ViewModel calling pattern, not the BLE layer.
+
+---
+
+## 2026-05-19 — rc14 Live HR + Avg Pace in run HUD, dedicated finish screen, splash trimmed
+
+**Date:** 2026-05-19T13:11:07-04:00
+**Author:** Amber
+**Status:** Decided; PR shipped under bundled-version-bump pattern.
+
+### Context
+
+rc13 (PR #72) fixed the workout-lifecycle freeze and splash-font fit. Joe's bench test on rc13 surfaced three further asks:
+
+1. Splash line 1 still read "AR-Runner Ready"; Joe wants just "AR-Runner".
+2. Live run HUD only renders 2 fields (Time + Distance); should be 4 (Time, HR, Distance, Avg Pace) — pulls v0.4.0-rc1 HR forward.
+3. Workout-end leaves the live frame frozen; need a dedicated finish screen showing Time + Distance ONLY (final stats are minimalist).
+
+### Decisions
+
+#### D1 — Live HUD layout: Option A (4 vertical lines, font 3, tightened spacing)
+
+Three layouts were on the table:
+
+| Option | Description | Tradeoff |
+| --- | --- | --- |
+| **A** | 4 vertical lines at font 3, 55-px wearer-space spacing | Simplest, no pixel math; 6-px gap between glyphs (tight but legible). Reuses proven font 3 for outdoor readability. |
+| B | 2 lines with right-justified secondary metric | Needs pixel-width measurement against stock-font advance table under topLR's right-anchored coords. We've lost rc11+rc12 to coordinate-math drift; another speculative layout is risk-on. |
+| C | Mixed font sizes / labels | Extra surface area for clipping bugs; ROI unclear. |
+
+**Chose A.** Per the rc14 brief "pick whichever is cleanest." Going with the simplest layout to reduce coordinate-system risk and ship metrics faster.
+
+---
+
+## 2026-05-19 — rc15 Icon pipeline deferred to rc16; ship layout-only mixed-font HUD
+
+**Author:** Amber
+**Date:** 2026-05-19
+**Status:** decided
+**Related:** PR (rc15), `.squad/files/hud-icon-research.md`, rc14 history entry
+
+### Context
+
+Joe's rc14 bench test: *"the fonts are too large and text on each line is overlapping. What I'd like to do is have Line 1: Time on the left with time icon ... Line 2 Distance with distance icon ... Line 3 Avg Pace with pace icon ..."* — i.e. asked for **two** changes at once:
+(a) text layout fix, (b) ActiveLook icons rendered on glasses flash.
+
+The rc15 task brief itself included an explicit escape hatch: *"If asset upload chunking turns out to be a large undertaking (multi-MTU bitmap fragmentation with sequence numbers), STOP and report — we'd want to consider deferring to rc16 with just rc15 = layout-only fixes (no icons)."*
+
+### Decisions
+
+#### 1. rc15 ships layout-only; icons deferred to rc16+
+
+Phase 0 spec research (see `.squad/files/hud-icon-research.md`) confirmed the icon pipeline is substantially larger than the brief estimated. The `cfgWrite` is a HARD prerequisite for any `imgSave` (spec §5.5), and custom image uploads require multi-MTU chunking with sequence numbers — adding 200+ lines of marshaling code and test coverage. **Decision:** Ship rc15 as layout-only (reflow the 4-line HUD to fit font 3's true 64 px height, stop). Icons remain on the rc16 roadmap. This unblocks Joe's bench-testing and Amber's next iteration without the speculative image-serialization cost.
+
+---
+
+## 2026-05-19 — rc16 HUD: icons (preloaded ALooK) + layout fix (corrected font heights)
+
+**Owner:** Amber
+**PR:** rc16 feature+bump PR (bundled per directive)
+**Tag:** `v0.3.0-rc16`
+**Validates:** the corrected font-height table (F1=24 / F2=38 / F3=64 / F4=75 / F5=82 per `ActiveLook/Activelook-Visual-Assets` README), the empirically-validated `y_fb = 255 − wearer_top` lens-flip formula for topLR text anchors, AND the preloaded-icon rendering path (`imgDisplay` 0x42 + ALooK flash IDs — no `cfgWrite` / `imgSave` upload pipeline required).
+
+### Context
+
+rc15 (PR #75, build 30) shipped a mixed-font 3-line live HUD. Joe's bench test reported three issues, ALL traceable to one root cause — font 3's height was under-estimated:
+
+> "ok, the layout is almost there. The top line is just slightly cutoff, 1 or two pixels on the 'm' in 'BPM' are missing on the right side. After that there's a large gap before the distance, then the pace is almost completely off the screen, I can see just one pixel at the bottom of the screen. Can we try to fix the layout and add the icons in the next PR?"
+
+Root cause: rc12/14/15 assumed font 3 = 49 px (the spec §5.9 generic txt-font table — a *different* font table than what ALooK actually preloads). The real ALooK font 3 is **64 px tall** per the Visual-Assets repo README. 15 px taller × multiple lines compounded to push the pace line off-screen.
+
+Also: the empirically-correct lens-flip formula for the topLR (rotation=4) text anchor is **`y_fb = 255 − wearer_top`** (no font-height subtraction).
+
+---
+
+## 2026-05-19 — Amber rc17 BLE keep-alive past workout end + finish-screen visibility
+
+**Date:** 2026-05-19T15:45:47-04:00
+**Author:** Amber (Workout & Metrics)
+**Branch:** `fix/hud-rc17-finish-screen-and-connection`
+**Bench source:** Joe Krilov, rc16 bench (`v0.3.0-rc16`, build 31)
+**Joe's report (verbatim):** "The connection drops when I finish a run, I don't see the finish screen we planned and the connection to the glasses is lost. I need to manually reconnect or restart the app."
+
+### Root cause
+
+Two coupled bugs in `WorkoutViewModel.confirmSave()` (and the mirror in `confirmCancel()`):
+
+1. **Order of operations raced HK teardown.** Previously:
+   ```
+   controller.end()          // HKWorkoutSession.end() — releases extended runtime
+   pushHUDSummaryIfConnected // tries to write to BLE after runtime is gone
+   teardownTransport         // disconnects BLE
+   ```
+   By the time `pushHUDSummaryIfConnected` ran, the watch app had already lost its foreground runtime allowance (HK session was the lease holder). On a real Watch the OS suspended the process inside the ~hundreds-of-ms gap, so the finish frame's BLE writes were dropped silently.
+
+2. **Eager teardown disconnected the glasses.** Even when the frame *did* ship, the immediate `teardownTransport()` (which calls `transport.disconnect()`) tore down the link before the wearer could read the stats — and the user had to manually reconnect for the next run.
+
+### Decisions
+
+**Order of operations fix:** Flip the `end()` and `pushHUD*` calls so the BLE push runs while extended runtime is still held:
+```swift
+pushHUDSummaryIfConnected()  // runs while HK session still holds extended runtime
+controller.end()             // ends HK session
+// NO teardownTransport() — leave BLE link open for next run
+```
+
+**Teardown removal rationale:** BLE link is now user-managed (explicit `disconnect` button on post-run summary screen, or OS auto-purge on app backgrounding). The user can read the finish screen without rush, and `connectFrames()` re-runs when the next workout starts, reconnecting cleanly. This matches Joe's directive ("I need to see the finish screen and the link should stay up until I'm done reading").
+
+---
+
+## 2026-05-19 — User directive — Opus 4.7 for code-touching agents
+
+**By:** Joe (via Copilot)
+**What:** All agents that touch code must use Opus 4.7 (`claude-opus-4.7-1m-internal`). Already enforced via `.squad/config.json` agentModelOverrides for Laughlin, Weiss, Amber, Richards. Killian (Product Strategist) is exempt — no code work. Scribe/Ralph remain on haiku (mechanical ops).
+**Why:** User reaffirmed standing model preference for the code-producing squad.
+
+---
+
+## 2026-05-19 — Richards Architect's review of rc13→rc16 (HUD layout + icons)
+
+**Date:** 2026-05-19
+**Author:** Richards (Lead / Architect)
+**Reviewed:** PRs #72 (rc13), #74 (rc14), #75 (rc15), #76 (rc16) on `main` at tag `v0.3.0-rc16`.
+**Test state:** 176/176 pass (1 skipped) under `swift test` in `ARRunnerCore`. Bench-confirmed by Joe: live HUD layout + 4 icons rendering correctly.
+
+### Verdict
+
+**Ship-quality.** The rc13→rc16 stretch converged on a coherent HUD model: lens-flip formula corrected and empirically pinned, live/finish surfaces cleanly separated, preloaded ALooK icons rendering via a single `imgDisplay` encoder, push-policy serialization race resolved at the caller. Each RC was a single bundled PR with a tight scope guard. The team is operating well.
+
+### Decisions worth canonicalizing in `decisions.md`
+
+1. **Coordinate-system contract (rc16, supersedes rc12).** The single authoritative lens-flip transform for ActiveLook on Engo 2 with `rotation=4` (topLR):
+   - **Text anchor:** `x_fb = 303 − wearer_right_edge`, `y_fb = 255 − wearer_top`. (Text grows LEFT in framebuffer = RIGHT in wearer space after the panel's 180° flip.)
+   - **Image (`imgDisplay`, no rotation flag):** `x_fb = 303 − wearer_left − w`, `y_fb = 255 − wearer_top − h`.
+   - The rc12-era `y_fb = 255 − T − font_height` derivation is **wrong**. It placed text in visible regions by coincidence. Do not reintroduce.
+
+2. **Preloaded ALooK assets are the default; custom upload is the exception.** Before proposing any new on-glasses graphic, check `ActiveLook/Activelook-Visual-Assets` for a preloaded ID. `imgDisplay(id, x, y)` is one BLE write; the `cfgWrite`/`imgSave`/chunk-split path documented in `.squad/files/hud-icon-research.md` is reserved for genuinely custom artwork. This rule is what collapsed rc16 from "multi-RC undertaking" to a single PR.
+
+3. **HUD surface contract: 4-field live, 2-field finish.** Live = Time + HR + Distance + Avg Pace, optimized for in-run glanceability with mixed fonts (line 1 = font 2, lines 2-3 = font 3) and 4 icons. Finish = Time + Distance only ("Workout Complete" banner + 2 stats), font 3 throughout. `summaryFrames(for:)` deliberately discards HR/pace from the Payload; callers pass full Payload for symmetry. New per-tick metrics extend the live payload; new finish-screen additions extend the summary builder — they do NOT cross-pollinate.
+
+4. **MainActor callers MUST `await` per-burst BLE pushes, never `Task { … }`-spawn them.** The `ActiveLookGlassesAdapter` is reentrant between per-frame `try await write(_:)` calls, so spawning concurrent multi-frame sequences interleaves their writes and commits torn frames (rc13 Bug B). Already captured in `activelook-ble-adapter-pitfalls` skill; promoting to a decision so it stays load-bearing.
+
+5. **HR text is digits only; the heart icon carries the BPM semantic.** `formatHeartRate(_:)` returns `"165"` or `"--"`, never `"165 bpm"`. The icon is the unit affordance. This is what frees the rightmost pixels Joe saw clipped at rc15 and is the pattern for any future iconified metric.
+
+### Recommendations for next steps (open-ended — Joe directs)
+
+Listed in rough order of architectural urgency, not as a sequence:
+
+1. **Revalidate the finish-screen Y anchors under the rc16 formula.** `timeY=166`, `distanceY=86`, `paceY=6` (the latter is repurposed as the distance line — see #4 below) were derived under the obsolete `y_fb = 206 − T` formula. They happen to render OK on bench because the finish frame is short, but they may be off by a font-height we haven't noticed. A 30-minute pass with the corrected formula closes a known gap.
+
+2. **Extract the font-metrics table into typed code.** Font heights + per-glyph advance widths currently live in prose comments ("Font 3 = 64 px", "Font 2 ≈ 18 px/char"). The rc15→rc16 cycle's root cause was a height under-estimate; the next cycle's likely failure is a width under-estimate (long pace + 3-digit HR collide on line 1). A small `ALookFontMetrics` value type sourced from the Visual-Assets repo README, with a layout-asserting test ("line 1 text blocks fit between icon slots at all valid string lengths"), would prevent the next coordinate-system regression at near-zero ongoing cost.
+
+3. **Rename `summaryFrames`'s coordinate uses to match their semantics.** Line 498 of `RunningHUDFrame.swift` ships `payload.distance` at `Layout.paceY`. The constant name lies about its use. Either rename `paceY → summaryLine3Y` (and friends), or break the summary out into its own anchor cluster. Either is a 5-minute refactor; current state is a tripwire for the next agent who edits the file.
+
+4. **Split `Layout` into surface-scoped siblings *before* a third HUD screen lands.** Today `RunningHUDFrame.Layout` is navigable thanks to `MARK:` dividers, but it's already at 25+ constants. When v0.4.x adds a cue/split/pre-run screen, prefer `SplashLayout` / `LiveHUDLayout` / `FinishLayout` / `IconCatalog` over piling on. Don't do it now — speculative refactors without a concrete second consumer are over-architecting.
+
+5. **Write an ADR for "BLE link is user-managed, not workout-scoped" once rc17 lands.** Amber's in-flight rc17 deletes `teardownTransport`, leaving BLE up indefinitely past workout end. This is architecturally sound (matches Joe's "finish screen must persist" directive and existing user-explicit disconnect affordance) but it shifts BLE lifecycle ownership entirely onto the user. Weiss's v0.4 battery-indicator work will live or die on this contract — get it canonicalized.
+
+### What I am NOT recommending
+
+- **No restructure of `WorkoutViewModel` / `RunningHUDPushPolicy` / adapter state machine.** The rc13 defensive resets (`hudPushPolicy.reset() + needsHUDPowerOn = true` at every `start()`) are belt-and-braces but reasonable; restructuring without a fourth caller is speculative.
+- **No new test-discipline rules.** The 176-test suite is paying down its coverage — every coordinate change in rc13-16 came with a pinned-bytes test. Keep doing what we're doing.
+- **No retroactive ADR for the rc12 lens-flip formula change.** The corrected formula is documented in code with full evidence chain (rc15 bench observations vs. the model). A separate ADR would duplicate without adding signal.
+
+### Process observations
+
+- **Bundled-bump pattern is now production-stable across owners** (Laughlin: rc12; Amber: rc13/14/15/16). Recommend it as the team default and stop calling it out per-PR.
+- **Scope-guard discipline is excellent.** Every PR named the constants it WOULDN'T touch. This is what kept the load-bearing BLE adapter, queryID protocol, holdFlush serialization, and rotation/leftMargin from regressing across 4 fast-turn releases.
+- **Joe's "one thing at a time" directive** (rc15 deferring icons to rc16) was the right call and produced a cleaner rc16 fix in retrospect — the layout correction and icon plumbing were independent and bench-testable separately.
+
