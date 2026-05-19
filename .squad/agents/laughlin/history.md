@@ -29,6 +29,27 @@
 
 **Key learning:** Coordinate errors and firmware rejections have different diagnostic signatures. Off-screen clipping per spec §5.5.6 is silent (no 0xE2 error), but rotation + anchor corner interactions are subtle. When text goes blank, check bounding box vs. framebuffer bounds before escalating to firmware hypothesis.
 
+### 2026-05-19T22:25:00Z — rc17: Workout-Stop Keeps BLE Link Up, Finish-Screen Y Recompute, Battery → Phone, MARKETING_VERSION 0.4.0
+
+**Context:** Richards formalized the BLE-link lifecycle contract (ADR-1: user-managed peripheral, not workout-scoped). Joe's rc16 bench report flagged two failures: (1) finish frame disappears, (2) glasses disconnect mid-stop, forcing manual re-pair. Root cause: `WorkoutViewModel.confirmSave` and `confirmCancel` were calling `teardownTransport()` immediately after (or instead of) pushing the finish frame, severing the link and wiping the screen.
+
+**Work:** Three coordinated pieces:
+1. **Lifecycle fix:** Reordered `confirmSave`/`confirmCancel` to stop per-tick HUD task → push finish frame while HK extended-runtime still held → end HK session → **delete `teardownTransport()` call** (deleted the helper entirely to prevent future re-introduction). User's only explicit disconnect affordance is now the UI-facing `disconnectGlasses()` button per Richards's ADR rule R5.
+2. **Finish-screen Y anchor recompute:** Old constants (timeY=166, distanceY=86, paceY=6) were derived under obsolete `y_fb = 206 − T` formula (pre-rc16). rc16 introduced canonical formula `y_fb = 255 − wearer_top`. Walked the old layout through new formula and found distance text 57 px off bottom of panel (clipped). Recomputed:
+   - finishBannerY = 239 (wearer-top 16)
+   - finishTimeY = 159 (wearer-top 96)
+   - finishDistanceY = 79 (wearer-top 176)
+   - Result: symmetric, even 16-px gaps, fully on-panel. Old names deprecated with compiler nudges.
+3. **Battery → iPhone:** `WCMessage` schema v3 adds `glassesBattery(level: Int)` case. Wired through existing three-tier `transmit(..., preferQueued: true)` helper (queued, survives transient disconnect). Phone shows battery via `GlassesBatteryIcon` (SF Symbol, red/orange/green) in `WorkoutMirrorView` above metrics. **Phone-optional contract:** silent no-op if phone unreachable.
+
+**Release mechanics:** `project.yml` bundle 31→32, `MARKETING_VERSION` 0.3.0→0.4.0, Info.plist placeholders verified untouched. Tag v0.4.0-rc1. TestFlight upload queued (automatic per Joe's directive).
+
+**Tests:** 186/186 Core pass (baseline 176; +10 from filter/backoff/schema, +2 from finish-screen Y pins). New tests pin Y-anchor formula AND on-panel invariant. Per-frame wire-byte assertion guards against coordinate-order regression. `xcodebuild` ARRunnerWatch build SUCCEEDED.
+
+**Key learning:** The user mental model for paired peripherals is "they stay paired until I explicitly unpair." Making AR glasses uniquely tear themselves down on "finish run" violates principle-of-least-surprise and breaks the finish-screen UX. The rc16 bench regression ("connection drops on stop, I have to re-pair") is exactly that violation. rc17 fixes it by keeping the link up and letting the user read the finish stats at their own pace.
+
+**Pattern: Bundled-bump release.** Feature + version bump + tag in single PR, merged once, TestFlight upload automatic post-CI-green. Cuts release cycle from 2+ PRs to 1, no manual coordination. Fifth release using this pattern (rc12–rc17); proven reliable.
+
 ---
 
 ---
