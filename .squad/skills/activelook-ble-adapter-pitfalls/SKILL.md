@@ -226,3 +226,67 @@ a migration or a new sibling enum.
 In practice, code paths in `WorkoutViewModel`, `StubGlassesTransportTests`,
 and the resilience-test event collector all use `if case` or `switch
 { case .x; default }`, so additive enum changes have been safe so far.
+
+## Per-link subscriptions (rc17 ADR — `richards-adr-ble-link-lifecycle`)
+
+Characteristic subscriptions (HUD writes, flow-control notify, battery
+0x2A19 notify, future HR push, …) are properties of **the link**, not of
+the workout. They are established on every `.connected` transition
+(initial and every auto-reconnect) and survive every workout boundary.
+
+Anti-patterns to reject in code review:
+
+- A `setNotifyValue(true, …)` call inside `WorkoutController.start` or
+  `WorkoutViewModel.start`. Move it into the adapter's connect path.
+- A `transport.disconnect()` call inside a workout-shutdown path
+  (`confirmSave`, `confirmCancel`, `end`). The only legal call sites are
+  the explicit user "Disconnect Glasses" affordance and the adapter's
+  own unrecoverable-error teardown.
+- Re-subscribing characteristics from scratch on workout-start. Symptom:
+  2-5 s of "blank glasses" lag at every run start — the cost of the
+  subscription that should already be live.
+
+The generalised pattern lives at
+`.squad/skills/paired-hardware-lifecycle-contract/SKILL.md`.
+
+## Battery characteristic dedup + range guard (rc17)
+
+The standard Battery Service (0x180F / 0x2A19) re-publishes the same
+percent on the ~30 s notify cadence more often than not. The adapter
+funnels every raw byte through `BatteryLevelFilter` (Core) instead of
+emitting `.batteryLevel` directly. Three semantic actions:
+
+| Input byte | Action |
+|---|---|
+| `0`–`100`, differs from last emitted | `.emit(Int)` |
+| `0`–`100`, equals last emitted | `.dropDuplicate` (silent) |
+| `> 100` | `.dropInvalid(rawByte:)` — log warning, drop |
+
+`filter.reset()` is called on **every** transition out of `.connected`
+(drop, user disconnect, `handleDisconnect`). Rationale: the UI clears
+the value during a gap; the first post-reconnect read deserves a fresh
+emit even when the percent hasn't moved. Keeping the filter alive across
+a drop would silently suppress that first re-emit and the UI would sit
+on "—" forever.
+
+If a future PR wants to keep the last-known battery visible across a
+drop, the right place is the *consumer* of the stream (WC sender, UI
+view-model), not the filter. The filter's job is "what does the BLE
+link say *right now*."
+
+## Reconnect schedule (rc17 ADR)
+
+The canonical reconnect cadence is `ExponentialBackoff.adrV04`
+(1 → 2 → 4 → 8 → 16 → 32 → 60 s, capped at 60 s steady) paired with
+`maxReconnectAttempts: .max`. Rationale per the ADR:
+
+- A pair of glasses left in a drawer must reconnect when retrieved
+  without UI intervention — capping attempts at 30 was wrong.
+- The 60 s ceiling is what bounds radio cost (≈ 1 attempt / minute);
+  the attempt counter does not need to.
+- Workout state is irrelevant to the reconnect loop. Drops mid-run and
+  drops mid-idle follow the same schedule.
+
+Tests can still inject `maxReconnectAttempts: 1` (etc.) to exercise the
+terminal `.reconnectAbandoned` path without waiting for the unbounded
+default.

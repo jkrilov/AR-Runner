@@ -124,3 +124,35 @@ Procedural checklist: `.squad/skills/release-mechanics-bundle-bump/SKILL.md`
 
 ---
 
+
+### 2026-05-19T18:30:00-04:00 — rc17: Adapter audit per ADR + battery filter
+
+**Context:** Joe's rc16 bench report — "the connection drops when I finish a run, I don't see the finish screen, the connection to the glasses is lost." Two-part fix bundled into rc17. Richards landed the ADR (`richards-adr-ble-link-lifecycle`) formalising "BLE link is user-managed, not workout-scoped." Amber owned the watchOS lifecycle fix (delete `teardownTransport()` from `confirmSave`/`confirmCancel`, push finish frame before `controller.end()` so HK extended-runtime is still held). My half lived in `ActiveLookGlassesAdapter` + ARRunnerCore.
+
+**Audit finding (adapter):** No `disconnect()` calls in the adapter were tied to workout-stop — the only adapter teardown paths were already (a) explicit `disconnect()` (R5a), (b) the in-flight reconnect loop terminating after the cap (R5b). The fused `endSession + disconnect` anti-pattern Joe described lived entirely in `WorkoutViewModel` (Amber's territory). Adapter was clean on that axis; the cleanup was elsewhere.
+
+**Changes I made:**
+
+1. **`ExponentialBackoff.adrV04`** (new) — 1s → 2s → 4s → 8s → 16s → 32s → 60s steady. Approximates the ADR's prose `1/2/5/15/30/60` target with the existing pure-exponential math (avoids adding a stair-step lookup type for a 4-second-each difference). Adapter default constructor now uses it.
+
+2. **`maxReconnectAttempts: Int = .max`** (was 30) — per ADR P2: "no upper limit on total attempts." The 30-attempt cap I'd added in v0.2 was rationalised by "radio busy with powered-off glasses," but the 60 s ceiling on the backoff already bounds the cost to one connect attempt per minute. Tests can still inject a finite cap.
+
+3. **`BatteryLevelFilter`** (new, Core) — pure value type with two responsibilities the original `handleBatteryLevel` lacked:
+   - **Range validation.** Spec is `uint8 [0..100]`. Bytes > 100 are firmware glitches; drop with a warning rather than propagate.
+   - **Dedup of identical consecutive notifications.** The 30 s notify cadence re-publishes the same percent more often than not; suppressing identical emits keeps the WC sender and on-watch indicator quiet without each having its own equality check (per Amber rc17 QA C5 unit-test recommendation).
+   - `.reset()` is called on every transition out of `.connected` (drop, user disconnect) so the first post-reconnect read always lands — the UI was on "—" during the gap and deserves a fresh value.
+
+4. **Adapter wires the filter** — `handleBatteryLevel(_ rawByte:)` now switches on `filter.process(byte:)`; coordinator passes the raw byte straight through (no premature `Int` conversion). Existing initial-read on subscribe + per-link re-subscribe on reconnect already covered the rest of Amber's C1/C2/C7 scenarios.
+
+**Tests:** +8 net Core tests (7 × BatteryLevelFilter, 1 × adrV04 backoff envelope). Total **186/186 pass** (was 176/176 at rc16). The backoff envelope test pins the start (1 s) and ceiling (60 s) but deliberately allows the intermediate values to drift — the ADR prose target was approximate and a future re-tune shouldn't require a test rewrite.
+
+**Scope guards held:** No edits to `write()` serialization, flow-control gate, queryID stamping, cfgSet, HUD encoders, rotation, lens-flip coords, or the rc16 4-line live HUD path. Bundled-bump (32, 0.4.0) was already in `project.yml`; I re-ran `xcodegen generate` after the adapter edits. ARRunnerWatch builds clean against the watchOS device SDK.
+
+**Two non-obvious things about this adapter I want future-Weiss to remember:**
+
+- **The bare `setNotifyValue(true, for: char) + readValue(for: char)` pair is the entire battery subscription contract on watchOS.** CoreBluetooth writes the CCCD (0x2902) for you when `setNotifyValue` is called; we don't (and must not) write the descriptor manually. This is the load-bearing convention behind why the battery code is 3 lines in `handleCharacteristicsDiscovered`.
+- **`reset()` on the filter is the only place where "link drop = UI clears" semantics live.** If a future PR wants to keep the last-known battery visible across a drop, the right place is the *consumer* of the stream (WatchConnectivityService / WorkoutMirrorViewModel), not the filter. The filter's job is "what does the BLE link say *now*."
+
+**Skill captured:** Updated `activelook-ble-adapter-pitfalls` with the per-link-subscription rule and the `BatteryLevelFilter` reset-on-drop pattern.
+
+---
