@@ -61,67 +61,144 @@ public enum RunningHUDFrame {
         public static let distanceY: Int16 = 86
         public static let paceY:     Int16 = 6
 
-        // MARK: - Live HUD (3-line mixed-font, rc15)
+        // MARK: - Live HUD (3-line mixed-font + preloaded icons, rc16)
         //
-        // rc14 (4 lines × font 3 × 55-px wearer-space spacing) shipped
-        // and Joe's bench test reported "fonts are too large and text
-        // on each line is overlapping." rc15 redesigns:
+        // rc15 (PR #75, build 30) shipped 3 mixed-font lines based on
+        // the assumption that ActiveLook font 3 was 49 px tall. Joe's
+        // bench test of build 30 reported (verbatim):
+        //   "ok, the layout is almost there. The top line is just
+        //    slightly cutoff, 1 or two pixels on the 'm' in 'BPM' are
+        //    missing on the right side. After that there's a large gap
+        //    before the distance, then the pace is almost completely
+        //    off the screen, I can see just one pixel at the bottom of
+        //    the screen. Can we try to fix the layout and add the icons
+        //    in the next PR?"
         //
-        //   Line 1: Time (left) + HR (right)  — font 2 (38 px)
-        //   Line 2: Distance                  — font 3 (49 px)
-        //   Line 3: Avg Pace                  — font 3 (49 px)
+        // Root cause: **font height under-estimation**. The
+        // ActiveLook-Visual-Assets repo README (which ships the ALooK
+        // config) confirms the real preloaded-font heights:
+        //   Font 1 = 24 px, Font 2 = 38 px, Font 3 = 64 px,
+        //   Font 4 = 75 px, Font 5 = 82 px.
+        // rc15 had assumed Font 3 = 49 px (the spec §5.9 "txt-font"
+        // table — a different font table than what's actually in
+        // ALooK). 49 → 64 = 15 px taller per font-3 line, accumulating
+        // to 30+ px of "too much text crammed in" that pushed the pace
+        // line off the bottom of the panel.
         //
-        // **No metric is dropped** from the field set Joe specified.
-        // Three lines (instead of four) gives comfortable vertical
-        // gaps; line 1 drops to font 2 so two metrics share the line
-        // without colliding. Single-metric lines stay font 3 for
-        // arm's-length readability.
+        // Also: empirically, the topLR (rotation=4) anchor maps to
+        // wearer coords via `y_fb = 255 − wearer_top` (NOT
+        // `255 − wearer_top − font_height` as the rc12/14/15 derivation
+        // assumed). Walking the rc15 bench evidence:
+        //   - rc15 livePaceY = 26, font 3 → wearer_top = 255 − 26 = 229,
+        //     wearer_bottom = 229 + 64 = 293 → 38 px off the bottom.
+        //     Matches Joe's "just one pixel at bottom" exactly.
+        //   - rc15 liveLine1Y = 187 (font 2) → wearer 68..106;
+        //     rc15 liveDistanceY = 106 (font 3) → wearer 149..213.
+        //     Gap = 43 px. Matches Joe's "large gap before distance".
+        // Both observations only line up under the
+        // `y_fb = 255 − wearer_top` interpretation; rc12 happened to
+        // place text in visible regions by coincidence, not because
+        // the derivation was correct.
         //
-        // Wearer-space layout (T = wearer-y top of glyph block):
-        //   Line 1: T = 30 (font 2 → y_fb = 255 − T − 38 = 217 − T = 187)
-        //   Line 2: T = 100 (font 3 → y_fb = 255 − T − 49 = 206 − T = 106)
-        //   Line 3: T = 180 (font 3 → y_fb = 206 − T = 26)
-        // Gaps: line 1 (T=30..68) → 32 px → line 2 (T=100..149) → 31 px
-        // → line 3 (T=180..229) → 26 px bottom margin. Top margin 30 px.
+        // rc16 LAYOUT (wearer coords, T = top-of-glyph):
+        //   Top margin     : 15
+        //   Line 1 (F2 h=38, Time + chrono icon + HR + heart icon): T=15..53
+        //   Gap            : 32
+        //   Line 2 (F3 h=64, Distance + distance icon)            : T=85..149
+        //   Gap            : 29
+        //   Line 3 (F3 h=64, Avg Pace + pace icon)                : T=178..242
+        //   Bottom margin  : 13
+        //   ──────────────────────────────────────────────── total: 255
         //
-        // **Line 1 uses TWO `txt` commands** sharing `liveLine1Y` but
-        // anchored at different x_fb:
-        //   Time : x_fb = leftMargin = 284 → wearer-left ≈ 20
-        //   HR   : x_fb = liveHRX     = 133 → wearer-left ≈ 170
-        // topLR rotation=4 (anchor at top-right, text grows LEFT) is
-        // unchanged; both anchors are framebuffer coords corrected for
-        // the 180° lens flip via `x_fb = 303 − x_wearer_left`.
+        // Text anchors (topLR — anchor at top-right of glyph block,
+        // grows LEFT; `y_fb = 255 − T`):
+        //   liveLine1Y    = 255 − 15  = 240
+        //   liveDistanceY = 255 − 85  = 170
+        //   livePaceY     = 255 − 178 = 77
         //
-        // **Icons (rc15 task brief) are deferred to rc16+** — the
-        // `imgSave` / `imgDisplay` / `imgList` pipeline requires
-        // `cfgWrite` (spec §5.5 prelude), chunked binary upload
-        // (max 512 B/chunk with WRITE WITH RESPONSE), and either
-        // overwriting the stock ALooK config or installing a new
-        // user config (forcing font re-upload). Documented in
-        // `.squad/files/hud-icon-research.md`; tripped the rc15
-        // brief's own escape hatch ("multi-MTU bitmap fragmentation
-        // with sequence numbers — STOP and report").
-        public static let liveLine1Y:    Int16 = 187   // 217 − 30 (font 2)
-        public static let liveDistanceY: Int16 = 106   // 206 − 100 (font 3)
-        public static let livePaceY:     Int16 = 26    // 206 − 180 (font 3)
+        // Horizontal: text starts at wearer-x = 60, leaving wearer-x
+        // [15..55] for the line-1 chrono icon (40 wide) and [27..55]
+        // for the smaller 28-wide line-2/3 icons (right-aligned with
+        // the chrono icon's right edge, looks tidy). Text anchor
+        // (right-edge in wearer space, since topLR text grows left
+        // from anchor):
+        //   liveLeftMargin = 303 − 60  = 243   (Time/Distance/Pace text)
+        //   liveHRX        = 303 − 220 = 83    (HR text wearer-left=220)
+        // HR icon at wearer-x [187..215] sits between Time (ends at
+        // wearer-x ≈ 186 for a long "1:23:45") and HR text (wearer-x
+        // [220..274] for "165" at font 2 ≈ 18 px/char).
+        //
+        // **The "BPM" text suffix is dropped from the HR string** —
+        // that's what frees up the rightmost pixels Joe saw clipped
+        // ("1 or two pixels on the 'm' in 'BPM' are missing"). The
+        // heart icon now carries the "this is heart rate" semantic;
+        // see `formatHeartRate(_:)` below.
+        //
+        // **Icons are framebuffer-direct (no rotation flag in
+        // imgDisplay).** For an icon of size `w × h` to appear at
+        // wearer rect `[wL, wL+w] × [wT, wT+h]` (after the Engo 2
+        // 180° lens flip), pass framebuffer top-left:
+        //   x_fb = 303 − wL − w
+        //   y_fb = 255 − wT − h
+        // The preloaded ALooK icons ship pre-rotated 180° (per the
+        // Visual-Assets repo convention) so the post-lens result reads
+        // upright to the wearer. If build 31 shows icons upside-down
+        // on bench, that hypothesis is wrong and rc17 will pre-rotate
+        // at upload time — but our rc16 path is encoder-only (no
+        // upload required since icons are preloaded), so iteration is
+        // cheap.
+        public static let liveLeftMargin: Int16 = 243   // 303 − 60
+        public static let liveLine1Y:     Int16 = 240   // 255 − 15
+        public static let liveDistanceY:  Int16 = 170   // 255 − 85
+        public static let livePaceY:      Int16 = 77    // 255 − 178
 
         /// Framebuffer x-anchor for the HR text block on line 1.
         ///
-        /// topLR (rotation=4) anchors at the text block's TOP-RIGHT and
-        /// grows LEFT. After the Engo 2 lens flip (x_wearer = 303 − x_fb)
-        /// `x_fb = 133` places the HR block's wearer-visible LEFT edge
-        /// near x_wearer ≈ 170 — about midway across the 304-px panel
-        /// so a 7-char "165 bpm" at font 2 (~18 px/char ≈ 126 px wide)
-        /// extends from x_fb = 133 down to x_fb ≈ 7, fully in-bounds
-        /// and clearly separated from the Time block on the left
-        /// (which ends near x_fb ≈ 193 = 284 − 90 for a 5-char "12:34").
-        public static let liveHRX:       Int16 = 133
+        /// rc16: shifted from rc15's 133 → 83. Two changes drive this:
+        /// (a) HR text now omits " bpm" (just digits like "165"),
+        ///     freeing ~72 px of width;
+        /// (b) the heart icon needs its own slot at wearer-x [187..215]
+        ///     between Time and HR text.
+        /// Wearer-left of HR text at 220 → x_fb = 303 − 220 = 83.
+        public static let liveHRX:        Int16 = 83
 
         /// Font index for the shared Time+HR line. Font 2 (38 px tall,
         /// ~18 px/char) instead of font 3 — two metrics share a line
         /// and would collide at font 3's wider glyphs. Single-metric
         /// lines 2 and 3 stay on `fontSize` (3).
         public static let liveLine1Font: UInt8 = 2
+
+        // MARK: - Preloaded ALooK icon IDs (rc16)
+        //
+        // These are flash IDs (the leading number in each asset filename
+        // in `ActiveLook/Activelook-Visual-Assets`). The stock ALooK
+        // configuration ships them preloaded — they are addressable by
+        // `imgDisplay(id, x, y)` (cmdID 0x42) as long as
+        // `cfgSet("ALooK")` has run (which it does, at the top of
+        // `connectFrames()` and `framesWithPowerOn(for:)`).
+        public static let chronoIconID:   UInt8 = 40   // 40_chrono_40x40
+        public static let heartIconID:    UInt8 = 12   // 12_heart-beat_28x28
+        public static let distanceIconID: UInt8 = 9    // 9_distance_28x28
+        public static let paceIconID:     UInt8 = 17   // 17_pace-avg_28x28
+
+        // Icon framebuffer top-left coords. Derived from wearer-target
+        // rect via the lens-flip formulas in the doc block above.
+        //
+        //   chrono  (40×40): wearer x [15..55], y [15..55]
+        //   heart   (28×28): wearer x [187..215], y [20..48]
+        //                    (vertically centered on the 38-px line 1)
+        //   distance(28×28): wearer x [27..55], y [103..131]
+        //                    (vertically centered on the 64-px line 2)
+        //   pace    (28×28): wearer x [27..55], y [196..224]
+        //                    (vertically centered on the 64-px line 3)
+        public static let chronoIconX:    UInt16 = 248  // 303 − 15  − 40
+        public static let chronoIconY:    UInt16 = 200  // 255 − 15  − 40
+        public static let heartIconX:     UInt16 = 88   // 303 − 187 − 28
+        public static let heartIconY:     UInt16 = 207  // 255 − 20  − 28
+        public static let distanceIconX:  UInt16 = 248  // 303 − 27  − 28
+        public static let distanceIconY:  UInt16 = 124  // 255 − 103 − 28
+        public static let paceIconX:      UInt16 = 248  // 303 − 27  − 28
+        public static let paceIconY:      UInt16 = 31   // 255 − 196 − 28
 
         /// ActiveLook font index for the runner HUD. `3` is the largest stock
         /// font baked into Engo 2 firmware out of the box; readable at arm's
@@ -184,7 +261,7 @@ public enum RunningHUDFrame {
         public let distance: String
         public let pace: String
 
-        public init(time: String, heartRate: String = "-- bpm", distance: String, pace: String) {
+        public init(time: String, heartRate: String = "--", distance: String, pace: String) {
             self.time = time
             self.heartRate = heartRate
             self.distance = distance
@@ -219,68 +296,107 @@ public enum RunningHUDFrame {
         )
     }
 
-    /// Format an HK heart-rate sample for the HUD. Mirrors the on-wrist
-    /// display string (`WorkoutView.swift:169 → "\(Int($0)) bpm"`) so
-    /// the lens and the wrist never show different numbers.
-    /// `nil` → `"-- bpm"` placeholder (pre-first-sample state).
+    /// Format an HK heart-rate sample for the HUD as **just digits**.
+    /// rc16 dropped the " bpm" suffix Joe's rc15 bench saw clipped on
+    /// the panel's right edge ("1 or two pixels on the 'm' in 'BPM' are
+    /// missing"); the line-1 heart icon now carries the "this number
+    /// is BPM" semantic, freeing ~72 px of horizontal room.
+    /// `nil` → `"--"` placeholder (pre-first-sample state).
     /// Values < 30 BPM are also treated as placeholder — sub-30 readings
     /// in a running workout indicate a sensor dropout, not a real low
-    /// HR, and rendering "12 bpm" mid-run would alarm the user. Cap not
-    /// applied at the high end; if HK ever emits 220 BPM we want to see
-    /// it.
+    /// HR, and rendering "12" mid-run next to a heart icon would alarm
+    /// the user. Cap not applied at the high end; if HK ever emits
+    /// 220 BPM we want to see it.
     public static func formatHeartRate(_ beatsPerMinute: Double?) -> String {
         guard let bpm = beatsPerMinute, bpm.isFinite, bpm >= 30 else {
-            return "-- bpm"
+            return "--"
         }
-        return "\(Int(bpm.rounded())) bpm"
+        return "\(Int(bpm.rounded()))"
     }
 
     /// Encode a `Payload` into an ActiveLook command sequence ready to ship
-    /// over BLE. Order is significant: clear first so we paint over the
-    /// "Connection Successful" splash (and any prior frame), then five
-    /// `txt` draws: Time + HR share line 1 at `liveLine1Font` (font 2),
-    /// then Distance and Avg Pace on lines 2/3 at `fontSize` (font 3).
+    /// over BLE. Order is significant: clear first so we paint over any
+    /// prior frame, then 4 preloaded-icon `imgDisplay` blits + 4 `txt`
+    /// draws interleaved so each line's icon and text land in the same
+    /// holdFlush batch.
     ///
-    /// rc15 (Joe's bench, verbatim): *"the fonts are too large and text
-    /// on each line is overlapping."* The fix mixes fonts so two
-    /// metrics (Time + HR) share a single shorter-font line while the
-    /// distance/pace lines stay on the larger font for arm's-length
-    /// readability. Layout details in `Layout` doc above.
+    /// **rc16** (Joe's bench on rc15, verbatim):
+    ///   *"ok, the layout is almost there. The top line is just
+    ///    slightly cutoff, 1 or two pixels on the 'm' in 'BPM' are
+    ///    missing on the right side. After that there's a large gap
+    ///    before the distance, then the pace is almost completely off
+    ///    the screen, I can see just one pixel at the bottom of the
+    ///    screen. Can we try to fix the layout and add the icons in
+    ///    the next PR?"*
     ///
-    /// Wrapped in `holdFlush(hold:true)` … `holdFlush(hold:false)` so the
-    /// `clear` + 5×`txt` sequence commits atomically to the display.
-    /// Without the wrap, each BLE write paints to the framebuffer
-    /// immediately and the wearer sees a brief blank between `clear` and
-    /// the first `txt`, plus tearing between `txt` writes — the
-    /// "flashes every second" artifact Joe reported on rc8. Per
-    /// ActiveLook spec §4.6 and `hud-api-spec-report.md` §"Fix 3".
-    /// `connectFrames()` deliberately does NOT use holdFlush — the connect
-    /// banner is a one-shot draw where the user only sees the final state.
+    /// Three layout corrections (all driven by the corrected font-3
+    /// height of 64 px per the ActiveLook-Visual-Assets repo README,
+    /// and the empirically-validated `y_fb = 255 − wearer_top` formula
+    /// — see the `Layout` doc block):
+    ///   1. New Y coords: liveLine1Y=240, liveDistanceY=170, livePaceY=77.
+    ///   2. Drop " bpm" from the HR string; the heart icon now carries
+    ///      the semantic.
+    ///   3. Add 4 preloaded ALooK icons (chrono, heart, distance, pace)
+    ///      via `imgDisplay` (cmdID 0x42), one per metric.
+    ///
+    /// Sequence (11 frames):
+    ///   0. holdFlush(HOLD)
+    ///   1. clear
+    ///   2. imgDisplay(chrono)            — line 1 icon
+    ///   3. txt(Time)                     — line 1 text (font 2)
+    ///   4. imgDisplay(heart)             — line 1 right icon
+    ///   5. txt(HR digits)                — line 1 right text (font 2)
+    ///   6. imgDisplay(distance)          — line 2 icon
+    ///   7. txt(Distance)                 — line 2 text (font 3)
+    ///   8. imgDisplay(pace)              — line 3 icon
+    ///   9. txt(Avg Pace)                 — line 3 text (font 3)
+    ///  10. holdFlush(FLUSH)
+    ///
+    /// All 4 icons are preloaded into the stock ALooK configuration
+    /// (cfgSet("ALooK") at connect time activates the namespace —
+    /// rc8 PR #60). No upload pipeline needed for rc16; the
+    /// cfgWrite/imgSave iceberg documented in
+    /// `.squad/files/hud-icon-research.md` (rc15) applies only to
+    /// custom artwork. Wrapped in holdFlush so the wearer sees one
+    /// atomic frame transition instead of intermediate blank/torn
+    /// states between the 9 inner writes.
     public static func frames(for payload: Payload) -> [[UInt8]] {
         [
             ActiveLookCommand.holdFlush(hold: true),
             ActiveLookCommand.clear(),
-            // Line 1, LEFT: Time at the standard left anchor, font 2.
+            // Line 1: chrono icon + Time text (font 2)
+            ActiveLookCommand.imgDisplay(
+                id: Layout.chronoIconID, x: Layout.chronoIconX, y: Layout.chronoIconY
+            ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.liveLine1Y,
+                x: Layout.liveLeftMargin, y: Layout.liveLine1Y,
                 rotation: Layout.rotation, fontSize: Layout.liveLine1Font, color: Layout.color,
                 string: payload.time
             ),
-            // Line 1, RIGHT: HR at the line-1 right anchor, same font / y.
+            // Line 1 (right): heart icon + HR digits (font 2)
+            ActiveLookCommand.imgDisplay(
+                id: Layout.heartIconID, x: Layout.heartIconX, y: Layout.heartIconY
+            ),
             ActiveLookCommand.text(
                 x: Layout.liveHRX, y: Layout.liveLine1Y,
                 rotation: Layout.rotation, fontSize: Layout.liveLine1Font, color: Layout.color,
                 string: payload.heartRate
             ),
-            // Line 2: Distance, font 3.
+            // Line 2: distance icon + Distance text (font 3)
+            ActiveLookCommand.imgDisplay(
+                id: Layout.distanceIconID, x: Layout.distanceIconX, y: Layout.distanceIconY
+            ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.liveDistanceY,
+                x: Layout.liveLeftMargin, y: Layout.liveDistanceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.distance
             ),
-            // Line 3: Avg Pace, font 3.
+            // Line 3: pace icon + Avg Pace text (font 3)
+            ActiveLookCommand.imgDisplay(
+                id: Layout.paceIconID, x: Layout.paceIconX, y: Layout.paceIconY
+            ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.livePaceY,
+                x: Layout.liveLeftMargin, y: Layout.livePaceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.pace
             ),
