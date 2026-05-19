@@ -110,6 +110,66 @@
 >    feedback to the watch.
 > Both fixed in PR #57. See decisions inbox entry
 > `laughlin-hud-queryid-fix.md` for the full cross-research forensic.
+>
+> ## 🚨 CRITICAL — `holdFlush(hold:true) … (hold:false)` requires CALLER-SIDE serialization (rc13 lesson, PR #72)
+>
+> Per-tick `RunningHUDFrame.frames(for:)` wraps the 4-frame
+> `[clear, txt, txt, txt]` core in `holdFlush(hold:true)` … `holdFlush(hold:false)`
+> for atomic commit (anti-flicker, rc9). **The BLE actor's `pendingWrite`
+> continuation only serializes ONE BLE write at a time — it does NOT
+> serialize across the prologue↔epilogue span of a multi-frame
+> sequence.** `ActiveLookGlassesAdapter.sendCommands(_:)` iterates
+> `for frame in frames { try await write(frame) }`; between each
+> `await`, the actor is reentrant, so a second concurrent
+> `sendCommands(_:)` from another caller will interleave its writes.
+> A foreign `holdFlush(hold:false)` landing mid-sequence commits the
+> partial buffer and strands the rest — Joe's rc12 bench symptom
+> ("HUD stays on splash through entire active run; final stats appear
+> at stop") was exactly this: the only sequences that landed cleanly
+> were the ones without holdFlush wrap (connect splash, summary).
+>
+> **Rules for any caller issuing holdFlush-wrapped multi-frame bursts:**
+> 1. **The caller MUST await the push.** Do NOT spawn it as
+>    `Task { await sendCommands(...) }` from a timer or fan-out point.
+>    Awaiting serializes against the next iteration of the same
+>    caller. AR-Runner's `WorkoutViewModel.tickElapsed()` is `async`
+>    and awaits `pushHUDFrameIfConnected()` directly (rc13 fix).
+> 2. **The caller MUST serialize against OTHER callers issuing
+>    holdFlush-wrapped bursts to the same transport.** In AR-Runner
+>    today, the only other caller is the connect-state task's
+>    `pushHUDConnectScreenIfConnected`, which sends an
+>    UN-wrapped splash (no holdFlush) and only runs on
+>    `.connected` edges — so callers are de facto non-overlapping in
+>    practice. If a future feature adds a second wrapped path
+>    (e.g., notification banners during a run), either route them
+>    through a single MainActor-isolated serial pipeline or extend
+>    the adapter with a coarser per-burst lock that holds across the
+>    entire `sendCommands` call.
+> 3. **NEVER add an explicit `holdFlush(hold:false)` outside a
+>    paired prologue/epilogue.** It will commit whatever buffer is
+>    pending, including another caller's mid-sequence writes.
+>
+> ## 🚨 CRITICAL — splash banner and run HUD CAN use different fonts (rc13 lesson, PR #72)
+>
+> `connectFrames()` uses `bannerFontSize = 2` (38 px tall) with
+> `bannerLine1Y = 177`, `bannerLine2Y = 97`; the per-tick run HUD
+> uses `fontSize = 3` (49 px tall) with `timeY = 166`,
+> `distanceY = 86`, `paceY = 6`. The split exists because the splash
+> strings ("AR-Runner Ready", "Start a run") are long (15 and 11
+> chars) and at font 3 (~28 px/char) overflow `x_fb = 284`'s left-
+> extending bounding box per spec §5.5.6; font 2 (~18 px/char) fits.
+> Run-HUD strings ("0:00", "0.00 mi", "8:30/mi") stay on font 3 for
+> readability at arm's length.
+>
+> **When choosing the Y for a different-font draw, recompute with
+> the new height:** `y_fb = 255 − T − font_height` (lens-flip + top-
+> of-glyph anchor offset for `rotation = 4`). Font 2 height = 38 px →
+> `y_fb = 217 − T`. Font 3 height = 49 px → `y_fb = 206 − T`.
+> Pinned in `test_bannerYCoords_compensateForShorterFontHeight`
+> (`RunningHUDFrameTests`). A blanket "make everything font 2" or
+> "make everything font 3" without re-deriving Y will silently push
+> a line off-screen (clipped per spec §5.5.6) — the same failure
+> mode that killed rc11.
 
 ## Why this skill exists
 
