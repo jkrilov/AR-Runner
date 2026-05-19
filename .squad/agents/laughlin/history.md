@@ -117,3 +117,9 @@ Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in histo
 3. **The five-RC saga concluded with all prior fixes load-bearing.** The confirmed-working stack is the cumulative product of seven PRs across three coders: scan fix (PR #45, Weiss) + version pipeline (PR #48) + HUD MVP (PR #49, Weiss) + power-on (PR #53, Richards) + write serialization (PR #55, Weiss) + queryID/flow-control/observability (PR #57, Laughlin) + cfgSet ALooK (PR #60, Laughlin). Removing any single one breaks the chain. **Lesson: in a multi-bug pipeline where each fix is real but masked by a downstream bug, you don't get to know which fixes were "actually" needed until the whole stack lights up. Resist the urge to revert anything during the dark period.**
 
 4. **Polish bugs in greenfield protocol code are not equivalent to functional bugs and should ship as fast-cycle RCs.** rc9 changed three lines of value-type logic, added one encoder method, and shipped within hours of rc8 confirmation. No need to re-litigate the working stack, no need for cross-research, no need for new forensic. The bench-test cadence is what matters now — Joe iterates rotation/timing against real hardware, we ship calibration RCs. **Rule for v0.3.x: polish cycles are tight; reserve forensic ceremony for "doesn't work at all" regressions.**
+
+---
+
+### 2026-05-19T09:00:00Z — Scribe merge session (orchestration + history context sharing)
+
+**Recognition:** The seven-PR working stack from rc7 through rc9 is now documented in the `activelook-hud-rendering` skill under "🟢 CONFIRMED WORKING STACK". This is a strong reference artifact for future HUD debugging — tells newcomers "here's what we know works end-to-end" rather than forcing them to re-derive from git history. The iterative polish cadence (rc8 bench → rc9 rotation/flicker fixes) proved effective; v0.4.0 will follow the same pattern.

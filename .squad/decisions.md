@@ -2070,3 +2070,158 @@ Root cause: ActiveLook BLE protocol violation on two fronts:
 ### Implementation notes
 
 145 tests passing on CI. Reviewer rejection lockout enforced — Weiss locked out after PR #49 + PR #53 both failed; Richards (Lead) took over this diagnosis and fix.
+
+---
+
+## 2026-05-19T12:45:00Z: User directive — Engo 2 display constraint
+
+**By:** Joe Krilov (via Copilot)  
+**What:** The ActiveLook Engo 2 display is **15-level grayscale** (technically amber-on-black, but the color parameter in commands functions as a brightness/intensity level 0-15). **There are no colors available.** All HUD visual design must use intensity levels, not color. References to "color coding", "RGB", "palette", or similar in agent prompts and skill docs should be reframed as "brightness coding" / "intensity levels". Example: HR zone "color" → HR zone brightness (recovery=dim, max=brightest).  
+**Why:** Joe corrected the assumption while reviewing v0.4.0 scope (HR zone Suggestion 2). Captures a hardware constraint that affects all future glasses-rendering work — Weiss, anyone shipping HUD visuals.
+
+---
+
+## 2026-05-19T12:50:00Z: v0.4.0 scope locked (Joe's answers to Killian roadmap)
+
+**By:** Joe Krilov (via Copilot coordinator)  
+**What:** v0.4.0 scope locked after stepping through Killian's 5 open questions. Final scope:
+  - **rc1 (Feature A) — Live HR right-justified next to time.** Use Option A1: client-side font-metrics computation, switch to layout-anchor primitive (A2) in v0.4.5+.
+  - **rc2 (Feature B) — Finish screen with trophy + final stats.** Use Path B1: imgDisplay (cmdID per spec) with asset ID 10 from ALooK config; confirmed via Visual-Assets README + existing cfgSet("ALooK") call from PR #60. Stats: "Finished | Avg Pace | Total Distance".
+  - **rc3 (Suggestion 1) — Battery indicator.** Already subscribed to battery characteristic; just need to display. Per Killian: low effort, high signal.
+  - **DEFERRED to v0.4.1: Suggestion 2 — HR zone brightness** (reframed from "color" per the Engo 2 grayscale directive). v0.4.0 ships HR text at default brightness.
+  - **DEFERRED to v0.5.0: Suggestion 3 — Gesture-driven layout switch.** Weiss will need bench time to validate gesture parsing.
+  - **Release cadence: iterative**, one feature per rc. No fixed deadline. Smallest blast radius (same pattern that worked for v0.3.0).
+  - **All v0.4.0 work blocked on:** Joe's bench confirmation that rc9 (rotation + flicker fix, currently in flight) actually works on hardware.
+
+**Why:** Joe's product decisions captured for the team. Future agents reading decisions.md will see the v0.4.0 scope without needing to re-derive from the roadmap proposal.
+
+---
+
+## 2026-05-19: v0.4.0 Feature Scope & Release Strategy (Killian proposal)
+
+**Author:** Killian (Product Strategist)  
+**Date:** 2026-05-19  
+**Status:** Locked by Joe (see 2026-05-19T12:50:00Z coordinator decision)
+
+### Proposal
+
+Proposed v0.4.0 scope:
+
+#### Core Features (Mandatory)
+
+1. **Feature A: Live HR right-justified on HUD** (Option A1 for v0.4.0, Option A2 future)
+   - Source: HealthKit HR observer (Amber) → ViewModel observable
+   - Render: client-side font-metrics computation for x-coordinate (expedient), layout primitive for v0.4.5+ (long-term)
+   - Effort: S
+   - Owner: Amber (observer) + Killian (HUD builder) + Weiss (glasses transport)
+
+2. **Feature B: Finish screen with trophy overlay + final stats**
+   - Asset: ID 10 ("targetReached" overlay at 73, 92)
+   - Options: Path B1 (direct `imgDisplay` if available), Path B2 (layout-based fallback)
+   - Display: trophy image + "Finished" + "Avg Pace: MM:SS/mi" + "Total Distance: X.XX mi"
+   - Effort: S–M
+   - Owner: Amber (workout-end trigger) + Killian (frame builder) + Weiss (command encoder + imgDisplay verification)
+
+#### Suggested Additions (Pick 0–2)
+
+3. **Suggestion 1: Battery indicator** (LOW EFFORT, HIGH SIGNAL)
+   - One `txt` command top-right with % or icon
+   - Already subscribe to Battery Service 0x2A19
+   - Effort: S
+   - Recommendation: **Include in v0.4.0** — near-zero cost, high user confidence
+
+4. **Suggestion 2: HR zone color indicator** (MEDIUM EFFORT, HIGH SIGNAL)
+   - Zone 1–5 mapped to colors (blue/green/yellow/orange/red)
+   - Computed from max HR (220 - age, or manual config)
+   - HR text color varies per frame
+   - Effort: M
+   - Recommendation: **Evaluate after Feature A is bench-confirmed**; strong for power users
+
+5. **Suggestion 3: Gesture-driven layout switch** (MEDIUM–LARGE EFFORT, MEDIUM SIGNAL)
+   - Swipe gestures on Engo 2 sensor (char 0xCBB) trigger HUD layout swap
+   - e.g., swipe-left = minimal (pace+HR only), swipe-right = detailed (all 4 + battery)
+   - Effort: M–L (gesture setup + layout orchestration)
+   - Recommendation: **Defer to v0.4.1** if timeline is tight; lower signal than S2
+
+#### Release Strategy
+
+**Iterative rc-per-feature (maintain v0.3.0 pattern):**
+
+- v0.4.0-rc1: Feature A (Live HR)
+- v0.4.0-rc2: Feature B (Finish Screen)
+- v0.4.0-rc3: Suggestion 1 (Battery)
+- v0.4.0-rc4+: Suggestion 2 (HR Zone) and/or later maintenance
+
+**Rationale:** v0.3.0 caught 1–2 bugs per rc because small feature sets enabled fast isolation. Each PR reviewable in <30 min. Single-feature revert doesn't orphan dependent work. Estimated elapsed time: 3–5 weeks depending on suggestions included.
+
+### Rationale
+
+#### Why these features?
+
+- **Feature A + B:** Direct response to Joe's v0.4.0 requests. HR is a primary running metric. Finish screen celebrates run completion and adds closure.
+- **Suggestion 1 (Battery):** Already subscribed to in adapter; one-line ROI in user confidence. "I don't want my glasses to die mid-run" is a basic expectation.
+- **Suggestion 2 (HR Zone):** Power-user engagement. Elite runners live by zones. Medium effort; high differentiation vs. stock apps.
+- **Suggestion 3 (Gesture):** Observed in official demo app. Adds polish. Deferred because it requires gesture-sensor bench time — lower priority than core metrics.
+
+#### Why iterative RCs?
+
+v0.3.0 showed that iterative strategy catches integration regressions early:
+- rc7 → rc8: Rotation calibration fix (1 PR, isolated)
+- rc8 → rc9: holdFlush anti-flicker (1 PR, isolated)
+
+Keeping v0.4.0 features separate ensures cause-effect clarity. Fast regressions → fast reverts.
+
+#### Dependencies
+
+- **Feature A** unlocks nothing but itself (self-contained HealthKit → HUD).
+- **Feature B** depends on Feature A being complete (needs the 5-field payload frame).
+- **Suggestions 1 & 2** depend on A (add to the 5-field frame).
+- **Suggestion 3** independent (new gesture handler).
+
+### Open Questions for Joe (Answered 2026-05-19T12:50:00Z)
+
+All questions answered by Joe in coordinator decision. Scope is locked.
+
+### Implementation Notes
+
+- **Feature A:** Amber owns HealthKit HR observer setup + ViewModel exposure. Killian updates `RunningHUDFrame.Payload` to accept `heartRate: String?`. Weiss adds one `txt` command slot in adapter frame loop.
+- **Feature B:** Amber handles workout-end signaling. Killian builds `FinishScreenFrame` encoder (either imgDisplay or layoutDisplay path). Weiss verifies command encoding against real hardware.
+- **Suggestions:** Battery = piggyback on existing battery subscription + add `txt`. Zones = extend A with zone-logic + color LUT. Gesture = separate workstream.
+
+**Full roadmap:** `.squad/files/v040-roadmap-proposal.md`
+
+---
+
+## 2026-05-19 — v0.3.0-rc9: rotation calibration + holdFlush anti-flicker (Laughlin ship)
+
+**Decided by:** Laughlin (watchOS Dev), with Joe's bench-test confirmation that rc8 cfgSet fix worked end-to-end.
+
+**Context:** rc8 (PR #60) shipped the keystone `cfgSet("ALooK")` fix and Joe confirmed text now renders on the Engo 2 — both connect banner ("AR-Runner Start a run") and live workout HUD (time / distance / pace). The five-RC blank-screen saga is concluded; the lockout that had been in force for Weiss/Richards/Laughlin is cleared. Two polish bugs remained from the bench test.
+
+**Bugs identified:**
+
+1. **Text rendered upside-down.** rc8 shipped `Layout.rotation = 0` (bottomRL per SDK enum) expecting natural reading direction. Engo 2's optical projection flips/mirrors the framebuffer relative to the wearer's POV through the waveguide — `rotation = 0` reads upside-down in real life.
+
+2. **HUD flashed every second on tick update.** Per-tick `[clear, txt, txt, txt]` sequence wrote each command independently to the framebuffer; the wearer briefly saw the blank state between `clear` and the first `txt` plus tearing between subsequent txt writes.
+
+**Fixes (PR #63):**
+
+- `RunningHUDFrame.Layout.rotation`: `0 → 2` (topRL, 180° from bottomRL — produces right-side-up text from the wearer's POV).
+- Added `ID.holdFlush = 0x39` to `ActiveLookCommand` enum and `holdFlush(hold: Bool)` encoder. cmdID 0x39, payload [0x00] = HOLD, [0x01] = FLUSH. Standard 1-byte queryID with `format = 0x01`.
+- Wrapped per-tick `RunningHUDFrame.frames(for:)` in `holdFlush(hold:true)` … `holdFlush(hold:false)` for atomic display commit (per ActiveLook spec §4.6 + `hud-api-spec-report.md` §"Fix 3").
+- Deliberately did **NOT** wrap `connectFrames()` or `summaryFrames(for:)` — those are one-shot draws where the user only sees the final state.
+
+**Scope guards (followed):** Zero changes to cfgSet, queryID, write serialization, flow-control gate, power-on plumbing, or any other working code from the rc7/rc8 stack. The seven-PR working chain stays intact.
+
+**Tests:** 154 ARRunnerCore tests pass (150 prior + 4 new):
+- `testHoldFlushEncodesAsExpected` — pins HOLD/FLUSH wire bytes.
+- `test_framesFor_wrapsInHoldFlush` — first/last frames are holdFlush.
+- `test_connectFrames_doesNotUseHoldFlush` + `test_summaryFrames_doesNotUseHoldFlush` — pin the deliberate non-wrap.
+- Updated `test_frames_startWithHoldFlushThenClearThenThreeTxtThenFlush` + geometry test for the new 6-frame per-tick layout.
+
+**Release:** PR #63 (polish) merged; PR #64 bumped build 23 → 24; tag `v0.3.0-rc9` pushed; `release-testflight.yml` reports `MARKETING_VERSION=0.3.0 CURRENT_PROJECT_VERSION=24 UPLOAD SUCCEEDED with no errors`.
+
+**Pending:** Joe's bench validation that rotation=2 reads right-side-up and that holdFlush eliminates the per-tick flash. If rotation=2 also reads wrong, the lens-flip calibration is more nuanced than a simple 180° and we iterate (per skill update, all rotation values are now empirically calibrated per device). If holdFlush doesn't fully eliminate flicker, the gap is likely in the watch-side write cadence (separate cycle).
+
+**Confidence bump:** `activelook-hud-rendering` skill confidence raised MEDIUM → HIGH on the basis of rc8 bench confirmation. The seven-PR working stack is documented in the skill under "🟢 CONFIRMED WORKING STACK" so future debugging starts from "is the whole chain still intact" rather than "what's the new bug."
+
