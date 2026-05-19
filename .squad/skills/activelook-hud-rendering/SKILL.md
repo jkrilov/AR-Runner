@@ -6,6 +6,44 @@
 > **Sibling to:** `activelook-bluetooth-pairing` (pairing UX) — this
 > skill covers what to draw on the glasses *after* the link is up.
 >
+> ## 🚨 CRITICAL — `txt` rotation: only 0 and 4 are documented; anything else is a blank-screen risk (PR #66, rc10)
+>
+> The ActiveLook SDK `TextRotation` enum **only documents two valid values**
+> for the `txt` (cmdID `0x37`) rotation byte:
+>
+> - `0` = bottomRL
+> - `4` = topLR
+>
+> Other byte values (1, 2, 3, 5, 6, 7) **may** correspond to other
+> orientations by symmetry (topRL, bottomLR, mirrored variants), but they
+> are **NOT documented**, and rc9 (PR #63) proved at least one of them
+> (`2`) causes Engo 2 firmware to **silently reject the entire `txt` op**
+> — the screen goes completely blank rather than rendering rotated text.
+> No error is returned over the BLE link; the command is simply dropped.
+>
+> **Rules:**
+>
+> 1. **Default to `0` or `4`.** These are the only values we know work
+>    end-to-end on Engo 2 firmware. AR-Runner currently ships with
+>    `RunningHUDFrame.Layout.rotation = 0` (rc10, restored from rc9's
+>    `2` after the blank-screen regression).
+> 2. **If a different orientation is needed, test ONE value at a time
+>    in its OWN PR.** Never bundle a rotation change with any other
+>    HUD render-path change. The failure mode (works / blank) is binary
+>    and indistinguishable from other render-path bugs, so multi-change
+>    PRs force a bisect cycle to isolate.
+> 3. **Treat undocumented rotation values as unverified until proven
+>    on hardware.** "Plausible by symmetry" is not the same as "works".
+>    The Engo 2 lens flip is undocumented; the wearer-perceived
+>    orientation for non-{0, 4} values can only be determined empirically.
+> 4. **If you see a totally blank HUD on a connection where the rc7/rc8
+>    working stack is otherwise intact (cfgSet, power-on, queryID, flow
+>    control), suspect a bad rotation byte first.** Other dropped-command
+>    bugs (e.g., missing cfgSet, missing power-on) usually leave the
+>    splash visible; an invalid rotation byte drops only the `txt` op,
+>    so the splash also gets cleared by the preceding `clear()` and the
+>    wearer sees pure black.
+>
 > ## 🚨 CRITICAL — `cfgSet("ALooK")` is mandatory on every connect (PR #60, rc8)
 >
 > **Fonts 1–5 on Engo 2 are NOT baked into base firmware.** They live
