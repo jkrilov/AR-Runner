@@ -45,18 +45,56 @@ public enum RunningHUDFrame {
         /// negative x and was silently clipped per spec §5.5.6.
         public static let leftMargin: Int16 = 284
 
-        /// Framebuffer y-anchors (top edge of each glyph block).
+        /// Framebuffer y-anchors for the SUMMARY (finish) screen.
         ///
         /// topLR places its anchor at the TOP of the block and grows
         /// downward in framebuffer space. The Engo 2 lens flips
         /// `y_wearer = 255 − y_fb`, so for a target wearer-visible top T
         /// with font 3 (49 px tall): `y_fb = 255 − T − 49 = 206 − T`.
-        /// T = 40 → 166 (top: time); T = 120 → 86 (middle: distance);
-        /// T = 200 → 6 (bottom: pace). rc11 used the wearer-space values
-        /// directly without the lens-flip transform.
+        /// T = 40 → 166 (top); T = 120 → 86 (middle); T = 200 → 6 (bottom).
+        /// rc11 used the wearer-space values directly without the
+        /// lens-flip transform. These three slots host the 3-line finish
+        /// screen (title / time / distance — rc14 dropped pace from the
+        /// finish card per Joe's "final stats = Time + Distance only"
+        /// directive).
         public static let timeY:     Int16 = 166
         public static let distanceY: Int16 = 86
         public static let paceY:     Int16 = 6
+
+        // MARK: - Live HUD (4-field, rc14)
+        //
+        // rc14 bench feedback (Joe): "During the run we should see Time,
+        // HR, Distance, Avg Pace." Live HUD jumped from 3 fields to 4.
+        // HR is pulled forward from the v0.4.0-rc1 scope into v0.3.0
+        // polish — the HealthKit substrate already emits `.heartRate`
+        // metrics (`HealthKitWorkoutSubstrate.metric(for:)`) and the
+        // WorkoutViewModel already captures them via `apply(metric:)`;
+        // the only missing wiring was the HUD payload extension below.
+        //
+        // Layout choice: 4 vertical lines at font 3 (Option A from the
+        // rc14 task brief). Font 3 stays because per-tick strings stay
+        // short ("12:34", "165 bpm", "2.34 mi", "8:30/mi" — all ≤ 7
+        // chars, well under the ~14-char clipping limit at leftMargin =
+        // 284). Vertical spacing tightens from 80 px wearer-space
+        // (3-field) to 55 px wearer-space (4-field) so all four lines
+        // fit inside the 256 px panel:
+        //   y_fb = 206 − T
+        //     T =  20 (top: time)     → 186
+        //     T =  75 (next: HR)      → 131
+        //     T = 130 (next: distance)→  76
+        //     T = 185 (bottom: pace)  →  21
+        // 49 px glyph + 6 px gap between rows. Tested-tight but legible
+        // outdoors. Option B (right-justified secondary metric in 2
+        // rows) was rejected because pixel-width-aware right-alignment
+        // under topLR's right-anchored coords requires per-string
+        // measurement against an unknown stock-font advance table; we
+        // already lost rc11+rc12 cycles to coordinate-math drift and
+        // the rc14 task brief explicitly authorized "whichever is
+        // cleanest."
+        public static let liveTimeY:     Int16 = 186
+        public static let liveHRY:       Int16 = 131
+        public static let liveDistanceY: Int16 = 76
+        public static let livePaceY:     Int16 = 21
 
         /// ActiveLook font index for the runner HUD. `3` is the largest stock
         /// font baked into Engo 2 firmware out of the box; readable at arm's
@@ -108,16 +146,20 @@ public enum RunningHUDFrame {
     // MARK: - Pre-formatted payload
 
     /// The strings the HUD renders, after formatting. Captured as a struct
-    /// (not three loose params) so the change-detection check in
-    /// `RunningHUDPushPolicy` is a single `==` and so future fields (HR,
-    /// splits) can extend the type without re-shaping every call site.
+    /// (not loose params) so the change-detection check in
+    /// `RunningHUDPushPolicy` is a single `==` and so future fields
+    /// (splits, cadence) can extend the type without re-shaping every
+    /// call site. rc14 added `heartRate` (live HUD) — finish-screen
+    /// builders ignore it.
     public struct Payload: Sendable, Equatable {
         public let time: String
+        public let heartRate: String
         public let distance: String
         public let pace: String
 
-        public init(time: String, distance: String, pace: String) {
+        public init(time: String, heartRate: String = "-- bpm", distance: String, pace: String) {
             self.time = time
+            self.heartRate = heartRate
             self.distance = distance
             self.pace = pace
         }
@@ -132,27 +174,47 @@ public enum RunningHUDFrame {
     /// - Parameters:
     ///   - elapsedSeconds: cumulative workout time.
     ///   - distanceMeters: cumulative HK distance.
+    ///   - heartRate: latest HK heart-rate reading in BPM (`nil` before
+    ///     the first sample lands).
     public static func payload(
         elapsedSeconds: TimeInterval,
-        distanceMeters: Double
+        distanceMeters: Double,
+        heartRate: Double? = nil
     ) -> Payload {
         Payload(
-            time:     formatElapsed(elapsedSeconds),
-            distance: RunMetricFormatting.formatMiles(meters: distanceMeters),
-            pace:     RunMetricFormatting.formatAveragePacePerMile(
-                          elapsedSeconds: elapsedSeconds,
-                          distanceMeters: distanceMeters
-                      )
+            time:      formatElapsed(elapsedSeconds),
+            heartRate: formatHeartRate(heartRate),
+            distance:  RunMetricFormatting.formatMiles(meters: distanceMeters),
+            pace:      RunMetricFormatting.formatAveragePacePerMile(
+                           elapsedSeconds: elapsedSeconds,
+                           distanceMeters: distanceMeters
+                       )
         )
+    }
+
+    /// Format an HK heart-rate sample for the HUD. Mirrors the on-wrist
+    /// display string (`WorkoutView.swift:169 → "\(Int($0)) bpm"`) so
+    /// the lens and the wrist never show different numbers.
+    /// `nil` → `"-- bpm"` placeholder (pre-first-sample state).
+    /// Values < 30 BPM are also treated as placeholder — sub-30 readings
+    /// in a running workout indicate a sensor dropout, not a real low
+    /// HR, and rendering "12 bpm" mid-run would alarm the user. Cap not
+    /// applied at the high end; if HK ever emits 220 BPM we want to see
+    /// it.
+    public static func formatHeartRate(_ beatsPerMinute: Double?) -> String {
+        guard let bpm = beatsPerMinute, bpm.isFinite, bpm >= 30 else {
+            return "-- bpm"
+        }
+        return "\(Int(bpm.rounded())) bpm"
     }
 
     /// Encode a `Payload` into an ActiveLook command sequence ready to ship
     /// over BLE. Order is significant: clear first so we paint over the
-    /// "Connection Successful" splash (and any prior frame), then three
-    /// `txt` draws top-to-bottom.
+    /// "Connection Successful" splash (and any prior frame), then four
+    /// `txt` draws top-to-bottom (rc14 added HR between time and distance).
     ///
     /// Wrapped in `holdFlush(hold:true)` … `holdFlush(hold:false)` so the
-    /// `clear` + 3×`txt` sequence commits atomically to the display.
+    /// `clear` + 4×`txt` sequence commits atomically to the display.
     /// Without the wrap, each BLE write paints to the framebuffer
     /// immediately and the wearer sees a brief blank between `clear` and
     /// the first `txt`, plus tearing between `txt` writes — the
@@ -165,17 +227,22 @@ public enum RunningHUDFrame {
             ActiveLookCommand.holdFlush(hold: true),
             ActiveLookCommand.clear(),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.timeY,
+                x: Layout.leftMargin, y: Layout.liveTimeY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.time
             ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.distanceY,
+                x: Layout.leftMargin, y: Layout.liveHRY,
+                rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
+                string: payload.heartRate
+            ),
+            ActiveLookCommand.text(
+                x: Layout.leftMargin, y: Layout.liveDistanceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.distance
             ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.paceY,
+                x: Layout.leftMargin, y: Layout.livePaceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.pace
             ),
@@ -207,7 +274,7 @@ public enum RunningHUDFrame {
     /// render a "Ready" line so the wearer immediately sees that the
     /// pairing succeeded. Same `txt` primitive as the running HUD, so no
     /// extra encoder surface.
-    public static func connectFrames(banner: String = "AR-Runner Ready") -> [[UInt8]] {
+    public static func connectFrames(banner: String = "AR-Runner") -> [[UInt8]] {
         [
             ActiveLookCommand.cfgSet(name: "ALooK"),
             ActiveLookCommand.power(on: true),
@@ -252,9 +319,14 @@ public enum RunningHUDFrame {
         [ActiveLookCommand.power(on: true)] + summaryFrames(for: payload)
     }
 
-    /// Convenience for the end-of-workout splash: a single centred-ish
-    /// "Workout Complete" line with the final stats below. Same `txt`
-    /// primitive so no extra protocol surface needed.
+    /// Convenience for the end-of-workout finish screen: a "Workout
+    /// Complete" banner above the two final stats — **Time and
+    /// Distance only** (no pace, no HR). rc14 dropped pace from the
+    /// summary per Joe's bench directive: "Those [time + distance] are
+    /// supposed to be the final stats. During the run we should see
+    /// Time, HR, Distance, Avg Pace." Live = 4 fields, finish = 2
+    /// fields. Same `txt` primitive as the run HUD, no new protocol
+    /// surface.
     public static func summaryFrames(for payload: Payload) -> [[UInt8]] {
         [
             ActiveLookCommand.clear(),
@@ -266,12 +338,12 @@ public enum RunningHUDFrame {
             ActiveLookCommand.text(
                 x: Layout.leftMargin, y: Layout.distanceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
-                string: payload.distance
+                string: payload.time
             ),
             ActiveLookCommand.text(
                 x: Layout.leftMargin, y: Layout.paceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
-                string: payload.pace
+                string: payload.distance
             )
         ]
     }

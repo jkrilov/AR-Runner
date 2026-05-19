@@ -479,7 +479,8 @@ final class WorkoutViewModel {
         guard let transport = overrideTransport ?? self.transport else { return }
         let payload = RunningHUDFrame.payload(
             elapsedSeconds: elapsed,
-            distanceMeters: distanceMeters ?? 0
+            distanceMeters: distanceMeters ?? 0,
+            heartRate: heartRate
         )
         guard hudPushPolicy.shouldSend(payload, now: now()) else { return }
         guard await transport.connectionState == .connected else { return }
@@ -503,9 +504,14 @@ final class WorkoutViewModel {
     fileprivate func pushHUDSummaryIfConnected() async {
         guard let transport else { return }
         guard await transport.connectionState == .connected else { return }
+        // rc14: finish-screen payload ignores HR/pace (summaryFrames
+        // renders only the Time + Distance "final stats" per Joe). We
+        // still pass HR through for Payload symmetry; the summary
+        // builder discards it.
         let payload = RunningHUDFrame.payload(
             elapsedSeconds: elapsed,
-            distanceMeters: distanceMeters ?? 0
+            distanceMeters: distanceMeters ?? 0,
+            heartRate: heartRate
         )
         // Same power-on belt-and-braces as the per-tick path: if the
         // display drifted into low-power between the last tick and the

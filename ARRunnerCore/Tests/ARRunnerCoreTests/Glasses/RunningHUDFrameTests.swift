@@ -18,10 +18,11 @@ final class RunningHUDFrameTests: XCTestCase {
         // RunMetricFormattingTests).
         let elapsed: TimeInterval = 3725
         let distance = 2.34 * RunMetricFormatting.metersPerMile
-        let payload = RunningHUDFrame.payload(elapsedSeconds: elapsed, distanceMeters: distance)
+        let payload = RunningHUDFrame.payload(elapsedSeconds: elapsed, distanceMeters: distance, heartRate: 165)
         XCTAssertEqual(payload.time, "1:02:05")
         XCTAssertEqual(payload.distance, "2.34 mi")
         XCTAssertEqual(payload.pace, "26:32/mi") // 3725 / 2.34 ≈ 1591.88 → rounds to 26:32
+        XCTAssertEqual(payload.heartRate, "165 bpm")
     }
 
     func test_payload_subHourElapsedRendersMMSS() {
@@ -48,6 +49,41 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertEqual(payload.pace, "--:--/mi")
     }
 
+    // MARK: - HR formatter (rc14)
+
+    /// rc14: HR pulled forward from v0.4.0-rc1. HK substrate emits BPM
+    /// as Double; HUD must render "165 bpm" matching the wrist
+    /// (WorkoutView.swift:169 → `"\(Int($0)) bpm"`). nil/sub-30/NaN/inf
+    /// → "-- bpm" placeholder (pre-first-sample, sensor dropout).
+    func test_formatHeartRate_nilRendersPlaceholder() {
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(nil), "-- bpm")
+    }
+    func test_formatHeartRate_normalReadingRendersBpm() {
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(165), "165 bpm")
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(180.4), "180 bpm")
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(180.6), "181 bpm")
+    }
+    func test_formatHeartRate_sensorDropoutHidesAsPlaceholder() {
+        // Sub-30 BPM in a running workout = dropped contact. Don't
+        // alarm the user mid-run with "12 bpm".
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(0), "-- bpm")
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(12), "-- bpm")
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(29.9), "-- bpm")
+    }
+    func test_formatHeartRate_nonFinitePlaceholder() {
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(.nan), "-- bpm")
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(.infinity), "-- bpm")
+    }
+    func test_formatHeartRate_doesNotCapHighEnd() {
+        // If HK ever reports 220 bpm during a max effort, we want to
+        // see it — don't silently floor.
+        XCTAssertEqual(RunningHUDFrame.formatHeartRate(220), "220 bpm")
+    }
+    func test_payload_defaultsHRtoPlaceholderWhenAbsent() {
+        let payload = RunningHUDFrame.payload(elapsedSeconds: 60, distanceMeters: 200)
+        XCTAssertEqual(payload.heartRate, "-- bpm")
+    }
+
     func test_formatElapsed_clampsNegativeAndNaN() {
         XCTAssertEqual(RunningHUDFrame.formatElapsed(-10), "0:00")
         XCTAssertEqual(RunningHUDFrame.formatElapsed(.nan), "0:00")
@@ -62,10 +98,13 @@ final class RunningHUDFrameTests: XCTestCase {
 
     // MARK: - Frame sequence
 
-    func test_frames_startWithHoldFlushThenClearThenThreeTxtThenFlush() {
-        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+    func test_frames_startWithHoldFlushThenClearThenFourTxtThenFlush() {
+        // rc14: live HUD expanded from 3 fields (time/distance/pace) to
+        // 4 (time/HR/distance/pace) per Joe's bench feedback. HR pulled
+        // forward from v0.4.0-rc1.
+        let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.frames(for: payload)
-        XCTAssertEqual(frames.count, 6, "v1 HUD = holdFlush(hold) + clear + 3 lines + holdFlush(flush)")
+        XCTAssertEqual(frames.count, 7, "rc14 HUD = holdFlush(hold) + clear + 4 lines + holdFlush(flush)")
 
         // 0: holdFlush(hold:true) — cmdID 0x39, payload [0x00].
         XCTAssertEqual(frames[0], [0xFF, 0x39, 0x01, 0x07, 0x00, 0x00, 0xAA])
@@ -73,40 +112,38 @@ final class RunningHUDFrameTests: XCTestCase {
         // 1: clear command (6 bytes with the queryID byte at index 4).
         XCTAssertEqual(frames[1], [0xFF, 0x01, 0x01, 0x06, 0x00, 0xAA])
 
-        // 2..4: txt commands (cmdID 0x37) with the payload strings
+        // 2..5: txt commands (cmdID 0x37) with the payload strings
         // appearing verbatim in the UTF-8 region.
-        for (i, expected) in [payload.time, payload.distance, payload.pace].enumerated() {
+        let expected = [payload.time, payload.heartRate, payload.distance, payload.pace]
+        for (i, str) in expected.enumerated() {
             let frame = frames[i + 2]
             XCTAssertEqual(frame.first, 0xFF)
             XCTAssertEqual(frame.last, 0xAA)
             XCTAssertEqual(frame[1], ActiveLookCommand.ID.textUpdate.rawValue,
                            "frame \(i + 2) must be a txt (0x37) command")
             XCTAssertEqual(frame[2], 0x01, "frame \(i + 2) must include 1-byte queryID")
-            // Last byte before the trailing 0xAA is the null terminator.
             XCTAssertEqual(frame[frame.count - 2], 0x00)
-            // UTF-8 bytes appear before the null+footer.
-            let payloadBytes = Array(expected.utf8)
-            let needleEnd = frame.count - 2 // exclusive
+            let payloadBytes = Array(str.utf8)
+            let needleEnd = frame.count - 2
             let needleStart = needleEnd - payloadBytes.count
             XCTAssertEqual(Array(frame[needleStart..<needleEnd]), payloadBytes)
         }
 
-        // 5: holdFlush(hold:false) — cmdID 0x39, payload [0x01].
-        XCTAssertEqual(frames[5], [0xFF, 0x39, 0x01, 0x07, 0x00, 0x01, 0xAA])
+        // 6: holdFlush(hold:false) — cmdID 0x39, payload [0x01].
+        XCTAssertEqual(frames[6], [0xFF, 0x39, 0x01, 0x07, 0x00, 0x01, 0xAA])
     }
 
     func test_frames_textPayloadGeometryMatchesEngo2Layout() {
-        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+        let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.frames(for: payload)
-        // 0xFF | cmd | fmt | len | queryID | x(i16 BE) | y(i16 BE) | rotation | font | color | bytes | 0x00 | 0xAA
-        // payload starts at index 5 (after the 1-byte queryID at index 4).
-        // frames[0] = holdFlush(hold), frames[1] = clear, frames[2..4] = txt, frames[5] = holdFlush(flush).
+        // rc14: 4-field live HUD geometry. Order: time, HR, distance, pace.
         let expectedY: [Int16] = [
-            RunningHUDFrame.Layout.timeY,
-            RunningHUDFrame.Layout.distanceY,
-            RunningHUDFrame.Layout.paceY
+            RunningHUDFrame.Layout.liveTimeY,
+            RunningHUDFrame.Layout.liveHRY,
+            RunningHUDFrame.Layout.liveDistanceY,
+            RunningHUDFrame.Layout.livePaceY
         ]
-        for i in 0..<3 {
+        for i in 0..<4 {
             let frame = frames[i + 2]
             XCTAssertEqual(frame[4], 0x00) // queryID placeholder
             // x: big-endian 0x01 0x1C (284) — rc12 lens-flip-corrected anchor
@@ -128,7 +165,7 @@ final class RunningHUDFrameTests: XCTestCase {
     /// the first `txt` (Joe's "flashes every second" rc8 report).
     /// Per ActiveLook spec §4.6 + hud-api-spec-report.md §"Fix 3".
     func test_framesFor_wrapsInHoldFlush() {
-        let payload = RunningHUDFrame.Payload(time: "0:00", distance: "0.00 mi", pace: "--:--/mi")
+        let payload = RunningHUDFrame.Payload(time: "0:00", heartRate: "-- bpm", distance: "0.00 mi", pace: "--:--/mi")
         let frames = RunningHUDFrame.frames(for: payload)
         XCTAssertGreaterThanOrEqual(frames.count, 2)
         // First frame: holdFlush with action=0 (HOLD).
@@ -154,7 +191,7 @@ final class RunningHUDFrameTests: XCTestCase {
 
     /// rc9: summary frames are a one-shot draw at workout end; no wrap.
     func test_summaryFrames_doesNotUseHoldFlush() {
-        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+        let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.summaryFrames(for: payload)
         for (i, frame) in frames.enumerated() {
             XCTAssertNotEqual(frame[1], ActiveLookCommand.ID.holdFlush.rawValue,
@@ -162,8 +199,32 @@ final class RunningHUDFrameTests: XCTestCase {
         }
     }
 
+    /// rc14: finish screen drops pace. Joe's directive: "Time + Distance
+    /// ONLY (final stats)". Layout: clear + "Workout Complete" + time +
+    /// distance = 4 frames. Top line is the banner, then time, then
+    /// distance — no pace, no HR.
+    func test_summaryFrames_renderTimeAndDistanceOnlyPerFinishScreenDirective() {
+        let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
+        let frames = RunningHUDFrame.summaryFrames(for: payload)
+        XCTAssertEqual(frames.count, 4, "summary = clear + banner + time + distance (rc14)")
+        // frames[1] = banner, frames[2] = time, frames[3] = distance.
+        // Banner at top (timeY), time at middle (distanceY), distance at bottom (paceY).
+        let bannerStr = stringPayload(from: frames[1])
+        let timeStr   = stringPayload(from: frames[2])
+        let distStr   = stringPayload(from: frames[3])
+        XCTAssertEqual(bannerStr, "Workout Complete")
+        XCTAssertEqual(timeStr,   payload.time)
+        XCTAssertEqual(distStr,   payload.distance)
+        // Pace must NOT appear in any frame's UTF-8 region.
+        for frame in frames where frame[1] == ActiveLookCommand.ID.textUpdate.rawValue {
+            let str = stringPayload(from: frame)
+            XCTAssertNotEqual(str, payload.pace, "summary must not render pace (rc14 directive)")
+            XCTAssertNotEqual(str, payload.heartRate, "summary must not render HR (rc14 directive)")
+        }
+    }
+
     func test_summaryFrames_replaceTopLineWithCompleteBanner() {
-        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+        let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.summaryFrames(for: payload)
         XCTAssertEqual(frames.count, 4)
         // First txt frame's string region carries "Workout Complete".
@@ -174,13 +235,41 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertEqual(Array(topLine[needleStart..<needleEnd]), banner)
     }
 
+    /// Extract the UTF-8 string payload from a txt (0x37) frame.
+    private func stringPayload(from frame: [UInt8]) -> String {
+        // Layout: 0xFF | cmd | fmt | len | queryID | x(2) | y(2) | rot | font | color | bytes | 0x00 | 0xAA
+        // → string starts at index 12, ends before the 0x00 (index count-2).
+        let start = 12
+        let end = frame.count - 2
+        guard end > start else { return "" }
+        return String(bytes: frame[start..<end], encoding: .utf8) ?? ""
+    }
+
     func test_layoutCoordinates_fitWithinEngo2Panel() {
-        // Sanity guard for any future tuning — keep the three baselines
-        // inside the 304×256 panel so we never silently push text off-screen.
+        // Sanity guard for any future tuning — keep all baselines inside
+        // the 304×256 panel so we never silently push text off-screen.
         XCTAssertLessThan(RunningHUDFrame.Layout.timeY,     RunningHUDFrame.Layout.screenHeight)
         XCTAssertLessThan(RunningHUDFrame.Layout.distanceY, RunningHUDFrame.Layout.screenHeight)
         XCTAssertLessThan(RunningHUDFrame.Layout.paceY,     RunningHUDFrame.Layout.screenHeight)
         XCTAssertLessThan(RunningHUDFrame.Layout.leftMargin, RunningHUDFrame.Layout.screenWidth)
+        // rc14: 4-field live HUD coordinates must also fit.
+        XCTAssertLessThan(RunningHUDFrame.Layout.liveTimeY,     RunningHUDFrame.Layout.screenHeight)
+        XCTAssertLessThan(RunningHUDFrame.Layout.liveHRY,       RunningHUDFrame.Layout.screenHeight)
+        XCTAssertLessThan(RunningHUDFrame.Layout.liveDistanceY, RunningHUDFrame.Layout.screenHeight)
+        XCTAssertLessThan(RunningHUDFrame.Layout.livePaceY,     RunningHUDFrame.Layout.screenHeight)
+        XCTAssertGreaterThanOrEqual(RunningHUDFrame.Layout.livePaceY, 0,
+                                    "lowest line top must stay in-bounds")
+    }
+
+    /// rc14: lens-flip arithmetic for the 4-field live HUD must match
+    /// `y_fb = 255 − T − 49` (font 3 = 49 px tall) for the same
+    /// 55-px-spaced wearer-space anchors (T = 20, 75, 130, 185).
+    /// Pinned so a future Y retune can't silently drift off-screen.
+    func test_liveHUDYCoords_followLensFlipFormula() {
+        XCTAssertEqual(RunningHUDFrame.Layout.liveTimeY,     206 - 20)
+        XCTAssertEqual(RunningHUDFrame.Layout.liveHRY,       206 - 75)
+        XCTAssertEqual(RunningHUDFrame.Layout.liveDistanceY, 206 - 130)
+        XCTAssertEqual(RunningHUDFrame.Layout.livePaceY,     206 - 185)
     }
 
     /// Dedicated explicit guard that the first byte of the connect
@@ -225,15 +314,34 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertEqual(frames[2][1], ActiveLookCommand.ID.clear.rawValue)
     }
 
-    func test_connectFrames_paintBannerSoUserSeesPairingSucceeded() {
-        let frames = RunningHUDFrame.connectFrames(banner: "AR-Runner Ready")
-        // rc8: cfgSet + power + clear + 2× txt = 5 frames.
+    /// rc14: splash line 1 trimmed from "AR-Runner Ready" → "AR-Runner"
+    /// per Joe's bench feedback ("Can we change the first line to just
+    /// 'AR-Runner'?"). Line 2 ("Start a run") stays as-is. The shorter
+    /// 9-char string trivially fits at font 2; the rc13 font-fit
+    /// guard (`test_connectFrames_useShorterFontSoFullBannerFits`)
+    /// continues to enforce the font choice independent of this.
+    func test_connectFrames_defaultBannerIsTrimmedToARRunner() {
+        let frames = RunningHUDFrame.connectFrames()
         XCTAssertEqual(frames.count, 5)
-        // Frame index 3: txt with the banner string in its UTF-8 region.
+        let bannerFrame = frames[3]
+        let str = String(bytes: bannerFrame[12..<(bannerFrame.count - 2)], encoding: .utf8)
+        XCTAssertEqual(str, "AR-Runner",
+                       "rc14 trimmed splash line 1 to 'AR-Runner' (was 'AR-Runner Ready')")
+        // Line 2 still says "Start a run".
+        let line2Frame = frames[4]
+        let line2 = String(bytes: line2Frame[12..<(line2Frame.count - 2)], encoding: .utf8)
+        XCTAssertEqual(line2, "Start a run")
+    }
+
+    func test_connectFrames_paintBannerSoUserSeesPairingSucceeded() {
+        // Custom banner override still works (callers can override the
+        // default if they want a different post-pair message).
+        let frames = RunningHUDFrame.connectFrames(banner: "Hello")
+        XCTAssertEqual(frames.count, 5)
         let bannerFrame = frames[3]
         XCTAssertEqual(bannerFrame[1], ActiveLookCommand.ID.textUpdate.rawValue)
-        let needle = Array("AR-Runner Ready".utf8)
-        let needleEnd = bannerFrame.count - 2 // exclusive (skip 0x00 + 0xAA)
+        let needle = Array("Hello".utf8)
+        let needleEnd = bannerFrame.count - 2
         let needleStart = needleEnd - needle.count
         XCTAssertEqual(Array(bannerFrame[needleStart..<needleEnd]), needle)
     }
@@ -283,20 +391,21 @@ final class RunningHUDFrameTests: XCTestCase {
     /// at arm's length. Only the splash drops to font 2 for the long
     /// "AR-Runner Ready" / "Start a run" banners. Guards against a future
     /// "make everything font 2" mass-edit regression.
+    /// rc14: live HUD jumped from 3 → 4 txt commands.
     func test_runHUDFont_staysAtFont3() {
         XCTAssertEqual(RunningHUDFrame.Layout.fontSize, 3,
                        "run HUD must stay at font 3 for readability at arm's length")
-        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+        let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.frames(for: payload)
-        // frames[2..4] are the three txt commands; font byte is at index 10.
-        for i in 2...4 {
+        // frames[2..5] are the four txt commands; font byte at index 10.
+        for i in 2...5 {
             XCTAssertEqual(frames[i][10], 3,
                            "run-HUD txt[\(i)] must use font 3 (was \(frames[i][10]))")
         }
     }
 
     func test_framesWithPowerOn_prependsCfgSetAndPowerOnToPlainFrames() {
-        let payload = RunningHUDFrame.Payload(time: "0:00", distance: "0.00 mi", pace: "--:--/mi")
+        let payload = RunningHUDFrame.Payload(time: "0:00", heartRate: "-- bpm", distance: "0.00 mi", pace: "--:--/mi")
         let plain = RunningHUDFrame.frames(for: payload)
         let withPower = RunningHUDFrame.framesWithPowerOn(for: payload)
         // rc8: cfgSet + power prepended (2 extra frames, not 1).
@@ -310,7 +419,7 @@ final class RunningHUDFrameTests: XCTestCase {
     }
 
     func test_summaryFramesWithPowerOn_prependsPowerOnToSummaryFrames() {
-        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+        let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let plain = RunningHUDFrame.summaryFrames(for: payload)
         let withPower = RunningHUDFrame.summaryFramesWithPowerOn(for: payload)
         XCTAssertEqual(withPower.count, plain.count + 1)
@@ -318,14 +427,9 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertEqual(Array(withPower.dropFirst()), plain)
     }
 
-    /// Belt-and-braces test that would have caught the rc4 regression: a
-    /// fresh `RunningHUDPushPolicy` must allow the very first send through
-    /// without waiting out the 1Hz throttle window. If the throttle ever
-    /// gets a "lastSentAt initialized to now" bug, the first workout-start
-    /// frame would wait a full second before reaching the glasses.
     func test_pushPolicy_firstSendAtT0PassesImmediatelyNotAfter1Second() {
         var policy = RunningHUDPushPolicy()
-        let p = RunningHUDFrame.Payload(time: "0:00", distance: "0.00 mi", pace: "--:--/mi")
+        let p = RunningHUDFrame.Payload(time: "0:00", heartRate: "-- bpm", distance: "0.00 mi", pace: "--:--/mi")
         // No prior send → first call must pass at t=0, not require Δt ≥ 1s.
         XCTAssertTrue(policy.shouldSend(p, now: Date(timeIntervalSince1970: 0)))
     }
