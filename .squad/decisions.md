@@ -2225,3 +2225,12 @@ All questions answered by Joe in coordinator decision. Scope is locked.
 
 **Confidence bump:** `activelook-hud-rendering` skill confidence raised MEDIUM → HIGH on the basis of rc8 bench confirmation. The seven-PR working stack is documented in the skill under "🟢 CONFIRMED WORKING STACK" so future debugging starts from "is the whole chain still intact" rather than "what's the new bug."
 
+
+---
+
+## 2026-05-19T13:08:00Z: User-authorized lockout override for HUD render artifact (rc10 bisect)
+
+**By:** Joe Krilov (via Copilot coordinator)  
+**What:** rc9 regressed the HUD (rc8 rendered text upside-down + flickering; rc9 added rotation=2 + holdFlush wrap and went blank). Per strict-lockout, Laughlin is now re-locked from the artifact. Joe explicitly authorized a second one-time override for rc10 because the fix is a surgical 1-line revert (rotation 2→0) used as a bisect to isolate which of the two rc9 changes broke things. Override scoped to this revision only. If rc10 also fails, lockout snaps back and we go to either (a) cast a fresh BLE specialist, or (b) Joe applies fixes manually.  
+**Why:** Recorded for orchestration trail. The override pattern is becoming a thing — worth noting that the strict-lockout protocol still adds value (it forces these to be explicit decisions rather than silent re-attempts), even when Joe chooses to override.
+
