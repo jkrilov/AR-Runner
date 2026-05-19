@@ -2,7 +2,7 @@
 
 > **Owner:** Weiss (BLE protocol fix by Richards; encoder + observability fix by Laughlin in PR #57; cfgSet activation by Laughlin in PR #60)
 > **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP; PR #55 — BLE serialization fix; PR #57 — queryID + flow-control fix; PR #60 — cfgSet("ALooK") activation)
-> **Confidence:** MEDIUM — pending Joe's hardware confirmation that rc8 actually renders. The fix is byte-perfect against the SDK + Visual-Assets repo README; bump to HIGH only after a confirmed-working bench test.
+> **Confidence:** HIGH — Joe's bench test of rc8 confirmed text renders end-to-end on the Engo 2 (both the "AR-Runner Start a run" connect banner AND the live workout HUD: time / distance / pace). rc9 (PR #63) added rotation calibration + holdFlush anti-flicker polish. The full working stack is the cumulative product of seven PRs (see "🟢 CONFIRMED WORKING STACK" section below) — every prior fix is load-bearing.
 > **Sibling to:** `activelook-bluetooth-pairing` (pairing UX) — this
 > skill covers what to draw on the glasses *after* the link is up.
 >
@@ -356,3 +356,55 @@ to on-device bench validation for the actual rendering.
 - `.squad/files/hud-api-spec-report.md` — protocol-spec deep dive.
 - `.squad/decisions/inbox/laughlin-hud-queryid-fix.md` (after Scribe merge,
   in `decisions.md`) — cross-research methodology and resolution.
+
+---
+
+## 🟢 CONFIRMED WORKING STACK (rc8 bench-validated 2026-05-19)
+
+Joe's bench test of v0.3.0-rc8 on a real Engo 2 confirmed text renders end-to-end. The cumulative working configuration is the product of **seven PRs across three coders** — each one fixes a real bug; removing any single one breaks the chain:
+
+| PR | Author   | Layer            | Fix                                                                                          |
+|----|----------|------------------|----------------------------------------------------------------------------------------------|
+| #45 | Weiss    | Pairing          | BLE scan / GATT discovery filter (excludes non-ActiveLook peripherals reliably)              |
+| #48 | (CI)     | Build pipeline   | Tag → MARKETING_VERSION; run-number → CURRENT_PROJECT_VERSION (TestFlight upload pipeline)   |
+| #49 | Weiss    | HUD MVP          | `RunningHUDFrame` raw-`txt` path (bypasses curated-layout machinery)                          |
+| #53 | Richards | Power-on         | `power(on:true)` prefix + on-connect "Ready" banner (rc4 regression fix)                     |
+| #55 | Weiss    | Serialization    | Write queue + flow-control subscription gate (rc5/rc6 partial fix)                            |
+| #57 | Laughlin | Encoder + obs.   | 1-byte queryID with `format = 0x01` on every command + flow-control runtime gate + TX/control char notification routing for 0xE2 error observability |
+| #60 | Laughlin | Config namespace | `cfgSet("ALooK")` prepended to `connectFrames()` and `framesWithPowerOn(for:)` — activates the font/layout/image namespace that fonts 1–5 live in. **The keystone fix; without this every prior fix is invisible because fonts don't resolve.** |
+| #63 | Laughlin | Polish (rc9)     | `Layout.rotation: 0 → 2` (Engo 2 lens flip calibration) + holdFlush(0x39) wrap around per-tick `frames(for:)` for atomic display commit (eliminates flicker) |
+
+**Removing any one of these breaks the chain.** When debugging future "blank screen" or "garbled HUD" symptoms on rc8+, confirm all seven layers are still present before assuming a new bug.
+
+## 🚨 Calibration patterns discovered on rc8/rc9 hardware
+
+### Rotation is wearer-perceived, not framebuffer-oriented
+
+Engo 2's optical projection flips/mirrors the framebuffer relative to what the wearer sees through the waveguide. The `rotation` parameter in `txt`/`layout` commands encodes glyph orientation in framebuffer space (per ActiveLook spec §5.7); the lens flip is **undocumented** and must be discovered empirically.
+
+| rotation value | SDK enum  | Wearer-perceived orientation on Engo 2 |
+|----------------|-----------|----------------------------------------|
+| `0`            | bottomRL  | upside-down (rc8 ship value — bug)     |
+| `2`            | topRL     | **right-side-up (rc9 ship value — confirmed)** |
+| `4`            | topLR     | rotated 90° / sideways (rc7 ship value — bug) |
+
+**Rule:** rotation is calibrated per device. When bringing up a new ActiveLook hardware target, start with `rotation = 2` and trial-and-error against the wearer's POV. The SDK enum is reliable; the lens behaviour is not.
+
+### holdFlush wrapping for atomic per-tick updates
+
+Per-tick HUD sequences that contain `clear` + multiple `txt` writes will visibly flicker if each write commits to the framebuffer independently. Per ActiveLook spec §4.6 and `hud-api-spec-report.md` §"Fix 3", wrap the sequence:
+
+```
+holdFlush(action: 0x00 HOLD)
+clear
+txt(time)
+txt(distance)
+txt(pace)
+holdFlush(action: 0x01 FLUSH)
+```
+
+The HOLD/FLUSH pair defers framebuffer commits until the FLUSH, making the entire batch appear as one atomic transition.
+
+- **Apply to:** `frames(for:)` (per-tick HUD update) and any future multi-write sequence the user perceives as "one update."
+- **Do NOT apply to:** `connectFrames()`, `summaryFrames()`, or any one-shot draw where the user only ever sees the final state. Wrapping these adds protocol surface without visible benefit.
+- **Encoder:** `ActiveLookCommand.holdFlush(hold: Bool)` — `hold:true` → HOLD (0x00), `hold:false` → FLUSH (0x01). cmdID `0x39`. Standard `format = 0x01` 1-byte queryID like every other application command.
