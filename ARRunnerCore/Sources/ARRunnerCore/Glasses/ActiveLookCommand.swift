@@ -48,6 +48,7 @@ public enum ActiveLookCommand {
         case layoutDisplay  = 0x62
         case layoutPosition = 0x65
         case cfgSet         = 0xD2
+        case imgDisplay     = 0x42
     }
 
     // MARK: - Public encoders
@@ -156,6 +157,49 @@ public enum ActiveLookCommand {
         payload.append(contentsOf: Array(string.utf8))
         payload.append(0x00)
         return encode(id: .textUpdate, payload: payload)
+    }
+
+    /// Display a preloaded image from the active configuration's flash
+    /// at the given framebuffer coordinates. (CmdID 0x42 — `imgDisplay`.)
+    ///
+    /// Per ActiveLook API spec §4.7 (modern, post-4.0.0 firmware):
+    /// ```text
+    /// id(u8) | x(u16 BE) | y(u16 BE)
+    /// ```
+    ///
+    /// Unlike `txt` (0x37), `imgDisplay` carries **no rotation flag** —
+    /// the icon bitmap is blitted framebuffer-direct at `(x, y)` as its
+    /// top-left corner. The Engo 2 lens still applies its 180°
+    /// point-symmetric flip, so an icon at fb `(x, y)` with dimensions
+    /// `w × h` appears to the wearer at wearer coords `[303 − x − w,
+    /// 303 − x]` × `[255 − y − h, 255 − y]`, rotated 180°. Pre-rotated
+    /// assets (like the stock ALooK preloaded icons shipped in
+    /// `ActiveLook/Activelook-Visual-Assets`) are designed so the
+    /// post-lens orientation reads upright to the wearer.
+    ///
+    /// **Preloaded ALooK icons** used by the rc16 live HUD (flash IDs
+    /// from the Visual-Assets repo README — the leading number in each
+    /// asset filename is the literal `id` byte the firmware indexes by):
+    /// * 40 → `40_chrono_40x40` (time)
+    /// * 12 → `12_heart-beat_28x28` (heart rate)
+    /// *  9 → `9_distance_28x28` (distance)
+    /// * 17 → `17_pace-avg_28x28` (avg pace)
+    ///
+    /// These ship inside the stock `ALooK` configuration which we already
+    /// activate in `connectFrames()` / `framesWithPowerOn(for:)` via
+    /// `cfgSet("ALooK")` (rc8 PR #60). No upload pipeline (`cfgWrite` /
+    /// chunked `imgSave`) is required to render them — that whole
+    /// iceberg, documented in `.squad/files/hud-icon-research.md` from
+    /// rc15, applies only to *custom* user-supplied artwork.
+    public static func imgDisplay(id: UInt8, x: UInt16, y: UInt16) -> [UInt8] {
+        var payload: [UInt8] = []
+        payload.reserveCapacity(5)
+        payload.append(id)
+        payload.append(UInt8((x >> 8) & 0xFF))
+        payload.append(UInt8(x & 0xFF))
+        payload.append(UInt8((y >> 8) & 0xFF))
+        payload.append(UInt8(y & 0xFF))
+        return encode(id: .imgDisplay, payload: payload)
     }
 
     // MARK: - Frame builder

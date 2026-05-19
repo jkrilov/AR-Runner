@@ -1,3 +1,38 @@
+# HUD Icon Research — rc15 scoping outcome (SUPERSEDED by rc16)
+
+> **Status: SUPERSEDED.** The rc15 deferral analysis below was correct
+> for *custom* user-supplied artwork — but rc16 (Amber, 2026-05-19)
+> discovered that the 4 icons the live HUD actually needs (chrono,
+> heart-beat, distance, pace-avg) are **already preloaded** in the
+> stock ALooK configuration and can be displayed via `imgDisplay`
+> (cmdID 0x42) without any of the `cfgWrite`/`imgSave` upload
+> plumbing this doc describes.
+>
+> **The flash ID of each preloaded icon is the leading number in
+> its asset filename in the `ActiveLook/Activelook-Visual-Assets`
+> repo.** Concretely for rc16:
+> | Asset                  | Flash ID | Used for           |
+> |------------------------|---------:|--------------------|
+> | `40_chrono_40x40`      |     40   | Time (line 1)      |
+> | `12_heart-beat_28x28`  |     12   | HR (line 1 right)  |
+> | `9_distance_28x28`     |      9   | Distance (line 2)  |
+> | `17_pace-avg_28x28`    |     17   | Avg Pace (line 3)  |
+>
+> The whole iceberg below remains accurate for future custom artwork
+> (battery indicator with our own glyph, trophy animation, etc.) —
+> if/when we need icons that ALooK doesn't ship, we'll have to do
+> the `cfgWrite` + chunked upload work. But for icons that match
+> the ALooK catalog, the path is: `cfgSet("ALooK")` (already in
+> `connectFrames()` per rc8 PR #60) + `imgDisplay(id, x, y)`. Done.
+>
+> See `.squad/agents/amber/history.md` rc16 entry and
+> `.squad/skills/activelook-hud-rendering/SKILL.md` rc16 section for
+> the simplified path. The original rc15 deferral analysis is
+> preserved below for completeness and for the future custom-asset
+> work.
+>
+> --- ORIGINAL rc15 DEFERRAL ANALYSIS BELOW ---
+
 # HUD Icon Research — rc15 scoping outcome
 
 Source: Amber · 2026-05-19 · per rc15 task brief Phase 0 directive.

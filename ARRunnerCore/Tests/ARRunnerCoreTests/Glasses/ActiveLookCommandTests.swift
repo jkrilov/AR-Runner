@@ -138,6 +138,48 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(Array(long[needleStart..<needleEnd]), nameBytes)
     }
 
+    /// rc16: imgDisplay (cmdID 0x42) per ActiveLook spec §4.7.
+    /// Wire format: 0xFF | 0x42 | format=0x01 | len=11 | queryID=0x00 |
+    /// id | x_hi x_lo | y_hi y_lo | 0xAA. Total = 11 bytes.
+    /// Renders preloaded ALooK icons by flash ID at framebuffer (x, y);
+    /// no rotation flag — bitmap is blitted top-left as-is and the
+    /// Engo 2 lens applies its 180° flip to whatever pixels we send.
+    func testImgDisplayEncodesAsExpectedForChronoIcon() {
+        // chrono icon (40) at fb (248, 200) — the rc16 line-1 left slot.
+        // x=248 → 0x00 0xF8, y=200 → 0x00 0xC8, id=40 → 0x28.
+        let frame = ActiveLookCommand.imgDisplay(id: 40, x: 248, y: 200)
+        XCTAssertEqual(frame, [
+            0xFF, 0x42, 0x01, 0x0B, 0x00,
+            0x28,
+            0x00, 0xF8,
+            0x00, 0xC8,
+            0xAA
+        ])
+    }
+
+    func testImgDisplayEncodesAsExpectedForHeartIcon() {
+        // heart icon (12) at fb (88, 207) — the rc16 line-1 right slot.
+        let frame = ActiveLookCommand.imgDisplay(id: 12, x: 88, y: 207)
+        XCTAssertEqual(frame, [
+            0xFF, 0x42, 0x01, 0x0B, 0x00,
+            0x0C,
+            0x00, 0x58,
+            0x00, 0xCF,
+            0xAA
+        ])
+    }
+
+    func testImgDisplayHandlesLargeCoordinatesAsBigEndian() {
+        // Sanity: high-byte placement is correct for x/y > 255.
+        // 304 = 0x0130 → high byte 0x01, low byte 0x30.
+        let frame = ActiveLookCommand.imgDisplay(id: 17, x: 304, y: 256)
+        XCTAssertEqual(frame[5], 0x11)
+        XCTAssertEqual(frame[6], 0x01)
+        XCTAssertEqual(frame[7], 0x30)
+        XCTAssertEqual(frame[8], 0x01)
+        XCTAssertEqual(frame[9], 0x00)
+    }
+
     func testGATTUUIDsAreCanonical() {
         // Sanity-check the constants against the iOS SDK source — failing this
         // means we typo'd the GATT profile and would fail to discover services.

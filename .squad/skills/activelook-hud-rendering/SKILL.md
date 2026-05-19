@@ -653,3 +653,107 @@ The rc15 brief originally scoped icon rendering via `imgSave` /
 4. Build-time PNG → 4bpp pipeline; commit the rotated blob.
 5. THEN add the encoder helpers (`imgSave`, `imgDisplay`, `imgList`)
    wired into the new chunk-split path.
+
+---
+
+## rc16 — Preloaded ALooK icons + corrected font heights + corrected lens-flip formula
+
+**Confidence:** HIGH (encoder + flash IDs + layout). MEDIUM (icon orientation — under bench test on rc16).
+
+### Real ActiveLook font heights (USE THIS TABLE, not spec §5.9)
+
+Per the `ActiveLook/Activelook-Visual-Assets` repo README which ships the
+stock ALooK configuration the firmware loads:
+
+| Font index | Height (px) | Chars range |
+|-----------:|------------:|-------------|
+|     **1**  |      **24** | Space to ~  |
+|     **2**  |      **38** | Space to ~  |
+|     **3**  |      **64** | Space to ~  |
+|     **4**  |      **75** | Space to ;  |
+|     **5**  |      **82** | Space to ;  |
+
+**Do NOT use spec §5.9's generic txt-font height table** — that's a
+different (smaller) font table that does NOT match what ALooK actually
+preloads. rc12/14/15 assumed font 3 = 49 px (from §5.9) and accumulated
+~15 px/line of unmodeled height that pushed the rc15 pace line off-screen.
+
+### The corrected topLR lens-flip formula
+
+For `rotation = 4` (topLR) text on Engo 2, the empirically-validated
+framebuffer-to-wearer Y mapping is:
+
+```
+y_fb = 255 − wearer_top      (NOT 255 − wearer_top − font_height)
+wearer_top    = 255 − y_fb
+wearer_bottom = 255 − y_fb + font_height
+```
+
+The X mapping is unchanged from rc12:
+
+```
+x_fb = 303 − wearer_left     (topLR anchors at the RIGHT edge of the
+                              text block in wearer space — block extends
+                              LEFT from there)
+```
+
+**Evidence:** rc15 livePaceY=26 + font_3=64 → wearer_top=229, wearer_bottom=293
+(38 px off screen bottom) matches Joe's "just one pixel at bottom" bench
+observation *exactly*. The rc12-era `y_fb = 255 − T − font_height` formula
+predicts wearer 165..229 — fully visible — which Joe definitively didn't see.
+**Trust the bench data over the derivation.**
+
+### Preloaded ALooK icons — `imgDisplay` (0x42) without `cfgWrite`
+
+The stock ALooK configuration (which we activate via `cfgSet("ALooK")` at
+connect time, rc8 PR #60) ships with 40+ preloaded icons. The `Activelook-
+Visual-Assets` repo lists them; the **leading number in each asset filename
+is the literal flash ID** the firmware indexes by. Examples used in the
+rc16 live HUD:
+
+| Asset filename            | Flash ID | Size  |
+|---------------------------|---------:|-------|
+| `40_chrono_40x40`         |    **40** | 40×40 |
+| `12_heart-beat_28x28`     |    **12** | 28×28 |
+| `9_distance_28x28`        |     **9** | 28×28 |
+| `17_pace-avg_28x28`       |    **17** | 28×28 |
+
+To render one: `imgDisplay(id, x, y)` (cmdID 0x42, spec §4.7). Wire format:
+`id(u8) | x(u16 BE) | y(u16 BE)`. **No upload pipeline needed for these** —
+the `cfgWrite` / chunked `imgSave` iceberg documented in
+`.squad/files/hud-icon-research.md` (rc15) applies only to *custom*
+user-supplied artwork that isn't already in the active configuration.
+
+**Icon framebuffer coords.** `imgDisplay` has no rotation flag and treats
+(x, y) as the bitmap's top-left in framebuffer space. The Engo 2 lens
+still applies its 180° flip, so a `w × h` icon at fb `(x, y)` appears to
+the wearer at wearer rect `[303 − x − w, 303 − x] × [255 − y − h, 255 − y]`
+rotated 180°. The preloaded ALooK icons are **shipped pre-rotated** to
+match the demo app's expected lens orientation (per the Visual-Assets
+README convention) — they should read upright with no compensation when
+displayed through the lens.
+
+**If bench shows them upside-down**, the convention is wrong; pre-rotate
+at upload time (which puts us back on the custom-asset path with all its
+machinery) or accept and ship our own rotated copies. The encoder is the
+same either way.
+
+### Recipe for adding a new HUD line/field with an icon
+
+1. Pick the wearer-space target rect (T = top, H = height).
+2. Text Y anchor (topLR): `y_fb = 255 − T`. Always use the corrected
+   formula — never re-derive.
+3. Text X anchor (topLR, wearer-left edge of text at L): `x_fb = 303 − L`.
+4. Pick an icon from the ALooK preloaded set (see Visual-Assets repo).
+   Verify the flash ID = leading number in the asset filename.
+5. Icon framebuffer top-left for icon `w × h` at wearer rect
+   `[wL, wL+w] × [wT, wT+h]`:
+   `x_fb = 303 − wL − w`, `y_fb = 255 − wT − h`.
+6. Pin a test that asserts the (id, x, y) tuple end-to-end (encoder
+   byte sequence + frame index inside the `frames(for:)` output).
+7. Verify all icon and text rects stay inside `[0, 304] × [0, 256]`
+   in framebuffer space — off-screen coords are silently clipped
+   (spec §5.5.6).
+8. Use the corrected font-height table above when computing line
+   spacing — F2=38 px, F3=64 px (NOT 49). Total text+icon height +
+   gaps must sum to ≤ 256.
