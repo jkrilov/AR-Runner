@@ -13,9 +13,9 @@ struct WorkoutView: View {
     )
     @State private var showGlassesSheet = false
 
-    /// v0.2 audit P1.1: cross-process handoff from
-    /// `StartWorkoutIntent.perform()` (widget extension) to the
-    /// foregrounded host. Consumed below on `scenePhase == .active`.
+    /// Cross-process handoff from `StartWorkoutIntent.perform()` (widget
+    /// extension) to the foregrounded host. Consumed below on
+    /// `scenePhase == .active`.
     private let pendingStartStore: any PendingWorkoutStartStore = AppGroupPendingWorkoutStartStore()
 
     @Environment(\.scenePhase) private var scenePhase
@@ -40,9 +40,9 @@ struct WorkoutView: View {
             // First-launch path — `openAppWhenRun` lands here before the
             // scene phase change fires on a cold start.
             await maybeAutoStartFromIntent()
-            // v0.2.0 device-test fix: if the user has previously paired
-            // their glasses, kick off a reconnect attempt on launch so the
-            // pre-run status chip is accurate before they tap Start.
+            // If the user has previously paired their glasses, attempt a
+            // reconnect on launch so the pre-run status chip is accurate
+            // before they tap Start.
             await viewModel.autoReconnectGlassesOnLaunch()
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -113,9 +113,8 @@ struct WorkoutView: View {
     }
 
     /// Tappable row that shows the live glasses link state and opens the
-    /// pairing sheet. Pre-run only — see `isPreRun`. This is Joe's
-    /// v0.2.0 device-test ask: a clear, persistent affordance to pair
-    /// the AR glasses before tapping Start Run.
+    /// pairing sheet. Pre-run only — see `isPreRun`. Gives the user a
+    /// clear, persistent affordance to pair before tapping Start Run.
     @ViewBuilder
     private var preRunGlassesRow: some View {
         Button {
@@ -178,10 +177,9 @@ struct WorkoutView: View {
             Image(systemName: "clock").foregroundStyle(.secondary)
             Text(formatElapsed(viewModel.elapsed))
                 .font(.title3.monospacedDigit())
-            // v0.2.0 device feedback (Joe): show avg pace MM:SS/mi to
-            // the right of elapsed time. `--:--/mi` placeholder until
-            // we have a stable distance sample (see
-            // `RunMetricFormatting.formatAveragePacePerMile`).
+            // Avg pace MM:SS/mi sits next to elapsed time. Placeholder
+            // `--:--/mi` until distance is stable — see
+            // `RunMetricFormatting.formatAveragePacePerMile`.
             Text(RunMetricFormatting.formatAveragePacePerMile(
                 elapsedSeconds: viewModel.elapsed,
                 distanceMeters: viewModel.distanceMeters ?? 0

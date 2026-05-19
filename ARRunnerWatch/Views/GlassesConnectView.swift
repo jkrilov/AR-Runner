@@ -5,14 +5,12 @@ import ARRunnerCore
 import SwiftUI
 
 /// Pre-run pairing sheet. Surfaced from `WorkoutView` when the workout is
-/// idle. Lets Joe initiate a BLE scan + connect to ActiveLook-compatible
-/// glasses (Engo 2) before tapping Start Run, with a clear status line and
-/// a retry path on failure.
+/// idle. Initiates a BLE scan + connect to ActiveLook-compatible glasses
+/// (Engo 2) with a clear status line and a retry path on failure.
 ///
-/// v0.2.0 scope (post-device-test feedback): single-device auto-grab.
-/// The underlying `ActiveLookGlassesAdapter` connects to the first
-/// peripheral advertising the ActiveLook command service UUID. A device
-/// picker for users with multiple pairs nearby is a follow-up.
+/// Single-device auto-grab: the adapter connects to the first peripheral
+/// advertising the ActiveLook command service UUID. A device picker for
+/// users with multiple pairs nearby is a follow-up.
 @MainActor
 struct GlassesConnectView: View {
     let viewModel: WorkoutViewModel

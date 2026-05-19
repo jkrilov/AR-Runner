@@ -8,16 +8,16 @@ import os
 import WatchConnectivity
 #endif
 
-/// iPhone-side WCSession receiver for the v0.2 live mirror (#3).
+/// iPhone-side WCSession receiver for the live mirror.
 ///
 /// Listens for `WCMessage.workoutSnapshot` (~1 Hz live ticks), application
 /// context refreshes (background snapshot fallback), and user-info transfers
 /// (queued lifecycle events). Decoded `WCMessage` values are republished
 /// through `incomingMessages` for any view-model to consume.
 ///
-/// Per v0.2 decision #3 (watch-first): the iPhone is allowed to receive
-/// nothing. The Live dashboard simply stays in its "no active workout"
-/// presentation when no ticks arrive. No retries, no nags.
+/// Phone-optional contract: the iPhone is allowed to receive nothing. The
+/// Live dashboard simply stays in its "no active workout" presentation when
+/// no ticks arrive. No retries, no nags.
 final class WatchConnectivityService: NSObject, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.arrunner.phone", category: "WCSession")
 

@@ -10,9 +10,8 @@ import Foundation
 ///
 /// Why a flag instead of a direct call? `AppIntent.perform()` runs in the
 /// widget extension process, which has no access to the host app's
-/// `WorkoutController`. `openAppWhenRun = true` foregrounds the host, but
-/// the host historically landed on the idle `WorkoutView` (v0.2 audit
-/// P1.1). The host now reads this flag on activation and auto-starts.
+/// `WorkoutController`. `openAppWhenRun = true` foregrounds the host; the
+/// host then reads this flag on activation and auto-starts the run.
 public protocol PendingWorkoutStartStore: Sendable {
     func markPending(at timestamp: Date)
     /// Returns `true` (and clears the flag) iff a pending-start was
@@ -31,7 +30,7 @@ public let pendingWorkoutStartDefaultFreshnessSeconds: TimeInterval = 60
 
 /// Identifier for the AR-Runner App Group shared across watch host, phone
 /// host, and both widget extensions (declared in each target's
-/// entitlements). All cross-process state for v0.2 lives here.
+/// entitlements). All cross-process state lives here.
 public let arRunnerSharedAppGroupIdentifier = "group.com.arrunner.shared"
 
 /// `UserDefaults`-backed implementation written to the shared App Group

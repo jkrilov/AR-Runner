@@ -7,10 +7,10 @@ import Foundation
 /// `WorkoutView` can construct its `WorkoutViewModel` without threading
 /// dependencies through the SwiftUI scene graph.
 ///
-/// Currently exposes the WCSession-backed `WatchConnectivityService` so the
-/// view-model can publish `WorkoutTickMessage` snapshots to the iPhone live
-/// mirror (v0.2 #3). The service is activated once at app launch — failures
-/// are silent per decision #3 (watch-first; phone is opportunistic).
+/// Exposes the WCSession-backed `WatchConnectivityService` so the view-model
+/// can publish `WorkoutTickMessage` snapshots to an optional iPhone live
+/// mirror. Activated once at app launch — failures are silent because the
+/// phone is never a requirement.
 @MainActor
 final class ARRunnerWatchEnvironment {
     static let shared = ARRunnerWatchEnvironment()
