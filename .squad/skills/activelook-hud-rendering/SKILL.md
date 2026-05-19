@@ -531,3 +531,48 @@ The HOLD/FLUSH pair defers framebuffer commits until the FLUSH, making the entir
 - **Apply to:** `frames(for:)` (per-tick HUD update) and any future multi-write sequence the user perceives as "one update."
 - **Do NOT apply to:** `connectFrames()`, `summaryFrames()`, or any one-shot draw where the user only ever sees the final state. Wrapping these adds protocol surface without visible benefit.
 - **Encoder:** `ActiveLookCommand.holdFlush(hold: Bool)` — `hold:true` → HOLD (0x00), `hold:false` → FLUSH (0x01). cmdID `0x39`. Standard `format = 0x01` 1-byte queryID like every other application command.
+
+### Live HR + finish-screen field-split pattern (rc14)
+
+Two related conventions captured here so future contributors don't have to
+rediscover them.
+
+**HR formatter.** `RunningHUDFrame.formatHeartRate(_:)`:
+
+- `nil` → `"-- bpm"` (pre-first-sample placeholder)
+- `!isFinite` → `"-- bpm"` (sensor garbage)
+- `< 30 BPM` → `"-- bpm"` (sub-30 in a running workout = dropped contact;
+  rendering "12 bpm" mid-run would alarm the user)
+- otherwise → `"\(Int(round(bpm))) bpm"` (mirrors the wrist UI at
+  `WorkoutView.swift:169`)
+
+Do **not** cap the high end. A real 220 BPM max-effort reading is useful
+telemetry; silencing it as "noise" is the same anti-pattern as silently
+clipping off-screen text (`spec §5.5.6`).
+
+**Live HUD vs Finish HUD field split.** rc14 directive from Joe (bench
+test on rc13): live HUD shows 4 fields (Time, HR, Distance, Avg Pace),
+finish HUD shows 2 fields (Time, Distance) under a "Workout Complete"
+banner. `summaryFrames(for:)` takes a fully-populated `Payload` and
+**deliberately discards** `heartRate` and `pace` from the encoded frames.
+Pinned in `test_summaryFrames_renderTimeAndDistanceOnlyPerFinishScreenDirective`.
+
+Adding a future field to the live HUD: extend `Payload`, add a new
+`liveXxxY` constant (use `y_fb = 206 − T` lens-flip formula with the
+55-px wearer-space step the rc14 4-field layout pins), update `frames(for:)`.
+Adding a future field to the finish screen: explicitly opt-in by passing
+the value into the `summaryFrames(for:)` encoder; don't assume "payload
+has it → render it." The two builders have **separate field contracts**.
+
+**HealthKit HR subscription is already wired upstream.** Future "pull HR
+forward" work for a new lens or layout is essentially zero-cost on the
+HealthKit side — `HealthKitWorkoutSubstrate.workoutBuilder(_:didCollect
+DataOf:)` already subscribes to `HKQuantityTypeIdentifier.heartRate`,
+already mapped through `WorkoutMetric(kind: .heartRate, …)`, and
+`WorkoutViewModel.apply(metric:)` already captures into `heartRate:
+Double?`. **Before scoping a v0.4.0+ metric pull-forward as a new
+"observer pattern" subtask, walk the substrate end-to-end first** — the
+real work is usually one of: (a) a new `MetricKind` case in Core (cf. the
+2026-05-16 `MetricKind.energy` saga), (b) a payload-field extension on
+`RunningHUDFrame.Payload`, or (c) zero — already wired, just unhooked
+from the HUD encoder.

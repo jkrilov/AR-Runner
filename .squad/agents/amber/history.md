@@ -58,3 +58,93 @@ See `history-archive.md` for learnings from 2026-05-14 through 2026-05-15 (scaff
 - **`gh pr merge --squash --admin` to bypass CodeQL pending check** — directive said skip CodeQL. All other checks (ARRunnerPhone, ARRunnerWatch, Linux swift test) passed before merging.
 - **xcodebuild watch build with `CODE_SIGNING_ALLOWED=NO`** is the fastest way to validate `ARRunnerWatch/` Swift compiles without round-tripping through CI. Swift Package tests cover `ARRunnerCore` but not the watch target.
 - **154 → 157 tests** (4 added, 1 existing updated to compile after Layout const additions).
+
+### 2026-05-19T17:30:00Z — rc14 HUD: live HR (pulled forward from v0.4.0-rc1) + dedicated finish screen + splash polish (PR TBD)
+
+**Context.** rc13 (PR #72) fixed the workout-lifecycle freeze. Joe's bench
+test on rc13 surfaced 3 follow-ups: splash still said "AR-Runner Ready"
+(wants just "AR-Runner"), live HUD only showed Time + Distance (wants Time
++ HR + Distance + Avg Pace), and workout-end leaves the live frame frozen
+(wants a dedicated finish card with just Time + Distance). Bundled into a
+single PR per the bundle-bump directive.
+
+**Lessons (file under "discovery before architecture"):**
+
+- **HR already arrives end-to-end at the ViewModel; only the HUD payload was
+  missing wiring.** The v0.4.0-rc1 roadmap subtask "implement HealthKit HR
+  observer pattern" was scoped as a substantial new subscription layer.
+  Actually doing the discovery (read `HealthKitWorkoutSubstrate.swift:281-283`,
+  read `WorkoutViewModel.swift:629`) showed HR is already collected by
+  `workoutBuilder(_:didCollectDataOf:)`, already mapped through
+  `WorkoutMetric(kind: .heartRate)`, already captured in
+  `WorkoutViewModel.heartRate` via `apply(metric:)`, and already rendered on
+  the wrist UI at `WorkoutView.swift:169 → "\(Int($0)) bpm"`. The actual
+  rc14 work was 6 lines: extend `RunningHUDFrame.Payload` with a `heartRate:
+  String` field, extend the payload builder to take `heartRate: Double?` and
+  format it through a new `formatHeartRate(_:)` helper, plus wire `heartRate:
+  heartRate` into the two existing `RunningHUDFrame.payload(...)` call sites
+  in `pushHUDFrameIfConnected` and `pushHUDSummaryIfConnected`. **Lesson:
+  walk the actual code before estimating a feature; the roadmap can over-
+  scope a task by an order of magnitude if upstream substrate work already
+  happens to land what you need.** Worth pre-reading the substrate
+  end-to-end for the next v0.4.0 metric pulled forward (battery, cadence)
+  before scoping it as an "observer pattern" subtask.
+
+- **`-- bpm` is the placeholder for both pre-first-sample AND sensor-dropout
+  states; sub-30 BPM in a running workout treated as "no signal."** HK can
+  emit sub-30 readings during a strap dropout (or wrist-off detection). Mid-
+  run rendering of "12 bpm" would alarm the user. Floor at 30 BPM; otherwise
+  pass through verbatim (don't cap the high end — a real max-effort 220 is
+  useful telemetry, not noise to hide). Mirrors what the wrist UI does
+  implicitly by relying on HK's own filtering; the HUD's `formatHeartRate`
+  makes it explicit and testable without a HK test host. Pattern: `nil ||
+  !isFinite || < 30 → "-- bpm"` else `"\(Int(round(bpm))) bpm"`.
+
+- **Live vs finish HUD field split is a NEW directive worth pinning in
+  decisions.md.** Joe explicitly distinguished: "Those [time + distance] are
+  supposed to be the final stats. During the run we should see Time, HR,
+  Distance, Avg Pace." Two different field sets for two different lifecycle
+  states. The architectural consequence: `summaryFrames(for:)` deliberately
+  takes a fully-populated `Payload` but discards `heartRate` and `pace`. Test
+  pin: `test_summaryFrames_renderTimeAndDistanceOnlyPerFinishScreenDirective`
+  asserts pace + HR strings do NOT appear in any summary frame's UTF-8
+  region — so a future "let's add HR back to the summary because we have it"
+  PR has to explicitly delete the test and confront the decision.
+
+- **4 lines × font 3 at 55-px wearer-space spacing fits in the 256-px panel
+  with 6-px gap between glyph blocks.** Engo 2 panel = 256 px tall, font 3 =
+  49 px tall. 4 lines × 49 = 196 px text, 3 × 6 = 18 px gaps, 21 px top
+  margin + 20 px bottom margin = 255 px. Tight but legible at arm's length.
+  The alternative (drop to font 2 for breathing room) would have invalidated
+  rc13's `test_runHUDFont_staysAtFont3` guard and given up readability for a
+  comfort we didn't need. **Lesson: a "tight" layout test that's been
+  validated on-bench is a feature, not a bug — defend it; don't relax the
+  constraint when you add fields.** New constants `liveTimeY/liveHRY/
+  liveDistanceY/livePaceY` live alongside (not replacing) the original
+  `timeY/distanceY/paceY` which the summary screen still uses.
+
+- **The "summary screen" Y constants stay at the OLD 3-position layout
+  (timeY=166, distanceY=86, paceY=6) but now host different content
+  (banner, time, distance instead of banner, distance, pace).** Renaming
+  them to `summaryTimeY/...` would have rippled across 6 tests for zero
+  semantic gain. Renaming is cheap when constants are pure data; here they
+  also serve as the lens-flip anchor for a known-good 3-line layout that
+  even the v0.4.0 trophy-imgDisplay screen will probably reuse. Kept the
+  names, added a doc comment explaining the dual purpose.
+
+**Process notes:**
+
+- **Third release under the bundled-bump directive.** Worked cleanly:
+  `CURRENT_PROJECT_VERSION 28 → 29` + `xcodegen generate` + Info.plist
+  placeholder verification (all 4 targets) in the same PR as the code work.
+  This pattern has now stabilized across Laughlin (rc12), me (rc13), me (rc14).
+- **166 tests pass** (was 157 in rc13). Added 9 new: 5 HR-formatting cases
+  (nil/normal/sub-30/non-finite/high-end + payload default), 1 live-HUD
+  geometry (`test_liveHUDYCoords_followLensFlipFormula`), 1 splash trim
+  (`test_connectFrames_defaultBannerIsTrimmedToARRunner`), 1 finish-screen
+  contract (`test_summaryFrames_renderTimeAndDistanceOnlyPerFinishScreenDirective`),
+  1 4-line frame structure (`test_frames_startWithHoldFlushThenClearThenFourTxtThenFlush`
+  renamed from the 3-line version).
+- **xcodebuild watch-target Debug build with `CODE_SIGNING_ALLOWED=NO`** as
+  the fast pre-CI sanity check for the watch target (`swift test` covers
+  Core but not the watch app target).
