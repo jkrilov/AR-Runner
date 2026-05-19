@@ -1,12 +1,40 @@
 # Skill: ActiveLook HUD Rendering (raw `txt` running-HUD pattern)
 
-> **Owner:** Weiss (BLE protocol fix by Richards; encoder + observability fix by Laughlin in PR #57)
-> **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP; PR #55 — BLE serialization fix; PR #57 — queryID + flow-control fix)
-> **Confidence:** LOW — pending Joe's hardware confirmation that rc7 actually renders. The fix is byte-perfect against the SDK; bump to HIGH only after a confirmed-working bench test.
+> **Owner:** Weiss (BLE protocol fix by Richards; encoder + observability fix by Laughlin in PR #57; cfgSet activation by Laughlin in PR #60)
+> **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP; PR #55 — BLE serialization fix; PR #57 — queryID + flow-control fix; PR #60 — cfgSet("ALooK") activation)
+> **Confidence:** MEDIUM — pending Joe's hardware confirmation that rc8 actually renders. The fix is byte-perfect against the SDK + Visual-Assets repo README; bump to HIGH only after a confirmed-working bench test.
 > **Sibling to:** `activelook-bluetooth-pairing` (pairing UX) — this
 > skill covers what to draw on the glasses *after* the link is up.
 >
-> **🟠 ENCODER + OBSERVABILITY FIXED (2026-05-19, PR #57):** rc5/rc6 blank
+> ## 🚨 CRITICAL — `cfgSet("ALooK")` is mandatory on every connect (PR #60, rc8)
+>
+> **Fonts 1–5 on Engo 2 are NOT baked into base firmware.** They live
+> inside the "ALooK" configuration stored in the glasses' flash. Per
+> the [ActiveLook-Visual-Assets](https://github.com/ActiveLook/Activelook-Visual-Assets)
+> repo README: *"To use the activelook visual asset, use the command:
+> `cfgSet("ALooK")`"*. The official demo app calls
+> `glasses.cfgSet(name: "ALooK")` before EVERY display command — not
+> "sometimes" — every one.
+>
+> **Before any `txt` command referencing fonts 1–5, layouts, or
+> images:** the connection must have called `cfgSet(name: "ALooK")`
+> (cmdID `0xD2`, payload = config-name UTF-8 + `0x00` NUL terminator)
+> at least once. AR-Runner ships this as the first frame of
+> `RunningHUDFrame.connectFrames()` and also at the head of
+> `framesWithPowerOn(for:)` (defense for the case where the
+> connect-screen push got skipped and `needsHUDPowerOn` stays true
+> into the first per-tick frame). cfgSet is idempotent per-connect, so
+> sending it again does no harm; OMITTING it leaves the screen blank
+> because font index 3 doesn't exist in the active namespace.
+>
+> **Why this was the rc4–rc7 "blank screen" bug:** `clear()` and
+> `power(on:true)` succeed without cfgSet (they reference no fonts),
+> so the screen would visibly clear after connect — but every `txt`
+> draw was silently dropped or 0xE2-rejected. None of PRs #49/#53/#55/#57
+> were wrong; each fixed a real bug; they were all just MASKED by the
+> missing cfgSet underneath.
+>
+> 🟠 **ENCODER + OBSERVABILITY FIXED (2026-05-19, PR #57):** rc5/rc6 blank
 > screen was actually TWO bugs missed by PRs #49/#53/#55:
 > 1. **Missing queryID byte.** Every command frame lacked the 1-byte
 >    queryID with `format = 0x01` that the official ActiveLook iOS SDK
@@ -61,9 +89,15 @@ The minimal viable running HUD on Engo 2 (304×256 panel):
 ```
 
 - `clear` first so we paint over the splash (and the previous frame).
-- `rotation=4` = bottom-RL — the orientation a wearer reads naturally
-  when the glasses sit on their nose. Matches ActiveLook's iOS sample
-  (`ActiveLook/Activelook-ios-sdk` `Commands.swift` `txt`).
+- `rotation=0` = bottom-RL per the ActiveLook SDK `TextRotation`
+  enum — the natural reading direction a wearer sees through the
+  Engo 2 waveguide. PR #57's rc7 used `4` (`topLR`), which renders
+  text in a non-natural orientation; PR #60 corrected this to `0` to
+  match the demo app's standard display orientation. The
+  `ActiveLookCommand.text` encoder still defaults to `rotation: 4`
+  for backward compatibility with prior callers; pass the
+  `RunningHUDFrame.Layout.rotation` constant (now `0`) explicitly
+  when using the running-HUD geometry.
 - `fontSize=3` = the largest stock font baked into Engo 2 firmware out
   of the box. Readable at arm's length through the projection.
 - `color=15` = full white on the monochrome OLED. Anything dimmer
