@@ -50,9 +50,12 @@ public enum RunningHUDFrame {
         /// length through the projection.
         public static let fontSize: UInt8 = 3
 
-        /// `4` = bottom-RL — the orientation a wearer reads naturally when
-        /// the glasses sit on their nose. Matches the iOS sample.
-        public static let rotation: UInt8 = 4
+        /// `0` = bottomRL per ActiveLook SDK `TextRotation` enum — the
+        /// natural reading direction a wearer sees through the Engo 2
+        /// waveguide. PR #57's rc7 used `4` (topLR), which renders text
+        /// in a non-natural orientation. The official demo app uses
+        /// `bottomRL` (0) for all standard display commands.
+        public static let rotation: UInt8 = 0
 
         /// 15 = full white on the monochrome OLED. Anything dimmer hurts
         /// readability outdoors.
@@ -135,11 +138,23 @@ public enum RunningHUDFrame {
     /// powering the display on, which is why Joe's rc4 bench test saw a
     /// blank screen on connect AND no HUD during the run.
     ///
-    /// The sequence below: power on → clear → render a "Ready" line so
-    /// the wearer immediately sees that the pairing succeeded. Same `txt`
-    /// primitive as the running HUD, so no extra encoder surface.
+    /// **Why cfgSet leads (rc8 fix).** Fonts 1–5 live in the "ALooK"
+    /// configuration stored in the glasses' flash, NOT baked into base
+    /// firmware. Per the ActiveLook-Visual-Assets repo README, every
+    /// display command that references stock fonts/layouts/images must be
+    /// preceded by `cfgSet("ALooK")` to activate that configuration's
+    /// asset namespace. Without it, our `txt(font:3)` calls were silently
+    /// dropped — the rc4–rc7 "blank screen" bug. cfgSet is idempotent
+    /// per-connect, so calling it once at the top of this sequence is
+    /// sufficient for the whole connection lifetime.
+    ///
+    /// The sequence below: select ALooK config → power on → clear →
+    /// render a "Ready" line so the wearer immediately sees that the
+    /// pairing succeeded. Same `txt` primitive as the running HUD, so no
+    /// extra encoder surface.
     public static func connectFrames(banner: String = "AR-Runner Ready") -> [[UInt8]] {
         [
+            ActiveLookCommand.cfgSet(name: "ALooK"),
             ActiveLookCommand.power(on: true),
             ActiveLookCommand.clear(),
             ActiveLookCommand.text(
@@ -155,13 +170,24 @@ public enum RunningHUDFrame {
         ]
     }
 
-    /// Same as `frames(for:)` but prepended with `power(on:true)`. Used
-    /// for the first HUD push of a connection (workout start, or first
-    /// per-tick frame after a (re)connect) as a belt-and-braces guarantee
-    /// that the display is powered on. Subsequent ticks reuse plain
+    /// Same as `frames(for:)` but prepended with `cfgSet("ALooK")` and
+    /// `power(on:true)`. Used for the first HUD push of a connection
+    /// (workout start, or first per-tick frame after a (re)connect) as a
+    /// belt-and-braces guarantee that the display is powered on AND the
+    /// ALooK font configuration is active. Subsequent ticks reuse plain
     /// `frames(for:)` to keep the BLE write volume minimal.
+    ///
+    /// cfgSet is mirrored here (in addition to `connectFrames()`) because
+    /// `WorkoutViewModel.pushHUDFrameIfConnected` falls back to this path
+    /// whenever `needsHUDPowerOn == true` — including the case where the
+    /// dedicated connect-screen push raced or got skipped and cfgSet was
+    /// never sent. cfgSet is idempotent per-connect, so a duplicate is
+    /// harmless; a missing one leaves the screen blank.
     public static func framesWithPowerOn(for payload: Payload) -> [[UInt8]] {
-        [ActiveLookCommand.power(on: true)] + frames(for: payload)
+        [
+            ActiveLookCommand.cfgSet(name: "ALooK"),
+            ActiveLookCommand.power(on: true)
+        ] + frames(for: payload)
     }
 
     /// Same as `summaryFrames(for:)` but prepended with `power(on:true)`
