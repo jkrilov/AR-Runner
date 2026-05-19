@@ -60,3 +60,18 @@ Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in histo
 **Weiss's role:** Once rc9 is bench-validated, v0.4.0-rc1 will require the Glasses HUD frame builder to integrate Live HR and subsequent metrics. The "raw txt + new imgDisplay primitive" strategy (vs. the curated-layout bugs reported earlier) means the glasses-side plumbing stays light — just one additional `txt` command per metric added. The seven-PR working stack from v0.3.0-rc9 remains the reference implementation.
 
 **Note:** The prior curated-layout bugs (dormant, not blocking v0.4.0) are no longer relevant given the decision to stick with raw txt + imgDisplay rather than attempt a full layout-switching framework. Future gesture-driven layout work (v0.5.0) is where that architectural question resurfaces.
+
+---
+
+### 2026-05-19T15:05:00Z — Scribe: Bundle-Version-Bump Directive (Effective Next Release)
+
+**Directive:** Going forward, the `CURRENT_PROJECT_VERSION` bump in `project.yml` + `xcodegen generate` MUST be committed in the SAME PR as the feature/fix work. Old pattern (rc11 and earlier): feature PR → merge → bump PR → merge → tag. New pattern (rc12+): feature PR (with version bump inside) → merge → tag. Saves one full CI cycle per release.
+
+**For all release engineers on BLE/HUD work:** When you submit a feature or fix PR that ships in an RC, include the version bump:
+1. Edit `project.yml`: increment `CURRENT_PROJECT_VERSION`
+2. Run `xcodegen generate` (this regenerates the Xcode project)
+3. Verify `Info.plist` placeholder integrity (placeholder values must remain — they're filled by CI)
+4. Commit `project.yml` + `project.pbxproj` + any `xcconfig` changes TOGETHER with your code changes in the same PR
+5. Do NOT open a separate bump PR after merge
+
+Procedural checklist: `.squad/skills/release-mechanics-bundle-bump/SKILL.md`

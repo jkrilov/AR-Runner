@@ -10,91 +10,24 @@
 
 
 ## Summary
+
 Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in history-archive.md.
 
-### 2026-05-18T22:30:00Z — v0.3.0-rc5 Release (Pre-Release Autonomy Model)
+### RC5–RC8 Campaign (2026-05-18 → 2026-05-19T12:00:00Z): Five-RC Blank-Screen Saga + Root Cause Discovery
 
-**Role:** watchOS Release Lead  
-**Event:** End-to-end RC5 shipping — first release under pre-release autonomy delegation.
+**Summary of RCs 5–8:**
 
-**Work:**
-- Merged PR #53 (Weiss-8: HUD power-on fix) + PR #54 (build 19→20 version bump).
-- Both CI gates (3 required jobs each) passed green; CodeQL skipped per Joe's standing directive.
-- Tagged v0.3.0-rc5 from main.
-- Watched release-testflight workflow to completion: TestFlight upload succeeded. ARRunner 0.3.0 (20) now in pipeline.
+- **rc5–rc6** (PRs #53–#55): Weiss and Richards iteratively fixed hypothesis-driven command issues (power-on, serialization). Both CI passed; both shipped to TestFlight; both produced blank screen on Joe's bench. Pre-release autonomy model (coordinator-merge → Laughlin-release) validated operationally, but three coders now locked out.
+- **rc7** (PR #57): Under cross-research protocols, discovered two missed bugs: (1) missing 1-byte queryID (firmware silently misparses frames, shifts txt 5000px off-panel), (2) missing didUpdateValueFor wiring for control + TX chars (flow-control and 0xE2 errors silently dropped). All 147 tests updated; uploaded to TestFlight.
+- **rc8** (PR #60): After rc7 still blank on bench, Joe authorized override + forensic researcher found third bug: cfgSet("ALooK") required on every connect (fonts 1–5 are config-resident in "ALooK" flash partition, not firmware-baked). Without cfgSet, txt commands referencing fonts 1–5 are silently dropped or emit 0xE2 errors. Also fixed rotation mislabel (4 → 0 = bottomRL natural direction). 150 tests, uploaded to TestFlight.
 
-**Model:** Pre-release autonomy (coordinator-merge + Laughlin-release) validated — no step blockers, decision inbox had the pre-release directive ready-to-hand.
-
-**Next:** Await release-testflight job completion + tester sanity gates. Ready for rc6 (if needed) or final v0.3.0 push.
-
----
-
-### 2026-05-18T23:00:00Z — v0.3.0-rc6 Release: Pre-Release Autonomy + Post-Release Cleanup
-
-**Role:** watchOS Release Lead  
-**Event:** Second pre-release under autonomy model; coordinated with Richards's HUD fix.
-
-**Work:**
-- Merged PR #55 (Richards: BLE serialization + flow control gate fix) under autonomy.
-- Bumped build 20 → 21 in `project.yml`.
-- Tagged v0.3.0-rc6, pushed to remote.
-- Release-testflight workflow executed: archive, code-signing, upload to TestFlight all passed. Upload succeeded; build 0.3.0 now in TestFlight pipeline.
-
-**Operational debt recorded:**
-- ⚠️ Used `sleep N && gh pr view ... | python3` polling pattern for CI checks.
-- Result: **7 stuck shell processes** left running after the coordinator killed them manually.
-- **Lesson:** Use `gh pr checks <number> --watch` or `gh run watch <id>` with explicit timeout instead.
-- Captured in `.squad/skills/release-mechanics-ci-polling/SKILL.md` for future releases.
-
-**Pre-release autonomy validated:** Both rc5 (Weiss's power-on fix) and rc6 (Richards's serialization fix) shipped autonomously without manual gates. Coordination model working.
-
-**Post-release clean-up directive applied:** Joe's directive from inbox file — swept background agents, drained stale notifications, verified no orphan shells (after killing Laughlin's 7 poll processes).
-
----
-
-### 2026-05-19T03:20:00Z — v0.3.0-rc7 Release: Sole-Coder HUD Fix After 3-PR Lockout
-
-**Role:** watchOS Dev + Release Lead (under rejection-lockout protocol)
-**Event:** Both Weiss (PRs #49, #53) and Richards (PR #55) locked out from the HUD render fix after three consecutive real-device blank-screen failures. Joe spawned two parallel forensic researchers (one against ActiveLook iOS SDK source, one against the protocol spec); reports converged on two missed bugs. I was the only eligible coder remaining.
-
-**Work:**
-- PR #57: encoder + adapter fix. Two changes:
-  1. `ActiveLookCommand.encode` now defaults to `format = 0x01` + 1-byte queryID (was `format = 0x00` with no queryID). Engo 2 firmware silently misparses missing-queryID frames — reads the on-byte of `power(on:true)` as the queryID, shifts txt coordinates 5000+ px off the 304-px panel. Exactly explains the rc4→rc5→rc6 symptom progression.
-  2. Wired `didUpdateValueFor` for control characteristic (0xCB9) and TX characteristic (0xCB8). Previously only battery was routed; flow-control OFF signals (0x02) and 0xE2 error notifications were silently dropped. Added `flowControlAllowsWrite` runtime gate + 0xE2 error parsing/logging.
-- All 147 ARRunnerCore tests pass after updating byte-pinning expectations for the new envelope; added 3 new tests including a regression guard for the missing-queryID bug.
-- Merged PR #57, bumped build 21→22 (PR #58), tagged v0.3.0-rc7, watched release-testflight.yml to "No errors uploading archive" with Delivery UUID 885f579c-589a-41e3-96de-743a693f46fe.
-
-**Learnings:**
-
-1. **queryID is implicitly required by Engo 2 firmware, even though spec marks it optional.** The protocol spec (§3.1) shows queryID as 0–15 bytes ("optional"), but the official ActiveLook iOS SDK ALWAYS attaches a 1-byte queryID for every application command. `withoutQueryId: true` is only passed for three DFU ops. Firmware parsing apparently assumes the queryID is always there. **Rule for any future ActiveLook command we add: always include the 1-byte queryID; only opt out for DFU.**
-
-2. **Always wire `didUpdateValueFor` for ALL ActiveLook notify characteristics — not just battery.** The control char (0xCB9) and TX char (0xCB8) carry critical runtime signals: flow-control state, "corrupt command" errors, "protocol decoding error" responses. Routing only the battery char silently masks every command rejection. Without this observability, three PRs shipped without ever seeing the glasses' actual feedback.
-
-3. **Cross-research methodology after N consecutive failures: spawn two parallel researchers on different evidence sources, look for convergence.** Joe spawned one researcher against the iOS SDK source (`ActiveLook/ios-sdk`) and another against the protocol API doc (`Activelook-API-Documentation`). Independent investigations converged on the same two bugs — that convergence is what made it safe to ship without another hardware iteration. When three PRs from two different agents all fail with similar symptoms, the bug is upstream of any of them; you need orthogonal evidence to find it.
-
-4. **CI polling pattern that doesn't leave shell zombies (per `release-mechanics-ci-polling` skill):** `gh pr checks <pr> --watch --interval 30` is great when required-check labels exist on the branch; otherwise a short bash loop calling `gh pr checks <pr>` and `gh run view <id> --json status,conclusion` with `sleep 45` between iterations works fine. The trap is `sleep N && gh pr view ... | python3` constructs that left 7 orphan shells in rc6.
-
----
-
-### 2026-05-19T11:55:00Z — v0.3.0-rc8 Release: cfgSet("ALooK") — the bug all prior PRs danced around
-
-**Role:** watchOS Dev (sole-coder under Joe-authorized lockout-override)
-**Event:** After PR #57 (rc7) shipped the verified-correct queryID + flow-control + 0xE2 observability fix, Joe's bench test still showed a blank screen. All three coders (Weiss, Richards, me) were now formally locked out per strict-lockout protocol. Joe explicitly authorized a one-time override for me to own rc8 after a demoapp forensic researcher analyzed the `ActiveLook/Activelook-Visual-Assets` repo and found the deeper bug.
-
-**Work:**
-- PR #60: prepended `cfgSet("ALooK")` (cmdID 0xD2, NUL-terminated config name) to `connectFrames()` and `framesWithPowerOn(for:)`. Added `ID.cfgSet = 0xD2` to the encoder enum. Fixed the rotation mislabel (`Layout.rotation: 4 → 0`; `0` = bottomRL per the SDK enum, which is the natural reading direction through the waveguide — `4` was actually `topLR`).
-- 150 ARRunnerCore tests pass (147 prior + 3 new: cfgSet encoder bytes, NUL-terminator across name lengths, connectFrames cmdID guard).
-- Merged PR #60, bumped build 22→23 (PR #61), tagged v0.3.0-rc8, watched release-testflight.yml to `UPLOAD SUCCEEDED with no errors` (MARKETING_VERSION=0.3.0 CURRENT_PROJECT_VERSION=23).
-
-## Learnings
-
-1. **Fonts on Engo 2 are configuration-resident, not firmware-resident.** Fonts 1–5 (SourceSansPro at 24/38/64/75/82px) live inside the "ALooK" configuration stored in the glasses' flash, NOT baked into base firmware. The `ActiveLook/Activelook-Visual-Assets` README states verbatim: *"To use the activelook visual asset, use the command: `cfgSet("ALooK")`"*. Without `cfgSet("ALooK")` on every connect, font index 3 (and 1, 2, 4, 5) does not exist in the active namespace; the glasses silently drop our `txt` commands or emit 0xE2 errors. **Rule: before any `txt` command referencing fonts 1–5, layouts, or images, the connection must have called `cfgSet(name: "ALooK")` at least once.** `clear()` and `power(on:true)` succeed without it because they reference no fonts — which is exactly why this bug hid behind a "screen cleared but no draws" symptom.
-
-2. **The four-PR meta-pattern: every prior fix WAS real, but a deeper bug masked visible output.** PR #45 (pairing), #49 (initial HUD plumbing), #53 (connect race), #55 (write serialization), #57 (queryID + flow-control + observability) — none were wrong. Each one fixed a real bug that would have eventually surfaced. But each landed on top of the missing-`cfgSet` issue, so none produced visible text on the glasses, and each one got blamed for "not fixing the blank screen." Lesson: when N consecutive PRs from different agents all "don't fix" the same symptom, the symptom is downstream of a bug none of them is touching. Stop iterating on the same artifact and look orthogonally.
-
-3. **When the spec + SDK source don't give the answer, look for ancillary asset/data repos.** The protocol spec (`Activelook-API-Documentation`) and the iOS SDK source (`ActiveLook/ios-sdk`) were both consulted by prior forensic rounds and BOTH missed the cfgSet requirement — the spec marks `cfgSet` as optional ("if using layouts/images"), and the SDK exposes it as a method without any "you must call this on connect" docstring. The answer was in a third repo, `ActiveLook/Activelook-Visual-Assets`, which exists specifically to ship the default-config asset bundle. Its README is the only place that states `cfgSet("ALooK")` is mandatory. **For any embedded-device SDK, sweep the vendor's full GitHub org for asset/data/config repos — they often carry the operational rules that the protocol spec and SDK source omit.** I'm updating my mental "research checklist" to always include "look for `*-Visual-Assets`, `*-Configurations`, `*-Resources` repos under the vendor org."
-
-4. **One-time lockout overrides are legitimate when the diagnosis becomes spec-backed AND the fix is mechanical.** The strict-lockout protocol exists to force fresh perspective when an artifact has resisted multiple iterations. But once the diagnosis flips from "unknown root cause" to "documented requirement we missed," the override criterion shifts: the original author isn't going to re-introduce the same blind spot when following an explicit recipe. Joe's call to give me rc8 was based on (a) rc7 demonstrated I execute specs correctly when the spec is clear, (b) the demoapp report contained byte-level steps, (c) zero risk (one extra 13-byte BLE write on connect). This is the model for future overrides — diagnosis quality + fix mechanicalness, not "we trust this person more now."
+**Key learnings archived:**
+1. **queryID implicit requirement:** Spec marks optional; firmware + SDK always include. Rule: always attach 1-byte queryID except for DFU ops.
+2. **All notify chars must be wired:** Control + TX chars carry flow-control + error signals; routing only battery char hides rejections.
+3. **Asset repos hold operational rules:** The answer was in `ActiveLook/Activelook-Visual-Assets`, not spec + SDK source. Always sweep vendor GitHub org for `*-Visual-Assets` / `*-Configurations` repos.
+4. **Override criterion:** spec-backed diagnosis + mechanical fix = safe to override strict-lockout once per artifact.
+5. **Config-resident fonts:** Engo 2 fonts live in flash, not firmware. Pre-connect cfgSet("ALooK") is non-negotiable.
+6. **CI polling hygiene:** Avoid `sleep N && gh pr view ... | python3` (leaves zombie shells). Use `gh pr checks <pr> --watch` or explicit loop with `sleep 45` + `gh run view <id> --json`.
 
 ---
 
@@ -149,3 +82,44 @@ Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in histo
 3. **Bisect-on-multi-change-PR pattern works mechanically:** revert one change, keep the other, ship, bench-test, observe. The strict-lockout rule is suspended only because Joe explicitly authorized — under normal rules, the rc9 author would be locked out and a different agent would do this revert.
 
 **Skill update:** `activelook-hud-rendering` confidence held at HIGH (the seven-PR working stack from rc7/rc8 is unchanged; this is a polish calibration miscalibration, not a working-stack regression). Added CRITICAL note documenting valid TextRotation enum values + the one-rotation-per-PR rule.
+
+## 2026-05-19 — rc11: rotation=4 (topLR) attempted
+
+After rc10 bisect confirmed holdFlush is good and rotation=0 (bottomRL) reads
+upside-down through the Engo 2 lens, calibrated to the other documented SDK
+`TextRotation` value: **4 (topLR)**. One-line change in
+`RunningHUDFrame.swift` (Layout.rotation: 0 → 4). All 154 ARRunnerCore tests
+pass; holdFlush/queryID/cfgSet/flow-control untouched.
+
+Shipped end-to-end: PR #69 (code) merged → PR #70 (build 25→26) merged →
+tag `v0.3.0-rc11` pushed → release-testflight.yml uploaded
+`MARKETING_VERSION=0.3.0 CURRENT_PROJECT_VERSION=26` to TestFlight ("UPLOAD
+SUCCEEDED with no errors").
+
+Outcome pending Joe's bench test:
+- If rc11 renders right-side-up → rotation calibration done; lock in 4.
+- If rc11 is blank → 4 is also rejected by Engo 2 firmware; we're out of
+  documented enum values and need to ask Weiss for guidance (maybe rotation
+  byte isn't TextRotation at all on this firmware rev).
+- If rc11 is still upside-down → rotation byte has no observable effect at
+  the protocol level; investigate whether the lens itself is the inversion
+  source (mirror in firmware coords vs. user-eye coords).
+
+---
+
+### 2026-05-19T15:05:00Z — Scribe: Recognition for rc11 one-line ship + bundle-version-bump directive
+
+**Recognition:** rc11 demonstrated clean calibration under pressure: one surgical
+line change (rotation 0→4), full CI gate pass, TestFlight upload succeeded, no
+regressions introduced to the working seven-PR stack. This was the LAST release
+using the 2-PR pattern (feature PR + separate bump PR). The bundle-version-bump
+directive (below) is now in effect for all future release PRs.
+
+**Directive (All Release Engineers):** Going forward, the `CURRENT_PROJECT_VERSION`
+bump in `project.yml` + `xcodegen generate` MUST be committed in the SAME PR as
+the feature/fix work. Old pattern (rc11 and earlier): feature PR → merge → bump
+PR → merge → tag. New pattern (rc12+): feature PR (with version bump inside) →
+merge → tag. Saves one full CI cycle per release. When editing `project.yml`,
+always run `xcodegen generate` and verify `Info.plist` placeholder integrity
+in the same commit — ship them together. See `.squad/skills/release-mechanics-bundle-bump/SKILL.md`
+for procedural checklist.
