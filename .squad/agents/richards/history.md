@@ -63,3 +63,18 @@
 3. **On "requires a provisioning profile with X" errors:** Probe, don't guess. Check: (a) App ID capability state, (b) profile's byte-level `DeveloperCertificates` via `security cms -D -i`.
 4. **After every fetch-from-API step:** Assert on artifact count (not just exit code).
 5. **On first-time-success in pipeline:** Check what's the next step downstream and verify its preconditions.
+
+---
+
+### 2026-05-19T15:05:00Z — Scribe: Bundle-Version-Bump Directive (Effective Next Release)
+
+**Directive:** Going forward, the `CURRENT_PROJECT_VERSION` bump in `project.yml` + `xcodegen generate` MUST be committed in the SAME PR as the feature/fix work. Old pattern (rc11 and earlier): feature PR → merge → bump PR → merge → tag. New pattern (rc12+): feature PR (with version bump inside) → merge → tag. Saves one full CI cycle per release.
+
+**For all release engineers on architecture/BLE work:** When you submit a feature or fix PR that ships in an RC, include the version bump:
+1. Edit `project.yml`: increment `CURRENT_PROJECT_VERSION`
+2. Run `xcodegen generate` (this regenerates the Xcode project)
+3. Verify `Info.plist` placeholder integrity (placeholder values must remain — they're filled by CI)
+4. Commit `project.yml` + `project.pbxproj` + any `xcconfig` changes TOGETHER with your code changes in the same PR
+5. Do NOT open a separate bump PR after merge
+
+Procedural checklist: `.squad/skills/release-mechanics-bundle-bump/SKILL.md`

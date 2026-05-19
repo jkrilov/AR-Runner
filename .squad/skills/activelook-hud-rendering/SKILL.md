@@ -6,43 +6,67 @@
 > **Sibling to:** `activelook-bluetooth-pairing` (pairing UX) — this
 > skill covers what to draw on the glasses *after* the link is up.
 >
-> ## 🚨 CRITICAL — `txt` rotation: only 0 and 4 are documented; anything else is a blank-screen risk (PR #66, rc10)
+> ## 🚨 CRITICAL — `txt` rotation: ALL 8 values are in the SDK enum; choose based on glyph orientation AND anchor corner (rc12 lesson)
 >
-> The ActiveLook SDK `TextRotation` enum **only documents two valid values**
-> for the `txt` (cmdID `0x37`) rotation byte:
+> The ActiveLook SDK `TextRotation` enum exposes **all eight** values
+> (0–7) — see `ActiveLookTypes.swift:41-50` in the official iOS SDK.
+> An earlier note here said "only 0 and 4 are documented" — that was
+> wrong; it has been removed. The real failure mode behind rc9's blank
+> at `rotation=2` was almost certainly the same off-screen-clipping
+> bug we hit at rc11 with `rotation=4` + `x=20`, NOT firmware
+> rejection of the rotation byte.
 >
-> - `0` = bottomRL
-> - `4` = topLR
+> **When choosing a `txt` rotation, account for BOTH:**
 >
-> Other byte values (1, 2, 3, 5, 6, 7) **may** correspond to other
-> orientations by symmetry (topRL, bottomLR, mirrored variants), but they
-> are **NOT documented**, and rc9 (PR #63) proved at least one of them
-> (`2`) causes Engo 2 firmware to **silently reject the entire `txt` op**
-> — the screen goes completely blank rather than rendering rotated text.
-> No error is returned over the BLE link; the command is simply dropped.
+> 1. **Glyph orientation** (how the character is drawn into the
+>    framebuffer): some values render glyphs 180°-rotated.
+> 2. **Anchor corner + growth direction** (where the `(x, y)` you
+>    pass lands relative to the text block, and which way the block
+>    extends):
+>    - `0` bottomRL → anchor at bottom-LEFT, text grows right + up
+>    - `4` topLR → anchor at top-RIGHT, text grows LEFT + down
+>    - (the other six values cover the remaining 8-way combinations)
+>
+> **Picking the wrong rotation for your anchor coords puts the text
+> off-screen → silent clip per spec §5.5.6 → blank.** This is what
+> killed rc11 (`topLR` + `x=20` ⇒ string extended into negative x).
+>
+> **Engo 2 lens flip is point-symmetric 180°:**
+> `x_wearer = 303 − x_fb`, `y_wearer = 255 − y_fb`. For wearer-readable
+> text the canonical combo is:
+>
+> - `rotation = 4` (topLR — 180°-flipped glyphs cancel the lens flip)
+> - `x_fb = 303 − x_wearer_left` (so the LEFT edge of text lands where
+>   the wearer expects it; for x_wearer=20 → `x_fb=283 ≈ 284`)
+> - `y_fb = 255 − y_wearer_top − font_height` (top edge; font 3 is
+>   49 px tall → `y_fb = 206 − y_wearer_top`)
+>
+> AR-Runner currently ships with `RunningHUDFrame.Layout.rotation = 4`
+> (rc12) and lens-flip-corrected anchor coords (`leftMargin = 284`,
+> `timeY = 166`, `distanceY = 86`, `paceY = 6`). ALooK system layout
+> #10 (the demo app's running-time layout) also ships with
+> `rotation=4` at high textX (238), confirming this is the canonical
+> choice for topLR.
 >
 > **Rules:**
 >
-> 1. **Default to `0` or `4`.** These are the only values we know work
->    end-to-end on Engo 2 firmware. AR-Runner currently ships with
->    `RunningHUDFrame.Layout.rotation = 0` (rc10, restored from rc9's
->    `2` after the blank-screen regression).
-> 2. **If a different orientation is needed, test ONE value at a time
->    in its OWN PR.** Never bundle a rotation change with any other
->    HUD render-path change. The failure mode (works / blank) is binary
->    and indistinguishable from other render-path bugs, so multi-change
->    PRs force a bisect cycle to isolate.
-> 3. **Treat undocumented rotation values as unverified until proven
->    on hardware.** "Plausible by symmetry" is not the same as "works".
->    The Engo 2 lens flip is undocumented; the wearer-perceived
->    orientation for non-{0, 4} values can only be determined empirically.
-> 4. **If you see a totally blank HUD on a connection where the rc7/rc8
->    working stack is otherwise intact (cfgSet, power-on, queryID, flow
->    control), suspect a bad rotation byte first.** Other dropped-command
->    bugs (e.g., missing cfgSet, missing power-on) usually leave the
->    splash visible; an invalid rotation byte drops only the `txt` op,
->    so the splash also gets cleared by the preceding `clear()` and the
->    wearer sees pure black.
+> 1. **Default to `rotation = 4` (topLR) with lens-flip-corrected
+>    framebuffer anchors.** This is the AR-Runner bench-validated
+>    combo as of rc12.
+> 2. **Before claiming a rotation value is "firmware-rejected," verify
+>    the coords actually keep the text on-screen** in the
+>    rotation/anchor-specific bounding box. A blank screen with no
+>    0xE2 error is almost always silent off-screen clipping (spec
+>    §5.5.6), not firmware rejection.
+> 3. **If a different orientation is needed, test ONE rotation +
+>    anchor combo at a time in its OWN PR.** The failure mode (works
+>    / blank) is binary and indistinguishable from other render-path
+>    bugs, so multi-change PRs force a bisect cycle to isolate.
+> 4. **If you see a totally blank HUD on a connection where the rc8+
+>    working stack is otherwise intact (cfgSet, power-on, queryID,
+>    flow control, holdFlush), suspect off-screen coordinates FIRST,
+>    rotation-byte rejection second.** Both produce identical
+>    symptoms; coords are far more often the culprit.
 >
 > ## 🚨 CRITICAL — `cfgSet("ALooK")` is mandatory on every connect (PR #60, rc8)
 >
@@ -411,6 +435,7 @@ Joe's bench test of v0.3.0-rc8 on a real Engo 2 confirmed text renders end-to-en
 | #57 | Laughlin | Encoder + obs.   | 1-byte queryID with `format = 0x01` on every command + flow-control runtime gate + TX/control char notification routing for 0xE2 error observability |
 | #60 | Laughlin | Config namespace | `cfgSet("ALooK")` prepended to `connectFrames()` and `framesWithPowerOn(for:)` — activates the font/layout/image namespace that fonts 1–5 live in. **The keystone fix; without this every prior fix is invisible because fonts don't resolve.** |
 | #63 | Laughlin | Polish (rc9)     | `Layout.rotation: 0 → 2` (Engo 2 lens flip calibration) + holdFlush(0x39) wrap around per-tick `frames(for:)` for atomic display commit (eliminates flicker) |
+| rc12 | Laughlin | Polish (rc12)    | `Layout` coordinates corrected for Engo 2 lens 180° flip: rotation stays at 4 (topLR — correct glyph-orient × anchor-corner combo); `leftMargin: 20 → 284` (anchor at top-RIGHT, text extends LEFT); `timeY/distanceY/paceY = 206 − y_wearer` (top-of-glyph anchor under lens flip). rc11 blank was off-screen clipping per spec §5.5.6, not firmware rejection. |
 
 **Removing any one of these breaks the chain.** When debugging future "blank screen" or "garbled HUD" symptoms on rc8+, confirm all seven layers are still present before assuming a new bug.
 

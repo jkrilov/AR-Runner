@@ -2234,3 +2234,41 @@ All questions answered by Joe in coordinator decision. Scope is locked.
 **What:** rc9 regressed the HUD (rc8 rendered text upside-down + flickering; rc9 added rotation=2 + holdFlush wrap and went blank). Per strict-lockout, Laughlin is now re-locked from the artifact. Joe explicitly authorized a second one-time override for rc10 because the fix is a surgical 1-line revert (rotation 2→0) used as a bisect to isolate which of the two rc9 changes broke things. Override scoped to this revision only. If rc10 also fails, lockout snaps back and we go to either (a) cast a fresh BLE specialist, or (b) Joe applies fixes manually.  
 **Why:** Recorded for orchestration trail. The override pattern is becoming a thing — worth noting that the strict-lockout protocol still adds value (it forces these to be explicit decisions rather than silent re-attempts), even when Joe chooses to override.
 
+### 2026-05-19T14:21:38Z: User directive — bundle version bump into work PR
+**By:** Joe Krilov (via Copilot)
+**What:** Going forward, the `CURRENT_PROJECT_VERSION` bump in `project.yml` + `xcodegen generate` must be included in the SAME PR as the feature/fix work, NOT shipped as a separate follow-up bump PR. Pattern was: feature PR → merge → bump PR → merge → tag. New pattern is: feature PR (with version bump committed inside) → merge → tag. Saves an entire CI cycle + merge round per release.
+**Why:** Joe noticed we're "wasting PRs on version bumps." Faster iteration. Each rc now ships in 1 PR instead of 2. NOTE: The first existing in-flight task (laughlin-18 for rc11) is already doing the old 2-PR pattern; new directive applies starting from the NEXT release task.
+
+## 2026-05-19 — HUD rotation calibration: try documented value 4 (topLR) in rc11
+
+**Context.** rc9 attempted rotation=2 + holdFlush together and the Engo 2 went
+blank. rc10 bisected by reverting rotation to 0 while keeping holdFlush; bench
+test confirmed holdFlush is good (no per-second flicker) but text renders
+upside-down (matching Joe's original rc8 observation). The ActiveLook SDK
+`TextRotation` enum documents only two values: 0 (bottomRL) and 4 (topLR).
+0 and 2 are now eliminated.
+
+**Decision.** Ship `v0.3.0-rc11` with `Layout.rotation = 4` and nothing else
+changed. Calibration cycle remains in-flight; do not adjust skill confidence
+until Joe's bench test confirms an outcome.
+
+**Scope guard.** holdFlush, queryID handshake, cfgSet, and BLE flow-control
+are all working as of rc10 — untouched in rc11.
+
+**Artifacts.**
+- PR #69 — code (rotation 0→4), merged.
+- PR #70 — build bump 25→26, merged.
+- Tag `v0.3.0-rc11`.
+- TestFlight upload: `MARKETING_VERSION=0.3.0 CURRENT_PROJECT_VERSION=26`,
+  "UPLOAD SUCCEEDED with no errors".
+
+**Next-step branches (Joe's bench test).**
+- Right-side-up → rotation calibration done; promote 4 to canonical and
+  update the rc9 skill note.
+- Blank → both documented values fail on this firmware; escalate to Weiss
+  for SDK-vs-firmware reconciliation before another blind iteration.
+- Still upside-down → rotation byte may be a no-op at the protocol level;
+  investigate lens-coord vs. firmware-coord inversion.
+
+**Author.** Laughlin (acting under coordinator pre-release autonomy override
+for the calibration iteration; lockout returns if rc11 fails).
