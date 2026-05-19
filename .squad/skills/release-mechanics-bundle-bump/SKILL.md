@@ -98,6 +98,7 @@ git push origin v0.3.0-rc12
 
 - **rc12** (first release using bundled pattern): HealthKit HR display (Feature A + Suggestion 1 battery)
 - **rc13+** (if cadence continues): Finish screen, HR zones, gesture controls — each a separate PR with bundled version bump
+- **rc17 / v0.4.0-rc1** (first MARKETING_VERSION rollover under bundled pattern): BLE keep-alive past workout-end + finish-screen Y revalidation + glasses battery → phone WC.
 - Estimated time savings: ~2–3 hours per release (1 fewer CI cycle + 1 fewer merge round + less coordinator coordination overhead)
 
 ## Lessons Learned
@@ -105,3 +106,5 @@ git push origin v0.3.0-rc12
 - rc11 was the last release using the 2-PR pattern to demonstrate its inefficiency and document the new pattern.
 - Joe explicitly measured the overhead and authorized the directive to save iteration cycles.
 - If a feature PR fails CI or review, you DO NOT increment the version — revert and resubmit (no partial-bump commits).
+- **rc17 (v0.4.0-rc1) MARKETING_VERSION rollover.** When the rc family rolls (0.3.x → 0.4.0), `MARKETING_VERSION` bumps in the SAME commit as `CURRENT_PROJECT_VERSION` (e.g., 31→32 AND 0.3.0→0.4.0 together). The next tag resets the rc counter — `v0.4.0-rc1`, not a continued `rc17`. xcodegen typically produces NO `.pbxproj` delta on either bump because the build settings are sourced from xcconfig placeholders; verify with `git status AR-Runner.xcodeproj/` after `xcodegen generate` to confirm — a non-empty delta there means a setting was hard-coded somewhere it shouldn't be (audit `project.yml` for stray `MARKETING_VERSION` literals).
+- **Auto-release directive (2026-05-19).** Joe authorized tag + TestFlight upload to proceed automatically as soon as the merged-to-main PR's CI is green — no wait for bench-test verdict. Bench failures become hotfix rc bumps, not pre-release blockers. The merging agent reports "PR merged, CI green," coordinator proceeds straight to tag.

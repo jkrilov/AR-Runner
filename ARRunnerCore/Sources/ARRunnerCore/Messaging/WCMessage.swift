@@ -13,12 +13,19 @@ public enum LifecycleEvent: Sendable, Codable, Equatable {
 public enum WCMessage: Sendable, Codable, Equatable {
     /// v1 — layoutConfig / workoutTick (per-metric) / workoutLifecycle.
     /// v2 — adds workoutSnapshot for the iPhone live mirror (v0.2 #3).
-    public static let currentSchemaVersion = 2
+    /// v3 — adds glassesBattery for v0.4 phone-side battery indicator. Watch
+    ///      forwards 0–100 percent from the Battery Service (0x180F / 0x2A19)
+    ///      via transferUserInfo. Phone-optional: missing the iPhone never
+    ///      blocks the watch.
+    public static let currentSchemaVersion = 3
 
     case layoutConfig(HUDLayout)
     case workoutTick(WorkoutMetric)
     case workoutLifecycle(LifecycleEvent)
     case workoutSnapshot(WorkoutTickMessage)
+    /// Glasses battery percentage (0–100) as reported by the standard
+    /// Battery Service notification on the watch's BLE link.
+    case glassesBattery(level: Int)
 
     public var schemaVersion: Int {
         Self.currentSchemaVersion
@@ -31,6 +38,7 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case metric
         case lifecycleEvent
         case snapshot
+        case batteryLevel
     }
 
     private enum Kind: String, Codable {
@@ -38,6 +46,7 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case workoutTick
         case workoutLifecycle
         case workoutSnapshot
+        case glassesBattery
     }
 
     public init(from decoder: Decoder) throws {
@@ -45,8 +54,8 @@ public enum WCMessage: Sendable, Codable, Equatable {
         let schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
 
         // Accept current and any earlier schema we still know how to decode.
-        // v1 lacked `workoutSnapshot`; older peers will simply never produce
-        // that case so backward compatibility is automatic.
+        // Older peers simply never produce the newer cases so backward
+        // compatibility is automatic.
         guard schemaVersion >= 1, schemaVersion <= Self.currentSchemaVersion else {
             throw WCMessageCodingError.unsupportedSchemaVersion(schemaVersion)
         }
@@ -60,6 +69,8 @@ public enum WCMessage: Sendable, Codable, Equatable {
             self = .workoutLifecycle(try container.decode(LifecycleEvent.self, forKey: .lifecycleEvent))
         case .workoutSnapshot:
             self = .workoutSnapshot(try container.decode(WorkoutTickMessage.self, forKey: .snapshot))
+        case .glassesBattery:
+            self = .glassesBattery(level: try container.decode(Int.self, forKey: .batteryLevel))
         }
     }
 
@@ -80,6 +91,9 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case .workoutSnapshot(let snapshot):
             try container.encode(Kind.workoutSnapshot, forKey: .kind)
             try container.encode(snapshot, forKey: .snapshot)
+        case .glassesBattery(let level):
+            try container.encode(Kind.glassesBattery, forKey: .kind)
+            try container.encode(level, forKey: .batteryLevel)
         }
     }
 }

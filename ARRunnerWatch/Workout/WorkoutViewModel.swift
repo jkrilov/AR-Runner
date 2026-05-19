@@ -228,43 +228,72 @@ final class WorkoutViewModel {
 
     /// Save path: end the controller, write the HKWorkout, surface the
     /// `WorkoutSummary`. Pushes a final lifecycle event over the mirror.
+    ///
+    /// **rc17 fix — finish-screen visibility + BLE keep-alive.** Joe reported
+    /// (rc16 bench): "The connection drops when I finish a run, I don't see
+    /// the finish screen we planned and the connection to the glasses is
+    /// lost." Two-part root cause:
+    ///
+    /// 1. `pushHUDSummaryIfConnected()` ran *after* `controller.end()`, by
+    ///    which point `HKWorkoutSession.end()` had already released the
+    ///    extended-runtime allowance. The watch app was racing the OS for
+    ///    foreground time; on a real Watch the suspend usually wins and the
+    ///    finish frame never makes it across BLE.
+    /// 2. We then immediately called `teardownTransport()`, which disconnects
+    ///    the BLE link — even if the finish frame had been queued, the
+    ///    glasses dropped it and the wearer had to manually reconnect.
+    ///
+    /// Fix: stop the per-tick HUD task first so the live HUD can't race-overwrite
+    /// the summary, push the finish frame while the HK session is *still*
+    /// running (foreground runtime + radio guaranteed), then end the HK
+    /// session, and intentionally leave the BLE transport connected so the
+    /// finish screen persists on the glasses for the wearer to read. The
+    /// user explicitly disconnects via the existing `disconnectGlasses()`
+    /// affordance when they're done.
     func confirmSave() async {
         guard let controller else { return }
         launchState = .ending
+        // Stop per-tick HUD pushes BEFORE the finish frame so the live HUD
+        // can't race-overwrite the summary. The HK session keeps running
+        // until `controller.end()` below.
+        stopRuntimeTasks()
+        // Push the finish screen while HK is still active — we still have
+        // foreground runtime + BLE radio. Frames go out immediately.
+        await pushHUDSummaryIfConnected()
         do {
             let summary = try await controller.end()
             launchState = .ended(summary)
             await mirror?.sendLifecycle(.ended)
-            // v0.3 HUD MVP: end-of-workout splash on the glasses before we
-            // tear the transport down. Best-effort — no-op if disconnected.
-            await pushHUDSummaryIfConnected()
-            stopRuntimeTasks()
-            await teardownTransport()
         } catch {
             launchState = .failed(String(describing: error))
-            stopRuntimeTasks()
-            await teardownTransport()
         }
+        // Intentionally NO teardownTransport(). The finish screen must
+        // persist on the glasses so the wearer can read final stats post-run.
+        // Idle BLE costs ~0 power on Engo 2; user explicitly disconnects
+        // from the ended/idle screen via `disconnectGlasses()` (rc17 fix).
     }
 
     /// Cancel path: end the underlying HK session (the protocol does not
     /// support a discard in v0.2) and mark the local UI as cancelled so no
     /// summary is shown.
+    ///
+    /// rc17 fix: matches `confirmSave` — we stop runtime tasks and end the
+    /// HK session but leave the BLE transport connected. Cancel is a UX
+    /// choice ("discard this run"), not a glasses-pairing teardown — the
+    /// wearer may immediately start another run, and forcing them to
+    /// re-pair is the regression Joe reported on rc16.
     func confirmCancel() async {
         guard let controller else { return }
         launchState = .ending
+        stopRuntimeTasks()
         do {
             _ = try await controller.end()
         } catch {
             launchState = .failed(String(describing: error))
-            stopRuntimeTasks()
-            await teardownTransport()
             return
         }
         launchState = .cancelled
         await mirror?.sendLifecycle(.ended)
-        stopRuntimeTasks()
-        await teardownTransport()
     }
 
     func resumeFromFinish() async {
@@ -554,7 +583,12 @@ final class WorkoutViewModel {
             // debounced haptic); no further reconnect will be attempted.
             hudOffline = true
             fireDisconnectHapticIfEligible()
-        case .batteryLevel, .signalQuality, .reconnectAttemptFailed:
+        case .batteryLevel(let level):
+            // v0.4 — forward to the iPhone mirror for the phone-side battery
+            // indicator. Phone-optional: the WC layer silently drops when
+            // unreachable so the watch is never blocked on phone availability.
+            await mirror?.sendGlassesBattery(level)
+        case .signalQuality, .reconnectAttemptFailed:
             break
         }
     }
@@ -749,12 +783,6 @@ final class WorkoutViewModel {
         glassesStatusTask?.cancel(); glassesStatusTask = nil
     }
 
-    private func teardownTransport() async {
-        guard let transport else { return }
-        try? await transport.disconnect()
-        self.transport = nil
-        self.glasses = nil
-    }
 }
 
 /// Sendable surface the view-model uses to push live snapshots and lifecycle
@@ -764,4 +792,9 @@ final class WorkoutViewModel {
 protocol WorkoutMirrorPublisher: Sendable {
     func send(snapshot: WorkoutTickMessage) async
     func sendLifecycle(_ event: LifecycleEvent) async
+    /// v0.4 — push the glasses' last-known battery level (0–100) to the
+    /// iPhone. Low-frequency (~30 s notify cadence per the Battery Service
+    /// spec) and phone-optional: implementations MUST silently drop when
+    /// the WC link is unreachable so the watch run is never blocked.
+    func sendGlassesBattery(_ level: Int) async
 }

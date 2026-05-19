@@ -335,9 +335,11 @@ final class RunningHUDFrameTests: XCTestCase {
     func test_layoutCoordinates_fitWithinEngo2Panel() {
         // Sanity guard for any future tuning — keep all baselines inside
         // the 304×256 panel so we never silently push text off-screen.
-        XCTAssertLessThan(RunningHUDFrame.Layout.timeY,     RunningHUDFrame.Layout.screenHeight)
-        XCTAssertLessThan(RunningHUDFrame.Layout.distanceY, RunningHUDFrame.Layout.screenHeight)
-        XCTAssertLessThan(RunningHUDFrame.Layout.paceY,     RunningHUDFrame.Layout.screenHeight)
+        XCTAssertLessThan(RunningHUDFrame.Layout.finishBannerY,   RunningHUDFrame.Layout.screenHeight)
+        XCTAssertLessThan(RunningHUDFrame.Layout.finishTimeY,     RunningHUDFrame.Layout.screenHeight)
+        XCTAssertLessThan(RunningHUDFrame.Layout.finishDistanceY, RunningHUDFrame.Layout.screenHeight)
+        XCTAssertGreaterThanOrEqual(RunningHUDFrame.Layout.finishDistanceY, 0,
+                                    "lowest finish-screen line top must stay in-bounds")
         XCTAssertLessThan(RunningHUDFrame.Layout.leftMargin, RunningHUDFrame.Layout.screenWidth)
         // rc16: 3-line mixed-font live HUD coordinates (text anchors)
         // AND icon framebuffer top-left coordinates must all fit.
@@ -364,6 +366,78 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertLessThanOrEqual(RunningHUDFrame.Layout.distanceIconY + 28, sh)
         XCTAssertLessThanOrEqual(RunningHUDFrame.Layout.paceIconX + 28, sw)
         XCTAssertLessThanOrEqual(RunningHUDFrame.Layout.paceIconY + 28, sh)
+    }
+
+    /// rc17 — finish-screen Y anchors revalidated under the canonical
+    /// `y_fb = 255 − wearer_top` lens-flip formula (Richards's rc16
+    /// review rec #1). The rc12-era values (166/86/6) were derived
+    /// under `y_fb = 206 − T` and only "rendered OK" because the
+    /// disconnect-on-stop bug (rc13-16) tore the BLE link down before
+    /// anyone could inspect the finish screen. Walking the old paceY=6
+    /// through the corrected formula puts the distance line at wearer
+    /// bottom 313 → 57 px off-screen. rc17 keeps the link up past
+    /// workout-stop, so the finish screen has to be pixel-correct.
+    ///
+    /// Locked layout (font 3, h=64): banner T=16, time T=96, distance
+    /// T=176 (16-16-16 margins, even 16-px gaps). Asserting BOTH the
+    /// raw constants AND that they obey the rc16 formula so a future
+    /// edit that touches one without the other trips CI.
+    func test_finishScreenYCoords_followLensFlipFormula_rc17() {
+        XCTAssertEqual(RunningHUDFrame.Layout.finishBannerY,   239)
+        XCTAssertEqual(RunningHUDFrame.Layout.finishTimeY,     159)
+        XCTAssertEqual(RunningHUDFrame.Layout.finishDistanceY, 79)
+
+        XCTAssertEqual(RunningHUDFrame.Layout.finishBannerY,   255 - 16,
+                       "finishBannerY must equal 255 − wearer_top (rc16 formula)")
+        XCTAssertEqual(RunningHUDFrame.Layout.finishTimeY,     255 - 96,
+                       "finishTimeY must equal 255 − wearer_top (rc16 formula)")
+        XCTAssertEqual(RunningHUDFrame.Layout.finishDistanceY, 255 - 176,
+                       "finishDistanceY must equal 255 − wearer_top (rc16 formula)")
+
+        // Every line's wearer-space bottom (top + font-3 height 64) must
+        // stay within the 256-px panel. If a future edit nudges any of
+        // the three constants past 191 (= 255 - 64), the corresponding
+        // line will clip off the bottom of the wearer's view.
+        let fontHeight: Int16 = 64
+        for (name, yFB) in [
+            ("finishBannerY",   RunningHUDFrame.Layout.finishBannerY),
+            ("finishTimeY",     RunningHUDFrame.Layout.finishTimeY),
+            ("finishDistanceY", RunningHUDFrame.Layout.finishDistanceY)
+        ] {
+            let wearerTop = 255 - yFB
+            XCTAssertLessThanOrEqual(wearerTop + fontHeight, RunningHUDFrame.Layout.screenHeight,
+                                     "\(name) puts text bottom off-panel (wearer_top=\(wearerTop) + \(fontHeight) > 256)")
+            XCTAssertGreaterThanOrEqual(wearerTop, 0,
+                                        "\(name) puts text above the wearer's view (wearer_top=\(wearerTop))")
+        }
+    }
+
+    /// rc17 — `summaryFrames` MUST consume the new `finishBannerY /
+    /// finishTimeY / finishDistanceY` constants and MUST do so in the
+    /// banner / time / distance order. Pin both the y-anchor field of
+    /// each `txt` frame and the string payload so a future edit that
+    /// swaps the order (e.g. renders distance at the top) trips CI.
+    func test_summaryFrames_yAnchorsUseFinishScreenConstants_rc17() {
+        let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165", distance: "2.34 mi", pace: "8:30/mi")
+        let frames = RunningHUDFrame.summaryFrames(for: payload)
+        XCTAssertEqual(frames.count, 4, "summary = clear + banner + time + distance (rc14)")
+
+        struct ExpectedTxt { let frameIndex: Int; let y: Int16; let string: String }
+        let expectations: [ExpectedTxt] = [
+            ExpectedTxt(frameIndex: 1, y: RunningHUDFrame.Layout.finishBannerY,   string: "Workout Complete"),
+            ExpectedTxt(frameIndex: 2, y: RunningHUDFrame.Layout.finishTimeY,     string: payload.time),
+            ExpectedTxt(frameIndex: 3, y: RunningHUDFrame.Layout.finishDistanceY, string: payload.distance)
+        ]
+
+        for exp in expectations {
+            let frame = frames[exp.frameIndex]
+            // Layout: 0xFF | cmd | fmt | len | queryID | x(2) | y(2) | rot | font | color | bytes | 0x00 | 0xAA
+            // y is bytes 7..8 big-endian.
+            let yEncoded = Int16(bitPattern: (UInt16(frame[7]) << 8) | UInt16(frame[8]))
+            XCTAssertEqual(yEncoded, exp.y,
+                           "frame \(exp.frameIndex) y anchor must equal Layout finish constant")
+            XCTAssertEqual(stringPayload(from: frame), exp.string)
+        }
     }
 
     /// rc16: lens-flip arithmetic for the 3-line live HUD, **corrected**

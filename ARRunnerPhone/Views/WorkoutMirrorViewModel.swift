@@ -24,6 +24,12 @@ final class WorkoutMirrorViewModel {
 
     private(set) var status: Status = .idle
     private(set) var lastReceivedAt: Date?
+    /// Last glasses battery level (0–100) reported by the watch over the
+    /// WC link. `nil` until the first notification arrives — v0.4 the watch
+    /// triggers an initial read on subscription so the value lands within
+    /// seconds of pairing, not 30 s later when the next notify fires.
+    private(set) var glassesBatteryLevel: Int?
+    private(set) var glassesBatteryUpdatedAt: Date?
 
     /// Snapshots older than this without a refresh are surfaced as `.stale`
     /// so the dashboard can dim or annotate the metrics.
@@ -88,6 +94,12 @@ final class WorkoutMirrorViewModel {
             }
         case .layoutConfig, .workoutTick:
             break
+        case .glassesBattery(let level):
+            // Clamp defensively — the spec is 0–100 but we never want a
+            // bogus value (e.g. firmware quirk) to fail the SF Symbol
+            // selection downstream.
+            glassesBatteryLevel = max(0, min(100, level))
+            glassesBatteryUpdatedAt = Date()
         }
     }
 

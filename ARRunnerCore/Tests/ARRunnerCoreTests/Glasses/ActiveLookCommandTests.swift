@@ -190,4 +190,18 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(ActiveLookGATT.txCharacteristic,
                        "0783B03E-8535-B5A0-7140-A304D2495CB8")
     }
+
+    /// v0.4-rc1 — battery indicator uses the **standard** Bluetooth SIG
+    /// Battery Service, not the ActiveLook custom profile. The watch must
+    /// subscribe to 0x180F / 0x2A19 via CoreBluetooth's stock GATT calls
+    /// (`discoverServices` + `setNotifyValue(true, for:)`) so the glasses
+    /// fire the spec-mandated 30 s notification cadence. If these constants
+    /// drift, service discovery silently fails and no battery value ever
+    /// reaches the iPhone.
+    func testStandardBatteryServiceUUIDsMatchBluetoothSIG() {
+        XCTAssertEqual(ActiveLookGATT.batteryService, "180F",
+                       "Battery Service UUID must be the standard 0x180F short form")
+        XCTAssertEqual(ActiveLookGATT.batteryLevelChar, "2A19",
+                       "Battery Level characteristic UUID must be the standard 0x2A19 short form")
+    }
 }

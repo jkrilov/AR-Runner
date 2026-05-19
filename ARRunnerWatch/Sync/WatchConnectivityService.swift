@@ -57,6 +57,16 @@ final class WatchConnectivityService: NSObject, WorkoutMirrorPublisher, @uncheck
         await transmit(.workoutLifecycle(event), preferQueued: true)
     }
 
+    func sendGlassesBattery(_ level: Int) async {
+        // Battery notifications arrive every ~30 s from the glasses' standard
+        // Battery Service (0x180F / 0x2A19). Low-frequency, non-critical,
+        // phone-optional — route through transferUserInfo so the iPhone
+        // picks up the latest value next time it's reachable. If WCSession
+        // never activates or the phone is offline, the queued send is a
+        // silent no-op and the watch run is unaffected.
+        await transmit(.glassesBattery(level: level), preferQueued: true)
+    }
+
     // MARK: - Internals
 
     private func transmit(

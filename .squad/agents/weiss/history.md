@@ -89,3 +89,70 @@ Procedural checklist: `.squad/skills/release-mechanics-bundle-bump/SKILL.md`
 **Action:** When debugging blank txt outputs, check coordinates against the rotation's anchor point + add a spec-driven bounding-box validation step before filing firmware issues.
 
 ---
+
+### 2026-05-19T19:45:00Z — v0.4.0-rc1: Standard BLE Battery Service Subscription (Phone-Optional Indicator)
+
+**Context:** Joe asked for glasses battery level on the iPhone (when reachable). Glasses publish via the **standard Bluetooth SIG Battery Service** (0x180F, characteristic 0x2A19), not the ActiveLook custom profile.
+
+**Pattern — stock-GATT alongside custom services:**
+- `discoverServices([commandService, batteryService])` in one call. CoreBluetooth invokes `didDiscoverServices` once with both services attached; we route each to its own `discoverCharacteristics([…], for:)`.
+- Battery characteristic uses `setNotifyValue(true, for:)` — CoreBluetooth automatically writes the CCCD (0x2902 descriptor) under the hood. No manual descriptor write required.
+- **Issue an initial `readValue(for:)` immediately after notify is enabled** so the first value lands within seconds of pairing instead of waiting 30 s for the spec-mandated notify cadence.
+- Parse the notification payload as `Data.first` → `UInt8` → `Int` (0–100 percent).
+- Surface as a side-channel `GlassesStatusEvent.batteryLevel(Int)` so the view-model can route to the WC mirror without coupling BLE to WC.
+
+**Watch → phone delivery (low-frequency, phone-optional):**
+- `WCMessage.glassesBattery(level: Int)` — new case in schema v3 (additive, backward compatible).
+- `WatchConnectivityService.sendGlassesBattery(_:)` uses `transferUserInfo` with `preferQueued: true` — queued, reliable, low priority. Perfect for once-per-30s telemetry.
+- **Phone-optional invariant:** if WCSession is unsupported, unactivated, or unreachable, every send is a silent no-op. The watch run never blocks waiting on the phone.
+
+**iPhone presentation:**
+- Added `glassesBatteryLevel: Int?` to `WorkoutMirrorViewModel` (clamped 0–100) and a battery row in `WorkoutMirrorView` using `battery.{100,75,50,25,0}percent` SF Symbols with green/orange/red tint thresholds (>30 / >15 / ≤15). Renders "—" until the first notification arrives.
+- New helper `GlassesBatteryIcon.swift` keeps the symbol/tint switch in one place so a future Settings or status-bar widget reuses it.
+
+**Tests:**
+- `WCMessageTests.testGlassesBatteryRoundTrip` — Codable wire-format guard.
+- `WCMessageTests.testV2EncodedSnapshotIsDecodableByV3` — schema v2 (rc16 watch) → v3 (rc1 phone) compat.
+- `ActiveLookCommandTests.testStandardBatteryServiceUUIDsMatchBluetoothSIG` — pins the stock-GATT UUIDs (0x180F / 0x2A19) so a typo can't silently break service discovery.
+- Adapter coordinator behavior (setNotifyValue + readValue on subscription) remains hardware-gated (`AR_RUNNER_HARDWARE_TESTS`) since CoreBluetooth can't be mocked without a watch test target.
+
+**Build:** Bumped `CURRENT_PROJECT_VERSION` 31 → 32 and `MARKETING_VERSION` 0.3.0 → 0.4.0 in `project.yml` (first v0.4.0 release). `xcodegen generate` MUST be re-run before the PR (running shell was unavailable in this session).
+
+**Scope guards held:** No edits to cfgSet, queryID, holdFlush, write serialization, flow-control, power-on, custom ActiveLook encoders, rotation, leftMargin, lens-flip coords, font choices, HUD render math, or the rc16 icon `imgDisplay` path. Battery indicator is intentionally **phone-side only** — not added to the live HUD.
+
+**Skill captured:** `.squad/skills/ble-gatt-stock-services/SKILL.md` — patterns for subscribing to standard BLE services alongside custom vendor profiles.
+
+---
+
+
+### 2026-05-19T18:30:00-04:00 — rc17: Adapter audit per ADR + battery filter
+
+**Context:** Joe's rc16 bench report — "the connection drops when I finish a run, I don't see the finish screen, the connection to the glasses is lost." Two-part fix bundled into rc17. Richards landed the ADR (`richards-adr-ble-link-lifecycle`) formalising "BLE link is user-managed, not workout-scoped." Amber owned the watchOS lifecycle fix (delete `teardownTransport()` from `confirmSave`/`confirmCancel`, push finish frame before `controller.end()` so HK extended-runtime is still held). My half lived in `ActiveLookGlassesAdapter` + ARRunnerCore.
+
+**Audit finding (adapter):** No `disconnect()` calls in the adapter were tied to workout-stop — the only adapter teardown paths were already (a) explicit `disconnect()` (R5a), (b) the in-flight reconnect loop terminating after the cap (R5b). The fused `endSession + disconnect` anti-pattern Joe described lived entirely in `WorkoutViewModel` (Amber's territory). Adapter was clean on that axis; the cleanup was elsewhere.
+
+**Changes I made:**
+
+1. **`ExponentialBackoff.adrV04`** (new) — 1s → 2s → 4s → 8s → 16s → 32s → 60s steady. Approximates the ADR's prose `1/2/5/15/30/60` target with the existing pure-exponential math (avoids adding a stair-step lookup type for a 4-second-each difference). Adapter default constructor now uses it.
+
+2. **`maxReconnectAttempts: Int = .max`** (was 30) — per ADR P2: "no upper limit on total attempts." The 30-attempt cap I'd added in v0.2 was rationalised by "radio busy with powered-off glasses," but the 60 s ceiling on the backoff already bounds the cost to one connect attempt per minute. Tests can still inject a finite cap.
+
+3. **`BatteryLevelFilter`** (new, Core) — pure value type with two responsibilities the original `handleBatteryLevel` lacked:
+   - **Range validation.** Spec is `uint8 [0..100]`. Bytes > 100 are firmware glitches; drop with a warning rather than propagate.
+   - **Dedup of identical consecutive notifications.** The 30 s notify cadence re-publishes the same percent more often than not; suppressing identical emits keeps the WC sender and on-watch indicator quiet without each having its own equality check (per Amber rc17 QA C5 unit-test recommendation).
+   - `.reset()` is called on every transition out of `.connected` (drop, user disconnect) so the first post-reconnect read always lands — the UI was on "—" during the gap and deserves a fresh value.
+
+4. **Adapter wires the filter** — `handleBatteryLevel(_ rawByte:)` now switches on `filter.process(byte:)`; coordinator passes the raw byte straight through (no premature `Int` conversion). Existing initial-read on subscribe + per-link re-subscribe on reconnect already covered the rest of Amber's C1/C2/C7 scenarios.
+
+**Tests:** +8 net Core tests (7 × BatteryLevelFilter, 1 × adrV04 backoff envelope). Total **186/186 pass** (was 176/176 at rc16). The backoff envelope test pins the start (1 s) and ceiling (60 s) but deliberately allows the intermediate values to drift — the ADR prose target was approximate and a future re-tune shouldn't require a test rewrite.
+
+**Scope guards held:** No edits to `write()` serialization, flow-control gate, queryID stamping, cfgSet, HUD encoders, rotation, lens-flip coords, or the rc16 4-line live HUD path. Bundled-bump (32, 0.4.0) was already in `project.yml`; I re-ran `xcodegen generate` after the adapter edits. ARRunnerWatch builds clean against the watchOS device SDK.
+
+**Two non-obvious things about this adapter I want future-Weiss to remember:**
+
+- **The bare `setNotifyValue(true, for: char) + readValue(for: char)` pair is the entire battery subscription contract on watchOS.** CoreBluetooth writes the CCCD (0x2902) for you when `setNotifyValue` is called; we don't (and must not) write the descriptor manually. This is the load-bearing convention behind why the battery code is 3 lines in `handleCharacteristicsDiscovered`.
+- **`reset()` on the filter is the only place where "link drop = UI clears" semantics live.** If a future PR wants to keep the last-known battery visible across a drop, the right place is the *consumer* of the stream (WatchConnectivityService / WorkoutMirrorViewModel), not the filter. The filter's job is "what does the BLE link say *now*."
+
+**Skill captured:** Updated `activelook-ble-adapter-pitfalls` with the per-link-subscription rule and the `BatteryLevelFilter` reset-on-drop pattern.
+
+---

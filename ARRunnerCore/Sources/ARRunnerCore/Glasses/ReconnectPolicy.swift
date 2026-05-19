@@ -29,6 +29,21 @@ public struct ExponentialBackoff: Sendable, Equatable {
         let raw = initial * pow(multiplier, Double(attempt))
         return min(raw, maximum)
     }
+
+    /// Reconnect cadence mandated by the rc17 ADR
+    /// (`richards-adr-ble-link-lifecycle`): 1s → 2s → 4s → 8s → 16s → 32s →
+    /// 60s steady. The ADR's prose target sequence was 1/2/5/15/30/60 — we
+    /// approximate it with a pure-exponential schedule (cleaner than a
+    /// stair-step lookup and within a few seconds of the named values) so the
+    /// existing `delay(forAttempt:)` math is the only code path.
+    /// Pair with `maxReconnectAttempts: .max` on the adapter so the loop
+    /// stays alive until the user explicitly disconnects, unpairs, or kills
+    /// the app (ADR P2: no upper limit on total attempts).
+    public static let adrV04 = ExponentialBackoff(
+        initial: 1.0,
+        maximum: 60.0,
+        multiplier: 2.0
+    )
 }
 
 /// Curated layout-ID → on-device numeric slot resolver. Values are

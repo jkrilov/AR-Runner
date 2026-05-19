@@ -45,21 +45,62 @@ public enum RunningHUDFrame {
         /// negative x and was silently clipped per spec §5.5.6.
         public static let leftMargin: Int16 = 284
 
-        /// Framebuffer y-anchors for the SUMMARY (finish) screen.
+        /// Framebuffer y-anchors for the SUMMARY (finish) screen
+        /// (3 lines of font 3: "Workout Complete" banner / time /
+        /// distance — rc14 dropped pace from the finish card per Joe's
+        /// "final stats = Time + Distance only" directive).
         ///
-        /// topLR places its anchor at the TOP of the block and grows
-        /// downward in framebuffer space. The Engo 2 lens flips
-        /// `y_wearer = 255 − y_fb`, so for a target wearer-visible top T
-        /// with font 3 (49 px tall): `y_fb = 255 − T − 49 = 206 − T`.
-        /// T = 40 → 166 (top); T = 120 → 86 (middle); T = 200 → 6 (bottom).
-        /// rc11 used the wearer-space values directly without the
-        /// lens-flip transform. These three slots host the 3-line finish
-        /// screen (title / time / distance — rc14 dropped pace from the
-        /// finish card per Joe's "final stats = Time + Distance only"
-        /// directive).
-        public static let timeY:     Int16 = 166
-        public static let distanceY: Int16 = 86
-        public static let paceY:     Int16 = 6
+        /// **rc17 — revalidated under the canonical lens-flip formula.**
+        /// rc12 derived the old `timeY/distanceY/paceY` constants
+        /// (166 / 86 / 6) under the obsolete `y_fb = 206 − T` formula
+        /// (which subtracted font height). Richards's rc13→rc16 review
+        /// flagged that those values "render OK on bench by coincidence
+        /// + frame brevity" but were never reasoned about under the
+        /// rc16-canonical `y_fb = 255 − wearer_top` (NO font-height
+        /// subtraction). Walking the old paceY=6 through the corrected
+        /// formula puts the distance text at wearer-T 249, bottom 313
+        /// → 57 px off-screen. Bench observers never noticed because
+        /// the rc13→rc16 disconnect-on-stop bug tore the BLE link down
+        /// before the finish screen could be inspected. rc17 fixes the
+        /// disconnect (see `WorkoutViewModel.confirmSave`); the finish
+        /// screen is now persistently visible to the wearer and these
+        /// coordinates have to be right.
+        ///
+        /// Recomputed wearer-space layout (3 lines of font 3, h=64):
+        ///   Top margin     : 16
+        ///   Banner (F3 h=64, "Workout Complete")  : T=16..80
+        ///   Gap            : 16
+        ///   Time   (F3 h=64, payload.time)        : T=96..160
+        ///   Gap            : 16
+        ///   Dist.  (F3 h=64, payload.distance)    : T=176..240
+        ///   Bottom margin  : 16
+        ///   ──────────────────────────────────────────── total: 256
+        ///
+        /// Framebuffer anchors (`y_fb = 255 − wearer_top`):
+        ///   finishBannerY   = 255 − 16  = 239
+        ///   finishTimeY     = 255 − 96  = 159
+        ///   finishDistanceY = 255 − 176 = 79
+        ///
+        /// Richards's review rec #3 also flagged that the old
+        /// `paceY` constant rendering DISTANCE text was a tripwire — the
+        /// name lied about its use. Renamed surface-scoped:
+        /// `finishBannerY` / `finishTimeY` / `finishDistanceY`. The old
+        /// names are retained as deprecated aliases so anyone outside
+        /// `summaryFrames` who reached for them (no current callers, but
+        /// hold-harmless for in-flight branches) gets a compiler nudge.
+        public static let finishBannerY:   Int16 = 239   // 255 − 16
+        public static let finishTimeY:     Int16 = 159   // 255 − 96
+        public static let finishDistanceY: Int16 = 79    // 255 − 176
+
+        @available(*, deprecated, renamed: "finishBannerY",
+                   message: "Renamed per Richards rc16 review rec #3; Y also recomputed under the rc16 lens-flip formula (rc17).")
+        public static let timeY:     Int16 = finishBannerY
+        @available(*, deprecated, renamed: "finishTimeY",
+                   message: "Renamed per Richards rc16 review rec #3; Y also recomputed under the rc16 lens-flip formula (rc17).")
+        public static let distanceY: Int16 = finishTimeY
+        @available(*, deprecated, renamed: "finishDistanceY",
+                   message: "Renamed per Richards rc16 review rec #3; Y also recomputed under the rc16 lens-flip formula (rc17).")
+        public static let paceY:     Int16 = finishDistanceY
 
         // MARK: - Live HUD (3-line mixed-font + preloaded icons, rc16)
         //
@@ -485,17 +526,17 @@ public enum RunningHUDFrame {
         [
             ActiveLookCommand.clear(),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.timeY,
+                x: Layout.leftMargin, y: Layout.finishBannerY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: "Workout Complete"
             ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.distanceY,
+                x: Layout.leftMargin, y: Layout.finishTimeY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.time
             ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.paceY,
+                x: Layout.leftMargin, y: Layout.finishDistanceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.distance
             )
