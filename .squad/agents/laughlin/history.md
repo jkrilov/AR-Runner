@@ -123,3 +123,45 @@ merge → tag. Saves one full CI cycle per release. When editing `project.yml`,
 always run `xcodegen generate` and verify `Info.plist` placeholder integrity
 in the same commit — ship them together. See `.squad/skills/release-mechanics-bundle-bump/SKILL.md`
 for procedural checklist.
+
+## 2026-05-19 — rc12: a "blank" doesn't always mean firmware rejection (off-screen clipping pattern)
+
+rc11 shipped `rotation = 4` (topLR) with `leftMargin = 20` and the screen
+went blank. The instinct was "rotation byte rejected by firmware" — same
+reasoning we used for rc9's blank at `rotation = 2`. **That was wrong.**
+
+The textrotation forensic (`.squad/files/hud-rotation-research.md`)
+proved it: topLR anchors at the TOP-RIGHT of the text block and the
+block extends LEFT + DOWN. At `x_fb = 20`, the full ~200 px string
+landed at negative x. Per spec §5.5.6, off-screen coords are SILENTLY
+CLIPPED — no 0xE2 error, no log, nothing on the wire. Same visible
+symptom as firmware rejection. Identical wearer experience.
+
+**The lesson:** when you see a blank Engo 2 screen with the rc8 working
+stack intact (cfgSet, power-on, queryID, flow-control, holdFlush) and
+NO 0xE2 errors in the BLE log, off-screen clipping is more likely than
+rotation-byte rejection. Verify the anchor coords keep the text on-
+screen for that rotation's bounding box BEFORE concluding the rotation
+byte is bad. The two failure modes are visually indistinguishable; do
+the math first.
+
+Engo 2 lens flip (point-symmetric 180°): `x_wearer = 303 − x_fb`,
+`y_wearer = 255 − y_fb`. For wearer-readable text at wearer-coord
+(x_w, y_w) with topLR and a font of height H:
+- `x_fb = 303 − x_w` (right anchor lands at wearer's left edge)
+- `y_fb = 255 − y_w − H` (top of glyph block lands at wearer's top)
+
+rc12 ships rotation=4 + (284, 166/86/6) per the formula above. If it's
+still blank, the diagnostic ladder in the research doc (single test
+`txt` at center 152,128 from a dev path; then try rotation=5 variants)
+takes over.
+
+## 2026-05-19 — bundled version-bump pattern validated on rc12
+
+First release shipped under Joe's `copilot-directive-bundle-version-bump`
+directive: feature PR contained `CURRENT_PROJECT_VERSION: 26 → 27` plus
+the regenerated `pbxproj` alongside the code change. No separate bump
+PR, no second CI round-trip. PR merged → tagged from main → TestFlight
+upload succeeded with `MARKETING_VERSION=0.3.0 CURRENT_PROJECT_VERSION=27`.
+Pattern is keep-it. Procedural checklist lives in
+`.squad/skills/release-mechanics-bundle-bump/SKILL.md`.

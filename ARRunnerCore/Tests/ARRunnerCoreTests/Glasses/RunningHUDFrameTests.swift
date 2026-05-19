@@ -109,9 +109,9 @@ final class RunningHUDFrameTests: XCTestCase {
         for i in 0..<3 {
             let frame = frames[i + 2]
             XCTAssertEqual(frame[4], 0x00) // queryID placeholder
-            // x: big-endian 0x00 0x14 (20)
-            XCTAssertEqual(frame[5], 0x00)
-            XCTAssertEqual(frame[6], 0x14)
+            // x: big-endian 0x01 0x1C (284) — rc12 lens-flip-corrected anchor
+            XCTAssertEqual(frame[5], 0x01)
+            XCTAssertEqual(frame[6], 0x1C)
             // y: big-endian 16-bit signed
             let y = Int16(bitPattern: (UInt16(frame[7]) << 8) | UInt16(frame[8]))
             XCTAssertEqual(y, expectedY[i])

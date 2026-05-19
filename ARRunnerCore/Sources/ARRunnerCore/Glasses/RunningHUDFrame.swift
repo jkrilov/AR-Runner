@@ -35,22 +35,44 @@ public enum RunningHUDFrame {
         public static let screenWidth: Int16  = 304
         public static let screenHeight: Int16 = 256
 
-        /// Left margin shared by all three lines.
-        public static let leftMargin: Int16 = 20
+        /// Framebuffer x-anchor for all three lines.
+        ///
+        /// `rotation = 4` (topLR) anchors at the TOP-RIGHT of the text block
+        /// and grows LEFTWARD. To land the wearer-visible LEFT edge at
+        /// x_wearer ≈ 20 we solve the Engo 2 lens 180° flip
+        /// `x_wearer = 303 − x_fb` → `x_fb = 283 ≈ 284`. rc11 used 20 here
+        /// with rotation=4 and went blank: the text block extended into
+        /// negative x and was silently clipped per spec §5.5.6.
+        public static let leftMargin: Int16 = 284
 
-        /// Baseline y-coordinates (top = elapsed time, middle = distance,
-        /// bottom = pace). Tuned so the largest stock font (fontSize 3,
-        /// ~48px tall on Engo 2) clears the panel edges without crowding.
-        public static let timeY:     Int16 = 40
-        public static let distanceY: Int16 = 120
-        public static let paceY:     Int16 = 200
+        /// Framebuffer y-anchors (top edge of each glyph block).
+        ///
+        /// topLR places its anchor at the TOP of the block and grows
+        /// downward in framebuffer space. The Engo 2 lens flips
+        /// `y_wearer = 255 − y_fb`, so for a target wearer-visible top T
+        /// with font 3 (49 px tall): `y_fb = 255 − T − 49 = 206 − T`.
+        /// T = 40 → 166 (top: time); T = 120 → 86 (middle: distance);
+        /// T = 200 → 6 (bottom: pace). rc11 used the wearer-space values
+        /// directly without the lens-flip transform.
+        public static let timeY:     Int16 = 166
+        public static let distanceY: Int16 = 86
+        public static let paceY:     Int16 = 6
 
         /// ActiveLook font index for the runner HUD. `3` is the largest stock
         /// font baked into Engo 2 firmware out of the box; readable at arm's
         /// length through the projection.
         public static let fontSize: UInt8 = 3
 
-        // 4 = topLR per SDK enum; testing the other documented value (rc10 used 0 = bottomRL which read upside-down; rc9 used 2 which went blank — undocumented)
+        // rotation=4 (topLR) stays from rc11. The rc11 blank was NOT
+        // firmware rejection of rotation=4 — it was off-screen clipping
+        // (spec §5.5.6): topLR anchors at top-right and grows LEFT, so at
+        // x=20 the string landed at negative x and was silently dropped.
+        // The fix is to move the anchor (see leftMargin/timeY/distanceY/
+        // paceY above), not the rotation. Glyphs are rendered 180°-flipped
+        // by topLR; the Engo 2 lens applies another 180° point-symmetric
+        // flip, so the net result is right-side-up to the wearer.
+        // ALooK system layout #10 (the demo app's running-time layout)
+        // ships with rotation=4, confirming this is the canonical choice.
         public static let rotation: UInt8 = 4
 
         /// 15 = full white on the monochrome OLED. Anything dimmer hurts
