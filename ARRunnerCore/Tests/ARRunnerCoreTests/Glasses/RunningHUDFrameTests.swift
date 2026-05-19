@@ -136,6 +136,24 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertLessThan(RunningHUDFrame.Layout.leftMargin, RunningHUDFrame.Layout.screenWidth)
     }
 
+    /// Dedicated explicit guard that the first byte of the connect
+    /// sequence is the cfgSet command. This is the rc8 fix — if a future
+    /// refactor accidentally drops cfgSet, the screen will go blank on
+    /// real hardware. This test catches that in CI.
+    func test_connectFrames_startsWithCfgSetForALooK() {
+        let frames = RunningHUDFrame.connectFrames()
+        XCTAssertFalse(frames.isEmpty)
+        let first = frames[0]
+        // cmdID byte at index 1 must be 0xD2 (cfgSet).
+        XCTAssertEqual(first[1], 0xD2)
+        XCTAssertEqual(first[1], ActiveLookCommand.ID.cfgSet.rawValue)
+        // Config name "ALooK" appears in the payload region (after the
+        // 5-byte header: 0xFF | cmd | format | len | queryID).
+        let nameBytes = Array("ALooK".utf8)
+        let payloadStart = 5
+        XCTAssertEqual(Array(first[payloadStart..<(payloadStart + nameBytes.count)]), nameBytes)
+    }
+
     // MARK: - rc4 regression: power-on prefix
 
     /// Engo 2 boots into a low-power display state after a fresh BLE
@@ -143,21 +161,29 @@ final class RunningHUDFrameTests: XCTestCase {
     /// `power(on:true)` (cmdID 0x00), which left the screen blank on
     /// connect and during the run. Every "first frame of a connection"
     /// path must lead with the power-on command.
-    func test_connectFrames_leadWithPowerOnBeforeAnyDraw() {
+    func test_connectFrames_leadWithCfgSetThenPowerOnBeforeAnyDraw() {
+        // rc8: fonts 1–5 live in the ALooK configuration stored in glasses'
+        // flash, NOT baked into firmware. Per ActiveLook-Visual-Assets repo,
+        // `cfgSet("ALooK")` must precede any txt command referencing those
+        // fonts — otherwise font index 3 doesn't exist in the active
+        // namespace and the screen stays blank.
         let frames = RunningHUDFrame.connectFrames()
-        XCTAssertGreaterThanOrEqual(frames.count, 2)
-        // First frame is power(on:true) — cmdID 0x00, format 0x01, len 7,
+        XCTAssertGreaterThanOrEqual(frames.count, 3)
+        // Frame 0: cfgSet("ALooK") — cmdID 0xD2.
+        XCTAssertEqual(frames[0][1], ActiveLookCommand.ID.cfgSet.rawValue)
+        // Frame 1: power(on:true) — cmdID 0x00, format 0x01, len 7,
         // queryID placeholder 0x00, payload [0x01].
-        XCTAssertEqual(frames[0], [0xFF, 0x00, 0x01, 0x07, 0x00, 0x01, 0xAA])
-        // Second frame is clear (cmdID 0x01).
-        XCTAssertEqual(frames[1][1], ActiveLookCommand.ID.clear.rawValue)
+        XCTAssertEqual(frames[1], [0xFF, 0x00, 0x01, 0x07, 0x00, 0x01, 0xAA])
+        // Frame 2: clear (cmdID 0x01).
+        XCTAssertEqual(frames[2][1], ActiveLookCommand.ID.clear.rawValue)
     }
 
     func test_connectFrames_paintBannerSoUserSeesPairingSucceeded() {
         let frames = RunningHUDFrame.connectFrames(banner: "AR-Runner Ready")
-        XCTAssertEqual(frames.count, 4)
-        // Frame index 2: txt with the banner string in its UTF-8 region.
-        let bannerFrame = frames[2]
+        // rc8: cfgSet + power + clear + 2× txt = 5 frames.
+        XCTAssertEqual(frames.count, 5)
+        // Frame index 3: txt with the banner string in its UTF-8 region.
+        let bannerFrame = frames[3]
         XCTAssertEqual(bannerFrame[1], ActiveLookCommand.ID.textUpdate.rawValue)
         let needle = Array("AR-Runner Ready".utf8)
         let needleEnd = bannerFrame.count - 2 // exclusive (skip 0x00 + 0xAA)
@@ -165,14 +191,18 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertEqual(Array(bannerFrame[needleStart..<needleEnd]), needle)
     }
 
-    func test_framesWithPowerOn_prependsPowerOnToPlainFrames() {
+    func test_framesWithPowerOn_prependsCfgSetAndPowerOnToPlainFrames() {
         let payload = RunningHUDFrame.Payload(time: "0:00", distance: "0.00 mi", pace: "--:--/mi")
         let plain = RunningHUDFrame.frames(for: payload)
         let withPower = RunningHUDFrame.framesWithPowerOn(for: payload)
-        XCTAssertEqual(withPower.count, plain.count + 1)
-        XCTAssertEqual(withPower[0], [0xFF, 0x00, 0x01, 0x07, 0x00, 0x01, 0xAA])
+        // rc8: cfgSet + power prepended (2 extra frames, not 1).
+        XCTAssertEqual(withPower.count, plain.count + 2)
+        // Frame 0: cfgSet("ALooK") — activates ALooK font config.
+        XCTAssertEqual(withPower[0][1], ActiveLookCommand.ID.cfgSet.rawValue)
+        // Frame 1: power(on:true).
+        XCTAssertEqual(withPower[1], [0xFF, 0x00, 0x01, 0x07, 0x00, 0x01, 0xAA])
         // Tail is identical to plain frames(for:).
-        XCTAssertEqual(Array(withPower.dropFirst()), plain)
+        XCTAssertEqual(Array(withPower.dropFirst(2)), plain)
     }
 
     func test_summaryFramesWithPowerOn_prependsPowerOnToSummaryFrames() {

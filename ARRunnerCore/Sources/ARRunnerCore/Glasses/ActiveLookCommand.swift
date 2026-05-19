@@ -46,6 +46,7 @@ public enum ActiveLookCommand {
         case textUpdate     = 0x37
         case layoutDisplay  = 0x62
         case layoutPosition = 0x65
+        case cfgSet         = 0xD2
     }
 
     // MARK: - Public encoders
@@ -58,6 +59,26 @@ public enum ActiveLookCommand {
     /// Clear the display to black. (CmdID 0x01)
     public static func clear() -> [UInt8] {
         encode(id: .clear, payload: [])
+    }
+
+    /// Select the named ActiveLook configuration. Must be called once per
+    /// connect before any display command that references ALooK assets
+    /// (fonts 1–5, layouts, images). The ALooK configuration ships
+    /// pre-installed on Engo 2 and contains all stock fonts and layouts.
+    /// Without this, txt(font:3) silently fails — fonts live in the config,
+    /// not in base firmware.
+    ///
+    /// Per ActiveLook-Visual-Assets README: `cfgSet("ALooK")` is required
+    /// to use fonts, layouts, and images from the default configuration.
+    /// The official demo app (`LayoutCommandsViewController.swift`) calls
+    /// `glasses.cfgSet(name: "ALooK")` before every single display command
+    /// — treat it as a mandatory prerequisite, not an optional hint.
+    ///
+    /// Wire format: cmdID 0xD2, payload = UTF-8 name bytes + 0x00 NUL.
+    public static func cfgSet(name: String) -> [UInt8] {
+        var payload = Array(name.utf8)
+        payload.append(0x00)   // NUL-terminate the config name string
+        return encode(id: .cfgSet, payload: payload)
     }
 
     /// Request the glasses' battery level. Response arrives as a TX notification.

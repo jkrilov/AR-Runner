@@ -90,6 +90,39 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(frame, [0xFF, 0x62, 0x01, 0x07, 0x00, 0x02, 0xAA])
     }
 
+    func testCfgSetEncodesAsExpected() {
+        // rc8: cfgSet(name: "ALooK") activates the ALooK configuration on
+        // the glasses so fonts 1–5 / layouts / images are addressable.
+        // Wire format: 0xFF | 0xD2 | format=0x01 | len | queryID=0x00 |
+        // 'A' 'L' 'o' 'o' 'K' | 0x00 (NUL) | 0xAA.
+        // Total = 1 + 1 + 1 + 1 + 1 + 5 + 1 + 1 = 12 bytes → len = 0x0C.
+        let frame = ActiveLookCommand.cfgSet(name: "ALooK")
+        XCTAssertEqual(frame, [
+            0xFF, 0xD2, 0x01, 0x0C, 0x00,
+            0x41, 0x4C, 0x6F, 0x6F, 0x4B,
+            0x00,
+            0xAA
+        ])
+    }
+
+    func testCfgSetPayloadIsNullTerminated() {
+        // The config-name string in the cfgSet payload is C-style NUL-
+        // terminated; the byte immediately before the 0xAA footer must
+        // be 0x00 regardless of name length.
+        let short = ActiveLookCommand.cfgSet(name: "A")
+        XCTAssertEqual(short[short.count - 2], 0x00, "NUL terminator before footer")
+        XCTAssertEqual(short.last, 0xAA)
+
+        let long = ActiveLookCommand.cfgSet(name: "DemoApp")
+        XCTAssertEqual(long[long.count - 2], 0x00, "NUL terminator before footer")
+        XCTAssertEqual(long.last, 0xAA)
+        // UTF-8 bytes of "DemoApp" appear immediately before the NUL.
+        let nameBytes = Array("DemoApp".utf8)
+        let needleEnd = long.count - 2
+        let needleStart = needleEnd - nameBytes.count
+        XCTAssertEqual(Array(long[needleStart..<needleEnd]), nameBytes)
+    }
+
     func testGATTUUIDsAreCanonical() {
         // Sanity-check the constants against the iOS SDK source — failing this
         // means we typo'd the GATT profile and would fail to discover services.
