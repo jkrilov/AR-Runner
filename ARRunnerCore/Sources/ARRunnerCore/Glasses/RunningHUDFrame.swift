@@ -63,6 +63,31 @@ public enum RunningHUDFrame {
         /// length through the projection.
         public static let fontSize: UInt8 = 3
 
+        // MARK: - Splash banner (font 2)
+        //
+        // rc12 bench test (Joe): the `connectFrames()` splash strings
+        // ("AR-Runner Ready" + "Start a run") rendered with the last few
+        // characters cut off — Joe saw "AR-Runner" and "Start a ru". With
+        // `rotation = 4` (topLR — anchor at top-right, text grows LEFT),
+        // a 15-char string at font 3 (~28 px/char) spans ~420 px starting
+        // at `x_fb = 284` and extends to `x_fb ≈ −136`. Spec §5.5.6
+        // silently clips the off-screen chars, so the wearer sees only
+        // the portion that landed in `0 ≤ x_fb ≤ 303`.
+        //
+        // **Fix:** render the splash banner at font 2 (38 px tall, ~18 px
+        // wide per glyph). 15 chars × ~18 px ≈ 270 px ≤ 284 px → the
+        // whole string lands in valid framebuffer x. The run HUD stays on
+        // font 3 because its strings are short ("0:00", "0.00 mi",
+        // "8:30/mi" ≤ 8 chars).
+        //
+        // Banner y coords compensate for the shorter glyph (38 vs 49 px)
+        // so the wearer-visible top of each line stays at the same
+        // wearer-y as before (T = 40, 120):
+        //   y_fb = 255 − T − 38 = 217 − T  →  T=40 → 177, T=120 → 97.
+        public static let bannerFontSize: UInt8 = 2
+        public static let bannerLine1Y:   Int16 = 177
+        public static let bannerLine2Y:   Int16 = 97
+
         // rotation=4 (topLR) stays from rc11. The rc11 blank was NOT
         // firmware rejection of rotation=4 — it was off-screen clipping
         // (spec §5.5.6): topLR anchors at top-right and grows LEFT, so at
@@ -188,13 +213,13 @@ public enum RunningHUDFrame {
             ActiveLookCommand.power(on: true),
             ActiveLookCommand.clear(),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.timeY,
-                rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
+                x: Layout.leftMargin, y: Layout.bannerLine1Y,
+                rotation: Layout.rotation, fontSize: Layout.bannerFontSize, color: Layout.color,
                 string: banner
             ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.distanceY,
-                rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
+                x: Layout.leftMargin, y: Layout.bannerLine2Y,
+                rotation: Layout.rotation, fontSize: Layout.bannerFontSize, color: Layout.color,
                 string: "Start a run"
             )
         ]
