@@ -98,13 +98,16 @@ final class RunningHUDFrameTests: XCTestCase {
 
     // MARK: - Frame sequence
 
-    func test_frames_startWithHoldFlushThenClearThenFourTxtThenFlush() {
-        // rc14: live HUD expanded from 3 fields (time/distance/pace) to
-        // 4 (time/HR/distance/pace) per Joe's bench feedback. HR pulled
-        // forward from v0.4.0-rc1.
+    func test_frames_renderTimeAndHROnLine1ThenDistanceThenPace_rc15() {
+        // rc15: mixed-font 3-line layout. Joe's rc14 bench feedback was
+        // "fonts are too large and text on each line is overlapping."
+        // Time + HR share line 1 at font 2; Distance / Pace stay on
+        // their own lines at font 3.
+        // Frame sequence: holdFlush(hold) + clear + 4×txt + holdFlush(flush) = 7 frames.
+        // (Time + HR share line 1 but are still two separate txt commands.)
         let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.frames(for: payload)
-        XCTAssertEqual(frames.count, 7, "rc14 HUD = holdFlush(hold) + clear + 4 lines + holdFlush(flush)")
+        XCTAssertEqual(frames.count, 7, "rc15 HUD = holdFlush(hold) + clear + 4 txt (time, HR, distance, pace) + holdFlush(flush)")
 
         // 0: holdFlush(hold:true) — cmdID 0x39, payload [0x00].
         XCTAssertEqual(frames[0], [0xFF, 0x39, 0x01, 0x07, 0x00, 0x00, 0xAA])
@@ -112,8 +115,7 @@ final class RunningHUDFrameTests: XCTestCase {
         // 1: clear command (6 bytes with the queryID byte at index 4).
         XCTAssertEqual(frames[1], [0xFF, 0x01, 0x01, 0x06, 0x00, 0xAA])
 
-        // 2..5: txt commands (cmdID 0x37) with the payload strings
-        // appearing verbatim in the UTF-8 region.
+        // 2..5: txt commands (cmdID 0x37). Order: Time, HR, Distance, Pace.
         let expected = [payload.time, payload.heartRate, payload.distance, payload.pace]
         for (i, str) in expected.enumerated() {
             let frame = frames[i + 2]
@@ -136,25 +138,33 @@ final class RunningHUDFrameTests: XCTestCase {
     func test_frames_textPayloadGeometryMatchesEngo2Layout() {
         let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.frames(for: payload)
-        // rc14: 4-field live HUD geometry. Order: time, HR, distance, pace.
-        let expectedY: [Int16] = [
-            RunningHUDFrame.Layout.liveTimeY,
-            RunningHUDFrame.Layout.liveHRY,
-            RunningHUDFrame.Layout.liveDistanceY,
-            RunningHUDFrame.Layout.livePaceY
+        // rc15: mixed-font 3-line layout. Line 1 (Time + HR) shares
+        // `liveLine1Y` at font 2. Line 2 (Distance), Line 3 (Pace)
+        // each get their own y at font 3. Time anchors at leftMargin;
+        // HR anchors at liveHRX (right-side anchor on line 1).
+        struct ExpectedTxt {
+            let x: Int16
+            let y: Int16
+            let font: UInt8
+        }
+        let expected: [ExpectedTxt] = [
+            ExpectedTxt(x: RunningHUDFrame.Layout.leftMargin, y: RunningHUDFrame.Layout.liveLine1Y,    font: RunningHUDFrame.Layout.liveLine1Font),
+            ExpectedTxt(x: RunningHUDFrame.Layout.liveHRX,    y: RunningHUDFrame.Layout.liveLine1Y,    font: RunningHUDFrame.Layout.liveLine1Font),
+            ExpectedTxt(x: RunningHUDFrame.Layout.leftMargin, y: RunningHUDFrame.Layout.liveDistanceY, font: RunningHUDFrame.Layout.fontSize),
+            ExpectedTxt(x: RunningHUDFrame.Layout.leftMargin, y: RunningHUDFrame.Layout.livePaceY,     font: RunningHUDFrame.Layout.fontSize)
         ]
-        for i in 0..<4 {
+        for (i, exp) in expected.enumerated() {
             let frame = frames[i + 2]
             XCTAssertEqual(frame[4], 0x00) // queryID placeholder
-            // x: big-endian 0x01 0x1C (284) — rc12 lens-flip-corrected anchor
-            XCTAssertEqual(frame[5], 0x01)
-            XCTAssertEqual(frame[6], 0x1C)
-            // y: big-endian 16-bit signed
+            // x: big-endian Int16
+            let x = Int16(bitPattern: (UInt16(frame[5]) << 8) | UInt16(frame[6]))
+            XCTAssertEqual(x, exp.x, "txt[\(i)] x mismatch")
+            // y: big-endian Int16
             let y = Int16(bitPattern: (UInt16(frame[7]) << 8) | UInt16(frame[8]))
-            XCTAssertEqual(y, expectedY[i])
+            XCTAssertEqual(y, exp.y, "txt[\(i)] y mismatch")
             // rotation, font, color
             XCTAssertEqual(frame[9],  RunningHUDFrame.Layout.rotation)
-            XCTAssertEqual(frame[10], RunningHUDFrame.Layout.fontSize)
+            XCTAssertEqual(frame[10], exp.font, "txt[\(i)] font mismatch")
             XCTAssertEqual(frame[11], RunningHUDFrame.Layout.color)
         }
     }
@@ -252,24 +262,38 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertLessThan(RunningHUDFrame.Layout.distanceY, RunningHUDFrame.Layout.screenHeight)
         XCTAssertLessThan(RunningHUDFrame.Layout.paceY,     RunningHUDFrame.Layout.screenHeight)
         XCTAssertLessThan(RunningHUDFrame.Layout.leftMargin, RunningHUDFrame.Layout.screenWidth)
-        // rc14: 4-field live HUD coordinates must also fit.
-        XCTAssertLessThan(RunningHUDFrame.Layout.liveTimeY,     RunningHUDFrame.Layout.screenHeight)
-        XCTAssertLessThan(RunningHUDFrame.Layout.liveHRY,       RunningHUDFrame.Layout.screenHeight)
+        // rc15: 3-line mixed-font live HUD coordinates must fit.
+        XCTAssertLessThan(RunningHUDFrame.Layout.liveLine1Y,    RunningHUDFrame.Layout.screenHeight)
         XCTAssertLessThan(RunningHUDFrame.Layout.liveDistanceY, RunningHUDFrame.Layout.screenHeight)
         XCTAssertLessThan(RunningHUDFrame.Layout.livePaceY,     RunningHUDFrame.Layout.screenHeight)
         XCTAssertGreaterThanOrEqual(RunningHUDFrame.Layout.livePaceY, 0,
                                     "lowest line top must stay in-bounds")
+        XCTAssertGreaterThanOrEqual(RunningHUDFrame.Layout.liveHRX, 0,
+                                    "HR x anchor must stay in-bounds")
+        XCTAssertLessThan(RunningHUDFrame.Layout.liveHRX, RunningHUDFrame.Layout.screenWidth)
     }
 
-    /// rc14: lens-flip arithmetic for the 4-field live HUD must match
-    /// `y_fb = 255 − T − 49` (font 3 = 49 px tall) for the same
-    /// 55-px-spaced wearer-space anchors (T = 20, 75, 130, 185).
-    /// Pinned so a future Y retune can't silently drift off-screen.
+    /// rc15: lens-flip arithmetic for the 3-line mixed-font live HUD.
+    /// Font 2 lines use `y_fb = 255 − T − 38 = 217 − T`; font 3 lines
+    /// use `y_fb = 255 − T − 49 = 206 − T`. Wearer-space tops:
+    /// line 1 (Time+HR, font 2) T=30; line 2 (Distance, font 3) T=100;
+    /// line 3 (Pace, font 3) T=180. Pinned so a future Y retune
+    /// can't silently drift off-screen.
     func test_liveHUDYCoords_followLensFlipFormula() {
-        XCTAssertEqual(RunningHUDFrame.Layout.liveTimeY,     206 - 20)
-        XCTAssertEqual(RunningHUDFrame.Layout.liveHRY,       206 - 75)
-        XCTAssertEqual(RunningHUDFrame.Layout.liveDistanceY, 206 - 130)
-        XCTAssertEqual(RunningHUDFrame.Layout.livePaceY,     206 - 185)
+        XCTAssertEqual(RunningHUDFrame.Layout.liveLine1Y,    217 - 30)
+        XCTAssertEqual(RunningHUDFrame.Layout.liveDistanceY, 206 - 100)
+        XCTAssertEqual(RunningHUDFrame.Layout.livePaceY,     206 - 180)
+    }
+
+    /// rc15: line 1 must use font 2 (smaller) so Time + HR can share
+    /// the line without colliding. Single-metric lines 2/3 must stay
+    /// on font 3 for readability. Guards against either constant being
+    /// nudged in a way that re-introduces the rc14 overlap bug.
+    func test_liveHUDLine1_usesShorterFontForTwoMetricLine() {
+        XCTAssertEqual(RunningHUDFrame.Layout.liveLine1Font, 2,
+                       "Line 1 hosts Time + HR — must use font 2 to fit both metrics")
+        XCTAssertEqual(RunningHUDFrame.Layout.fontSize, 3,
+                       "Single-metric lines must stay on font 3 for readability")
     }
 
     /// Dedicated explicit guard that the first byte of the connect
@@ -386,22 +410,24 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertEqual(RunningHUDFrame.Layout.bannerLine2Y, 255 - 120 - 38)
     }
 
-    /// Run-HUD font (fontSize) must stay at 3 — short per-tick strings
-    /// ("0:00", "0.00 mi", "8:30/mi") fit at font 3 and are more readable
-    /// at arm's length. Only the splash drops to font 2 for the long
-    /// "AR-Runner Ready" / "Start a run" banners. Guards against a future
-    /// "make everything font 2" mass-edit regression.
-    /// rc14: live HUD jumped from 3 → 4 txt commands.
-    func test_runHUDFont_staysAtFont3() {
+    /// rc15: distance + pace single-metric lines must stay at font 3 for
+    /// arm's-length readability. Line 1 (Time + HR) uses font 2 — see
+    /// `test_liveHUDLine1_usesShorterFontForTwoMetricLine`. Together these
+    /// guard against either a "make everything font 2" mass-edit
+    /// regression (which would hurt readability) or a "make everything
+    /// font 3" rollback (which would re-introduce the rc14 overlap bug).
+    func test_runHUDFont_distanceAndPaceStayAtFont3() {
         XCTAssertEqual(RunningHUDFrame.Layout.fontSize, 3,
-                       "run HUD must stay at font 3 for readability at arm's length")
+                       "run-HUD single-metric lines must stay at font 3 for readability")
         let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165 bpm", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.frames(for: payload)
-        // frames[2..5] are the four txt commands; font byte at index 10.
-        for i in 2...5 {
-            XCTAssertEqual(frames[i][10], 3,
-                           "run-HUD txt[\(i)] must use font 3 (was \(frames[i][10]))")
-        }
+        // rc15 frame order: 0 holdFlush, 1 clear, 2 Time (font 2),
+        // 3 HR (font 2), 4 Distance (font 3), 5 Pace (font 3),
+        // 6 holdFlush. Font byte is at index 10.
+        XCTAssertEqual(frames[2][10], 2, "Time (line 1) must use font 2")
+        XCTAssertEqual(frames[3][10], 2, "HR (line 1) must use font 2")
+        XCTAssertEqual(frames[4][10], 3, "Distance (line 2) must use font 3")
+        XCTAssertEqual(frames[5][10], 3, "Pace (line 3) must use font 3")
     }
 
     func test_framesWithPowerOn_prependsCfgSetAndPowerOnToPlainFrames() {

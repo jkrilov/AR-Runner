@@ -61,40 +61,67 @@ public enum RunningHUDFrame {
         public static let distanceY: Int16 = 86
         public static let paceY:     Int16 = 6
 
-        // MARK: - Live HUD (4-field, rc14)
+        // MARK: - Live HUD (3-line mixed-font, rc15)
         //
-        // rc14 bench feedback (Joe): "During the run we should see Time,
-        // HR, Distance, Avg Pace." Live HUD jumped from 3 fields to 4.
-        // HR is pulled forward from the v0.4.0-rc1 scope into v0.3.0
-        // polish — the HealthKit substrate already emits `.heartRate`
-        // metrics (`HealthKitWorkoutSubstrate.metric(for:)`) and the
-        // WorkoutViewModel already captures them via `apply(metric:)`;
-        // the only missing wiring was the HUD payload extension below.
+        // rc14 (4 lines × font 3 × 55-px wearer-space spacing) shipped
+        // and Joe's bench test reported "fonts are too large and text
+        // on each line is overlapping." rc15 redesigns:
         //
-        // Layout choice: 4 vertical lines at font 3 (Option A from the
-        // rc14 task brief). Font 3 stays because per-tick strings stay
-        // short ("12:34", "165 bpm", "2.34 mi", "8:30/mi" — all ≤ 7
-        // chars, well under the ~14-char clipping limit at leftMargin =
-        // 284). Vertical spacing tightens from 80 px wearer-space
-        // (3-field) to 55 px wearer-space (4-field) so all four lines
-        // fit inside the 256 px panel:
-        //   y_fb = 206 − T
-        //     T =  20 (top: time)     → 186
-        //     T =  75 (next: HR)      → 131
-        //     T = 130 (next: distance)→  76
-        //     T = 185 (bottom: pace)  →  21
-        // 49 px glyph + 6 px gap between rows. Tested-tight but legible
-        // outdoors. Option B (right-justified secondary metric in 2
-        // rows) was rejected because pixel-width-aware right-alignment
-        // under topLR's right-anchored coords requires per-string
-        // measurement against an unknown stock-font advance table; we
-        // already lost rc11+rc12 cycles to coordinate-math drift and
-        // the rc14 task brief explicitly authorized "whichever is
-        // cleanest."
-        public static let liveTimeY:     Int16 = 186
-        public static let liveHRY:       Int16 = 131
-        public static let liveDistanceY: Int16 = 76
-        public static let livePaceY:     Int16 = 21
+        //   Line 1: Time (left) + HR (right)  — font 2 (38 px)
+        //   Line 2: Distance                  — font 3 (49 px)
+        //   Line 3: Avg Pace                  — font 3 (49 px)
+        //
+        // **No metric is dropped** from the field set Joe specified.
+        // Three lines (instead of four) gives comfortable vertical
+        // gaps; line 1 drops to font 2 so two metrics share the line
+        // without colliding. Single-metric lines stay font 3 for
+        // arm's-length readability.
+        //
+        // Wearer-space layout (T = wearer-y top of glyph block):
+        //   Line 1: T = 30 (font 2 → y_fb = 255 − T − 38 = 217 − T = 187)
+        //   Line 2: T = 100 (font 3 → y_fb = 255 − T − 49 = 206 − T = 106)
+        //   Line 3: T = 180 (font 3 → y_fb = 206 − T = 26)
+        // Gaps: line 1 (T=30..68) → 32 px → line 2 (T=100..149) → 31 px
+        // → line 3 (T=180..229) → 26 px bottom margin. Top margin 30 px.
+        //
+        // **Line 1 uses TWO `txt` commands** sharing `liveLine1Y` but
+        // anchored at different x_fb:
+        //   Time : x_fb = leftMargin = 284 → wearer-left ≈ 20
+        //   HR   : x_fb = liveHRX     = 133 → wearer-left ≈ 170
+        // topLR rotation=4 (anchor at top-right, text grows LEFT) is
+        // unchanged; both anchors are framebuffer coords corrected for
+        // the 180° lens flip via `x_fb = 303 − x_wearer_left`.
+        //
+        // **Icons (rc15 task brief) are deferred to rc16+** — the
+        // `imgSave` / `imgDisplay` / `imgList` pipeline requires
+        // `cfgWrite` (spec §5.5 prelude), chunked binary upload
+        // (max 512 B/chunk with WRITE WITH RESPONSE), and either
+        // overwriting the stock ALooK config or installing a new
+        // user config (forcing font re-upload). Documented in
+        // `.squad/files/hud-icon-research.md`; tripped the rc15
+        // brief's own escape hatch ("multi-MTU bitmap fragmentation
+        // with sequence numbers — STOP and report").
+        public static let liveLine1Y:    Int16 = 187   // 217 − 30 (font 2)
+        public static let liveDistanceY: Int16 = 106   // 206 − 100 (font 3)
+        public static let livePaceY:     Int16 = 26    // 206 − 180 (font 3)
+
+        /// Framebuffer x-anchor for the HR text block on line 1.
+        ///
+        /// topLR (rotation=4) anchors at the text block's TOP-RIGHT and
+        /// grows LEFT. After the Engo 2 lens flip (x_wearer = 303 − x_fb)
+        /// `x_fb = 133` places the HR block's wearer-visible LEFT edge
+        /// near x_wearer ≈ 170 — about midway across the 304-px panel
+        /// so a 7-char "165 bpm" at font 2 (~18 px/char ≈ 126 px wide)
+        /// extends from x_fb = 133 down to x_fb ≈ 7, fully in-bounds
+        /// and clearly separated from the Time block on the left
+        /// (which ends near x_fb ≈ 193 = 284 − 90 for a 5-char "12:34").
+        public static let liveHRX:       Int16 = 133
+
+        /// Font index for the shared Time+HR line. Font 2 (38 px tall,
+        /// ~18 px/char) instead of font 3 — two metrics share a line
+        /// and would collide at font 3's wider glyphs. Single-metric
+        /// lines 2 and 3 stay on `fontSize` (3).
+        public static let liveLine1Font: UInt8 = 2
 
         /// ActiveLook font index for the runner HUD. `3` is the largest stock
         /// font baked into Engo 2 firmware out of the box; readable at arm's
@@ -210,11 +237,18 @@ public enum RunningHUDFrame {
 
     /// Encode a `Payload` into an ActiveLook command sequence ready to ship
     /// over BLE. Order is significant: clear first so we paint over the
-    /// "Connection Successful" splash (and any prior frame), then four
-    /// `txt` draws top-to-bottom (rc14 added HR between time and distance).
+    /// "Connection Successful" splash (and any prior frame), then five
+    /// `txt` draws: Time + HR share line 1 at `liveLine1Font` (font 2),
+    /// then Distance and Avg Pace on lines 2/3 at `fontSize` (font 3).
+    ///
+    /// rc15 (Joe's bench, verbatim): *"the fonts are too large and text
+    /// on each line is overlapping."* The fix mixes fonts so two
+    /// metrics (Time + HR) share a single shorter-font line while the
+    /// distance/pace lines stay on the larger font for arm's-length
+    /// readability. Layout details in `Layout` doc above.
     ///
     /// Wrapped in `holdFlush(hold:true)` … `holdFlush(hold:false)` so the
-    /// `clear` + 4×`txt` sequence commits atomically to the display.
+    /// `clear` + 5×`txt` sequence commits atomically to the display.
     /// Without the wrap, each BLE write paints to the framebuffer
     /// immediately and the wearer sees a brief blank between `clear` and
     /// the first `txt`, plus tearing between `txt` writes — the
@@ -226,21 +260,25 @@ public enum RunningHUDFrame {
         [
             ActiveLookCommand.holdFlush(hold: true),
             ActiveLookCommand.clear(),
+            // Line 1, LEFT: Time at the standard left anchor, font 2.
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.liveTimeY,
-                rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
+                x: Layout.leftMargin, y: Layout.liveLine1Y,
+                rotation: Layout.rotation, fontSize: Layout.liveLine1Font, color: Layout.color,
                 string: payload.time
             ),
+            // Line 1, RIGHT: HR at the line-1 right anchor, same font / y.
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.liveHRY,
-                rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
+                x: Layout.liveHRX, y: Layout.liveLine1Y,
+                rotation: Layout.rotation, fontSize: Layout.liveLine1Font, color: Layout.color,
                 string: payload.heartRate
             ),
+            // Line 2: Distance, font 3.
             ActiveLookCommand.text(
                 x: Layout.leftMargin, y: Layout.liveDistanceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.distance
             ),
+            // Line 3: Avg Pace, font 3.
             ActiveLookCommand.text(
                 x: Layout.leftMargin, y: Layout.livePaceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,

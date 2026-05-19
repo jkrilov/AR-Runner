@@ -576,3 +576,80 @@ real work is usually one of: (a) a new `MetricKind` case in Core (cf. the
 2026-05-16 `MetricKind.energy` saga), (b) a payload-field extension on
 `RunningHUDFrame.Payload`, or (c) zero — already wired, just unhooked
 from the HUD encoder.
+
+---
+
+## rc15 — Mixed-font 3-line live HUD; icon pipeline deferred to rc16
+
+**Confidence:** HIGH (layout). DEFERRED (icons — see below).
+
+rc14 shipped 4 × font 3 lines; Joe's bench reported overlapping text.
+rc15 redesigns to **3 lines with mixed fonts**:
+
+| Line | Content                  | Font     | Why                                  |
+|------|--------------------------|----------|--------------------------------------|
+| 1    | Time (left) + HR (right) | 2 (38 px)| Two metrics share line — narrower glyphs needed |
+| 2    | Distance                 | 3 (49 px)| Single metric — keep large + readable|
+| 3    | Avg Pace                 | 3 (49 px)| Single metric — keep large + readable|
+
+**Two-metric line pattern:** two `txt` commands sharing
+`liveLine1Y`, with different `x_fb`. Time anchors at
+`leftMargin = 284` (wearer-left ≈ 20); HR anchors at
+`liveHRX = 133` (wearer-left ≈ 170, mid-panel). Pick the second
+column's x_fb empirically — don't try width-aware right-alignment
+under topLR without a documented font-advance table.
+
+**Constants (`RunningHUDFrame.Layout`):**
+
+* `liveLine1Y = 187` (font 2 → `y_fb = 217 − T`, T = 30)
+* `liveDistanceY = 106` (font 3 → `y_fb = 206 − T`, T = 100)
+* `livePaceY = 26` (font 3 → `y_fb = 206 − T`, T = 180)
+* `liveHRX = 133` (line-1 right-column anchor)
+* `liveLine1Font = 2` (sits alongside the unchanged `fontSize = 3`)
+
+**Frame sequence per tick (unchanged shape from rc14):**
+`holdFlush(hold) + clear + 4×txt + holdFlush(flush)` = 7 BLE
+writes. Same wire volume; mixed fonts cost nothing on the wire.
+
+## 🚨 IMAGES / ICONS: cfgWrite is a HARD prerequisite (rc15 finding, rc16 work)
+
+The rc15 brief originally scoped icon rendering via `imgSave` /
+`imgDisplay` / `imgList`. Phase-0 spec research (see
+`.squad/files/hud-icon-research.md`) found:
+
+* Spec §5.5 prelude: *"⚠ The `cfgWrite` command is required before
+  images upload."* `imgSave` into the stock ALooK config requires
+  Microoled-supplied credentials we don't have; the alternative is
+  installing a brand-new user config — but **fonts live per-config**,
+  so `cfgSet("ARRunner")` would lose access to the stock fonts the
+  current HUD depends on, forcing a parallel font-upload pipeline.
+* Modern command IDs (spec §4.7): `imgList = 0x47`,
+  `imgDisplay = 0x42`, `imgSave = 0x41`. The deprecated IDs at
+  §4.16 (`0x40`, `0x44`) should NOT be used in new code; they're
+  retained only for backward compatibility.
+* Image data is sent in **chunks ≤ 512 bytes** with
+  **WRITE WITH RESPONSE** — adapter `write(_:)` doesn't currently
+  model either. First-chunk and continuation-chunk semantics
+  differ; encoder needs new helpers.
+* `imgList` response is variable-length on the TX notification
+  characteristic; requires queryID-correlated response demux that
+  doesn't exist today (only battery is currently consumed).
+* PNG → 4bpp pixel-pair packing requires a build-time script
+  (Python/Pillow → blob) or runtime CoreGraphics work.
+* Engo 2 lens applies the same 180° flip to images as to text;
+  `imgDisplay` accepts only `id; x; y` (no rotation flag), so
+  icons must be pre-rotated 180° at build time. Recommend
+  `scripts/prepare-glasses-icons.py` shipping the rotated bytes
+  as a Swift `[UInt8]` literal.
+
+**rc16 plan when icon work is picked up:**
+
+1. Prototype with `imgStream` (0x44) — one-shot, no `cfgWrite`
+   required. Validates pixel packing + rotation visually first.
+2. Decide ALooK-overwrite vs. new-user-config (and font re-upload)
+   based on whether Microoled credentials are obtainable.
+3. Add `writeWithResponse` mode + chunk-split helper (max 512 B/chunk)
+   + TX-notification response demux to the adapter.
+4. Build-time PNG → 4bpp pipeline; commit the rotated blob.
+5. THEN add the encoder helpers (`imgSave`, `imgDisplay`, `imgList`)
+   wired into the new chunk-split path.
