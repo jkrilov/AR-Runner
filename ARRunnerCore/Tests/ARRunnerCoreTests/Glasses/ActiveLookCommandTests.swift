@@ -90,6 +90,21 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(frame, [0xFF, 0x62, 0x01, 0x07, 0x00, 0x02, 0xAA])
     }
 
+    /// rc9: holdFlush (cmdID 0x39) per ActiveLook spec §4.6 — wraps a
+    /// batch of draw commands so they commit atomically to the display,
+    /// eliminating intermediate blank/torn states between writes.
+    /// Payload: action byte; 0x00 = HOLD, 0x01 = FLUSH.
+    func testHoldFlushEncodesAsExpected() {
+        // hold:true → action 0x00 (HOLD).
+        // Wire: 0xFF | 0x39 | format=0x01 | len=7 | queryID=0x00 | 0x00 | 0xAA.
+        let hold = ActiveLookCommand.holdFlush(hold: true)
+        XCTAssertEqual(hold, [0xFF, 0x39, 0x01, 0x07, 0x00, 0x00, 0xAA])
+
+        // hold:false → action 0x01 (FLUSH).
+        let flush = ActiveLookCommand.holdFlush(hold: false)
+        XCTAssertEqual(flush, [0xFF, 0x39, 0x01, 0x07, 0x00, 0x01, 0xAA])
+    }
+
     func testCfgSetEncodesAsExpected() {
         // rc8: cfgSet(name: "ALooK") activates the ALooK configuration on
         // the glasses so fonts 1–5 / layouts / images are addressable.

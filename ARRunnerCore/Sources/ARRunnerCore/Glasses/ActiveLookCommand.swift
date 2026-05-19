@@ -43,6 +43,7 @@ public enum ActiveLookCommand {
         case battery        = 0x05
         case luma           = 0x10
         case widgetUpdate   = 0x3A
+        case holdFlush      = 0x39
         case textUpdate     = 0x37
         case layoutDisplay  = 0x62
         case layoutPosition = 0x65
@@ -59,6 +60,13 @@ public enum ActiveLookCommand {
     /// Clear the display to black. (CmdID 0x01)
     public static func clear() -> [UInt8] {
         encode(id: .clear, payload: [])
+    }
+
+    /// Per ActiveLook spec §4.6: defer display commits while building a frame.
+    /// Use action 0 (HOLD) before a batch of draw commands, action 1 (FLUSH)
+    /// after to atomically commit. Eliminates flicker on per-tick HUD updates.
+    public static func holdFlush(hold: Bool) -> [UInt8] {
+        encode(id: .holdFlush, payload: [hold ? 0x00 : 0x01])
     }
 
     /// Select the named ActiveLook configuration. Must be called once per

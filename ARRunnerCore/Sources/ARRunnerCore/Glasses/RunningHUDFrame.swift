@@ -50,12 +50,15 @@ public enum RunningHUDFrame {
         /// length through the projection.
         public static let fontSize: UInt8 = 3
 
-        /// `0` = bottomRL per ActiveLook SDK `TextRotation` enum — the
-        /// natural reading direction a wearer sees through the Engo 2
-        /// waveguide. PR #57's rc7 used `4` (topLR), which renders text
-        /// in a non-natural orientation. The official demo app uses
-        /// `bottomRL` (0) for all standard display commands.
-        public static let rotation: UInt8 = 0
+        /// 2 = topRL (180° from bottomRL); accounts for Engo 2 lens flip
+        /// per real-device test. rc8 shipped rotation=0 (bottomRL) expecting
+        /// it to read naturally, but Joe's bench confirmed the text rendered
+        /// upside-down through the waveguide. The Engo 2 optical projection
+        /// flips/mirrors the framebuffer relative to what the wearer sees,
+        /// so the "natural reading" rotation depends on perceived
+        /// orientation, not framebuffer orientation. 2 = topRL is 180° from
+        /// 0 and produces right-side-up text from the wearer's POV.
+        public static let rotation: UInt8 = 2
 
         /// 15 = full white on the monochrome OLED. Anything dimmer hurts
         /// readability outdoors.
@@ -107,8 +110,19 @@ public enum RunningHUDFrame {
     /// over BLE. Order is significant: clear first so we paint over the
     /// "Connection Successful" splash (and any prior frame), then three
     /// `txt` draws top-to-bottom.
+    ///
+    /// Wrapped in `holdFlush(hold:true)` … `holdFlush(hold:false)` so the
+    /// `clear` + 3×`txt` sequence commits atomically to the display.
+    /// Without the wrap, each BLE write paints to the framebuffer
+    /// immediately and the wearer sees a brief blank between `clear` and
+    /// the first `txt`, plus tearing between `txt` writes — the
+    /// "flashes every second" artifact Joe reported on rc8. Per
+    /// ActiveLook spec §4.6 and `hud-api-spec-report.md` §"Fix 3".
+    /// `connectFrames()` deliberately does NOT use holdFlush — the connect
+    /// banner is a one-shot draw where the user only sees the final state.
     public static func frames(for payload: Payload) -> [[UInt8]] {
         [
+            ActiveLookCommand.holdFlush(hold: true),
             ActiveLookCommand.clear(),
             ActiveLookCommand.text(
                 x: Layout.leftMargin, y: Layout.timeY,
@@ -124,7 +138,8 @@ public enum RunningHUDFrame {
                 x: Layout.leftMargin, y: Layout.paceY,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.pace
-            )
+            ),
+            ActiveLookCommand.holdFlush(hold: false)
         ]
     }
 
