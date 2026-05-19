@@ -62,23 +62,26 @@ final class RunningHUDFrameTests: XCTestCase {
 
     // MARK: - Frame sequence
 
-    func test_frames_startWithClearThenThreeTxt() {
+    func test_frames_startWithHoldFlushThenClearThenThreeTxtThenFlush() {
         let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.frames(for: payload)
-        XCTAssertEqual(frames.count, 4, "v1 HUD = clear + 3 lines")
+        XCTAssertEqual(frames.count, 6, "v1 HUD = holdFlush(hold) + clear + 3 lines + holdFlush(flush)")
 
-        // 0: clear command (now 6 bytes with the queryID byte at index 4).
-        XCTAssertEqual(frames[0], [0xFF, 0x01, 0x01, 0x06, 0x00, 0xAA])
+        // 0: holdFlush(hold:true) — cmdID 0x39, payload [0x00].
+        XCTAssertEqual(frames[0], [0xFF, 0x39, 0x01, 0x07, 0x00, 0x00, 0xAA])
 
-        // 1..3: txt commands (cmdID 0x37) with the payload strings
+        // 1: clear command (6 bytes with the queryID byte at index 4).
+        XCTAssertEqual(frames[1], [0xFF, 0x01, 0x01, 0x06, 0x00, 0xAA])
+
+        // 2..4: txt commands (cmdID 0x37) with the payload strings
         // appearing verbatim in the UTF-8 region.
         for (i, expected) in [payload.time, payload.distance, payload.pace].enumerated() {
-            let frame = frames[i + 1]
+            let frame = frames[i + 2]
             XCTAssertEqual(frame.first, 0xFF)
             XCTAssertEqual(frame.last, 0xAA)
             XCTAssertEqual(frame[1], ActiveLookCommand.ID.textUpdate.rawValue,
-                           "frame \(i + 1) must be a txt (0x37) command")
-            XCTAssertEqual(frame[2], 0x01, "frame \(i + 1) must include 1-byte queryID")
+                           "frame \(i + 2) must be a txt (0x37) command")
+            XCTAssertEqual(frame[2], 0x01, "frame \(i + 2) must include 1-byte queryID")
             // Last byte before the trailing 0xAA is the null terminator.
             XCTAssertEqual(frame[frame.count - 2], 0x00)
             // UTF-8 bytes appear before the null+footer.
@@ -87,6 +90,9 @@ final class RunningHUDFrameTests: XCTestCase {
             let needleStart = needleEnd - payloadBytes.count
             XCTAssertEqual(Array(frame[needleStart..<needleEnd]), payloadBytes)
         }
+
+        // 5: holdFlush(hold:false) — cmdID 0x39, payload [0x01].
+        XCTAssertEqual(frames[5], [0xFF, 0x39, 0x01, 0x07, 0x00, 0x01, 0xAA])
     }
 
     func test_frames_textPayloadGeometryMatchesEngo2Layout() {
@@ -94,13 +100,14 @@ final class RunningHUDFrameTests: XCTestCase {
         let frames = RunningHUDFrame.frames(for: payload)
         // 0xFF | cmd | fmt | len | queryID | x(i16 BE) | y(i16 BE) | rotation | font | color | bytes | 0x00 | 0xAA
         // payload starts at index 5 (after the 1-byte queryID at index 4).
+        // frames[0] = holdFlush(hold), frames[1] = clear, frames[2..4] = txt, frames[5] = holdFlush(flush).
         let expectedY: [Int16] = [
             RunningHUDFrame.Layout.timeY,
             RunningHUDFrame.Layout.distanceY,
             RunningHUDFrame.Layout.paceY
         ]
         for i in 0..<3 {
-            let frame = frames[i + 1]
+            let frame = frames[i + 2]
             XCTAssertEqual(frame[4], 0x00) // queryID placeholder
             // x: big-endian 0x00 0x14 (20)
             XCTAssertEqual(frame[5], 0x00)
@@ -112,6 +119,46 @@ final class RunningHUDFrameTests: XCTestCase {
             XCTAssertEqual(frame[9],  RunningHUDFrame.Layout.rotation)
             XCTAssertEqual(frame[10], RunningHUDFrame.Layout.fontSize)
             XCTAssertEqual(frame[11], RunningHUDFrame.Layout.color)
+        }
+    }
+
+    /// rc9: per-tick HUD updates must be wrapped in holdFlush so the
+    /// `clear` + 3×`txt` sequence commits atomically to the display.
+    /// Without the wrap the wearer sees a brief blank between `clear` and
+    /// the first `txt` (Joe's "flashes every second" rc8 report).
+    /// Per ActiveLook spec §4.6 + hud-api-spec-report.md §"Fix 3".
+    func test_framesFor_wrapsInHoldFlush() {
+        let payload = RunningHUDFrame.Payload(time: "0:00", distance: "0.00 mi", pace: "--:--/mi")
+        let frames = RunningHUDFrame.frames(for: payload)
+        XCTAssertGreaterThanOrEqual(frames.count, 2)
+        // First frame: holdFlush with action=0 (HOLD).
+        XCTAssertEqual(frames.first?[1], ActiveLookCommand.ID.holdFlush.rawValue)
+        XCTAssertEqual(frames.first?[5], 0x00, "first holdFlush payload byte must be 0x00 (HOLD)")
+        // Last frame: holdFlush with action=1 (FLUSH).
+        XCTAssertEqual(frames.last?[1], ActiveLookCommand.ID.holdFlush.rawValue)
+        XCTAssertEqual(frames.last?[5], 0x01, "trailing holdFlush payload byte must be 0x01 (FLUSH)")
+    }
+
+    /// rc9: holdFlush wrap is for per-tick updates only. The connect
+    /// banner is a one-shot draw where the user only sees the final state,
+    /// so flicker is acceptable AND adding holdFlush around the
+    /// cfgSet → power → clear → 2×txt sequence would conflate concerns.
+    /// Pin the contract so a future refactor doesn't accidentally wrap it.
+    func test_connectFrames_doesNotUseHoldFlush() {
+        let frames = RunningHUDFrame.connectFrames()
+        for (i, frame) in frames.enumerated() {
+            XCTAssertNotEqual(frame[1], ActiveLookCommand.ID.holdFlush.rawValue,
+                              "connectFrames[\(i)] must not be a holdFlush command")
+        }
+    }
+
+    /// rc9: summary frames are a one-shot draw at workout end; no wrap.
+    func test_summaryFrames_doesNotUseHoldFlush() {
+        let payload = RunningHUDFrame.Payload(time: "12:34", distance: "2.34 mi", pace: "8:30/mi")
+        let frames = RunningHUDFrame.summaryFrames(for: payload)
+        for (i, frame) in frames.enumerated() {
+            XCTAssertNotEqual(frame[1], ActiveLookCommand.ID.holdFlush.rawValue,
+                              "summaryFrames[\(i)] must not be a holdFlush command")
         }
     }
 
