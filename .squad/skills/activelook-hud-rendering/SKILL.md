@@ -1,16 +1,25 @@
 # Skill: ActiveLook HUD Rendering (raw `txt` running-HUD pattern)
 
-> **Owner:** Weiss (BLE protocol fix by Richards)
-> **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP; PR #55 — BLE serialization fix)
-> **Confidence:** HIGH (command encoding correct; delivery layer fixed in PR #55; 145 tests passing on CI)
+> **Owner:** Weiss (BLE protocol fix by Richards; encoder + observability fix by Laughlin in PR #57)
+> **Born:** 2026-05-18 (PR #49 — v0.3.0 HUD MVP; PR #55 — BLE serialization fix; PR #57 — queryID + flow-control fix)
+> **Confidence:** LOW — pending Joe's hardware confirmation that rc7 actually renders. The fix is byte-perfect against the SDK; bump to HIGH only after a confirmed-working bench test.
 > **Sibling to:** `activelook-bluetooth-pairing` (pairing UX) — this
 > skill covers what to draw on the glasses *after* the link is up.
 >
-> **🟢 DELIVERY LAYER FIXED (2026-05-18):** rc5 blank screen was NOT a command-encoding bug. 
-> The delivery layer violated ActiveLook protocol on two fronts:
-> 1. **Write serialization** — Commands blasted back-to-back without waiting for `didWriteValueFor` callbacks. Official SDK enforces serial writes.
-> 2. **Flow control gate** — Commands sent before flow-control subscription confirmed active (`didUpdateNotificationStateFor` → `isNotifying==true`).
-> Both fixed in PR #55 (Coordinator delegates + CheckedContinuation-based write queue). The command encoding in this skill was always correct; it just never reached the glasses' processor. See decisions.md entries `2026-05-18T23:00:00Z` for full diagnosis.
+> **🟠 ENCODER + OBSERVABILITY FIXED (2026-05-19, PR #57):** rc5/rc6 blank
+> screen was actually TWO bugs missed by PRs #49/#53/#55:
+> 1. **Missing queryID byte.** Every command frame lacked the 1-byte
+>    queryID with `format = 0x01` that the official ActiveLook iOS SDK
+>    always emits. Engo 2 firmware silently misparses missing-queryID
+>    frames — reads `power(on:true)`'s on-byte as the queryID and renders
+>    `txt` text 5000+ pixels off-screen.
+> 2. **Silent flow-control + error notifications.** `didUpdateValueFor`
+>    routed only the battery characteristic; runtime flow-control values
+>    (0x01 ON / 0x02 OFF) and TX-channel 0xE2 error notifications were
+>    dropped. All commands could be rejected by the firmware with zero
+>    feedback to the watch.
+> Both fixed in PR #57. See decisions inbox entry
+> `laughlin-hud-queryid-fix.md` for the full cross-research forensic.
 
 ## Why this skill exists
 
@@ -63,16 +72,28 @@ The minimal viable running HUD on Engo 2 (304×256 panel):
 ### 3. `txt` command (cmdID 0x37) wire format
 
 ```text
-0xFF | 0x37 | format | len | x_hi x_lo | y_hi y_lo | rot | font | color | bytes... | 0x00 | 0xAA
+0xFF | 0x37 | format=0x01 | len | queryID | x_hi x_lo | y_hi y_lo | rot | font | color | bytes... | 0x00 | 0xAA
 ```
 
+- **`format` MUST be `0x01`** — that's the low-nibble queryID byte count.
+  The spec marks queryID as "optional 0–15 bytes" but Engo 2 firmware
+  silently misparses any frame with `format = 0x00`. The official iOS
+  SDK always emits `format = 0x01` + 1 queryID byte for every
+  application command; only DFU ops (`qspiErase`, `qspiWrite`, `reset`)
+  use `withoutQueryId: true`. PRs #49/#53/#55 all shipped `format =
+  0x00` frames; PR #57 fixed the encoder.
+- `queryID` is a unique 1-byte per-command correlation ID. The
+  `ActiveLookCommand` encoder writes `0x00` as a deterministic
+  placeholder so unit tests can pin exact bytes; the adapter stamps a
+  real incrementing value (wrapping `0xFF → 0x01`, with `0x00`
+  reserved as the placeholder) just before `peripheral.writeValue`.
 - `x`, `y` are **i16 big-endian**, signed (so off-screen negative
   coordinates are legal — test the two's-complement encoding for
   `y = -1` → `0xFF 0xFF`).
 - The string is **null-terminated** UTF-8 (even if empty).
-- Re-use the `ActiveLookCommand.encode(id:payload:queryID:)` framer
-  for the outer envelope so you inherit its two-byte-length promotion
-  for long strings.
+- Re-use the `ActiveLookCommand.encode(id:payload:queryID:withoutQueryId:)`
+  framer for the outer envelope so you inherit its two-byte-length
+  promotion for long strings AND the default queryID handling.
 
 ### 4. Pure builder in Core, side-effect push at the watch boundary
 
@@ -183,6 +204,26 @@ extension GlassesFrameTransport {
 
 ## Anti-patterns to avoid
 
+- **Don't emit command frames with `format = 0x00` (no queryID byte) —
+  EVER, except for DFU ops (PR #57 root cause).** Spec marks queryID as
+  optional (0–15 bytes) but Engo 2 firmware parses every application
+  command as if the 1-byte queryID is always present. Missing-queryID
+  frames misparse silently: `power(on:true)`'s on-byte becomes the
+  queryID, `txt` coordinates shift by 1 byte and render 5000+ px
+  off-screen. Always use `format = 0x01` + 1-byte queryID; opt out
+  ONLY for `qspiErase` / `qspiWrite` / `reset` via `withoutQueryId:
+  true`, matching the official iOS SDK convention.
+- **Don't route only the battery characteristic in `didUpdateValueFor`
+  (PR #57 secondary root cause).** The Coordinator MUST also route the
+  control characteristic (0xCB9 — flow-control + 0x03/0x04/0x06
+  error codes) and the TX characteristic (0xCB8 — 0xE2 error
+  notification frames carrying `[cmdId][error][subError]`). Without
+  these, command rejections are completely invisible to the watch and
+  every "blank screen" debug session has to start from byte-level
+  capture instead of console logs. The flow-control runtime gate
+  (`flowControlAllowsWrite` flag flipped by the 0x01/0x02 values) is
+  separate from and required in addition to the subscription
+  confirmation (`flowControlNotifyConfirmed`) added in PR #55.
 - **Don't blast multiple BLE commands without waiting for write
   acknowledgment between each.** The ActiveLook protocol requires serial
   command delivery: send one frame → wait for `didWriteValueFor` → send
@@ -274,3 +315,10 @@ to on-device bench validation for the actual rendering.
 - AR-Runner PR #49 — initial implementation.
 - AR-Runner PR #53 — rc4 regression fix: display-power-on prefix +
   on-connect "Ready" screen.
+- AR-Runner PR #55 — write serialization + flow-control subscription gate.
+- AR-Runner PR #57 — encoder queryID byte + flow-control runtime gate +
+  TX/control char notification routing for 0xE2 error observability.
+- `.squad/files/hud-forensic-report.md` — SDK-source forensic comparison.
+- `.squad/files/hud-api-spec-report.md` — protocol-spec deep dive.
+- `.squad/decisions/inbox/laughlin-hud-queryid-fix.md` (after Scribe merge,
+  in `decisions.md`) — cross-research methodology and resolution.
