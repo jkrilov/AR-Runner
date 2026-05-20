@@ -193,3 +193,28 @@ For Resume, the synchronous pre-transition prevents a benign-but-wasteful double
 
 **Tests:** Core 195/195 pass. `xcodebuild -scheme ARRunnerWatch` SUCCEEDED.
 
+
+### 2026-05-20T15:33:22-04:00 — v0.5 PR 2: Strava OAuth + Token Store + Settings tab
+
+**Work:** Shipped phone-side Strava plumbing per D-Strava-1/3/5/6 on `feat/v05-strava-oauth` (branched from main, clean rebase off Amber's TCX PR which lives on `feat/v05-tcx-encoder`).
+
+**Files added (all under `ARRunnerPhone/`):**
+- `Strava/StravaConfig.swift` — clientID resolved from `STRAVA_CLIENT_ID` env → Info.plist → placeholder. Worker base `https://strava-connect.ar-runner.app`. App Group `group.com.arrunner.shared`. `isConfigured` flag drives a UI warning when the placeholder is still in place.
+- `Strava/StravaOAuthService.swift` — `ASWebAuthenticationSession` driving `https://www.strava.com/oauth/authorize?...&approval_prompt=auto`. Callback parsed by pure `StravaOAuthURLBuilder` (testable without a UIWindow). Code exchanged via POST to worker `/token`. `StravaOAuthError` enum keeps framework types out of the VM layer. `MainActor.assumeIsolated` used for the `presentationAnchor` hop because `ASWebAuthenticationPresentationContextProviding` is `nonisolated`.
+- `Strava/StravaTokenStore.swift` — single JSON record in shared keychain (`KeychainStravaTokenStore`, access group = `StravaConfig.appGroup`). Auto-refresh via worker `/refresh` when `expiresAt - now < 60s`. `StravaTokenBackingStore` + `StravaTokenRefresher` protocols make the store fully testable in-memory. Update-then-add on save avoids a window where readers see "no tokens".
+- `Views/SettingsView.swift` + `SettingsViewModel.swift` — gear tab replaces the old placeholder. Sections: Strava (Connect/Connected/Disconnect + auto-upload toggle) and About (app version). Auto-upload toggle defaults OFF per D-Strava-5 and resets on disconnect. Branded orange `#FC4C02` `Color.stravaOrange` extension for the CTA only.
+- `Tests/{StravaOAuthURLBuilderTests, StravaTokenStoreTests, SettingsViewModelTests}.swift` — 16 tests, all green.
+
+**Project changes:**
+- `project.yml`: new `ARRunnerPhoneTests` xcodegen target (type `bundle.unit-test`, hosts on ARRunnerPhone, `GENERATE_INFOPLIST_FILE: YES` to dodge code-sign-without-plist error). Excluded `ARRunnerPhone/Tests/**` from the app target sources so test files don't leak into the app binary. Registered `arrunner://` URL scheme via `CFBundleURLTypes` and `StravaClientID: $(STRAVA_CLIENT_ID)` Info.plist key on the phone target.
+
+**Verification:** ARRunnerPhone build green. ARRunnerPhoneTests: 16/16 pass. ARRunnerCore: 215/215 still pass.
+
+**Key learning:**
+- Phone app had no test target until now. Pattern for adding one in xcodegen: `type: bundle.unit-test` + `GENERATE_INFOPLIST_FILE: YES` + `TEST_HOST: $(BUILT_PRODUCTS_DIR)/ARRunnerPhone.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ARRunnerPhone` + matching `BUNDLE_LOADER`. Forgetting `GENERATE_INFOPLIST_FILE` fails build-for-testing with "Cannot code sign because the target does not have an Info.plist file".
+- When adding a test directory inside an existing target's source path, MUST add `excludes: ["Tests/**"]` to the app target's source spec or the test files compile into the app bundle (and the app fails to link XCTest).
+- App Group keychain pattern: pass the raw entitlement group string (`group.com.arrunner.shared`) as `kSecAttrAccessGroup`. The OS resolves it via the entitlement plist; no team-ID prefix needed in client code.
+- `ASWebAuthenticationPresentationContextProviding.presentationAnchor(for:)` is `nonisolated`, so the implementation hops to MainActor with `MainActor.assumeIsolated { ... }` to read `UIApplication.shared.connectedScenes`. Cleaner than wrapping the whole conformance in `@preconcurrency`.
+- `Config/` is gitignored — Info.plist edits don't ship. Always express plist additions in `project.yml` `info.properties`; xcodegen regenerates the plist on build.
+
+**Cross-agent note:** Amber's `feat/v05-tcx-encoder` branch holds the TCX encoder + activity naming (PR 1). This work (PR 2) is independent — branches share no code. Both should rebase cleanly onto each other when both land in main; PR 3 (upload pipeline) will wire them together via `tokenStore.validAccessToken()`.
