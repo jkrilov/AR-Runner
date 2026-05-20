@@ -65,3 +65,27 @@
 3. **Preloaded peripheral assets >> custom upload pipelines.** Check vendor asset catalog before invoking upload machinery.
 4. **Bundled-bump pattern cuts release cycle in half.** Feature + version + xcodegen + tag + TestFlight in single PR; now team standard.
 5. **BLE protocol layering matters.** ATT response gating is necessary but not sufficient; peripherals have application-layer flow control above it.
+
+---
+
+## 2026-05-20: Strava ingestion gap diagnostic
+
+**Trigger:** Joe ran a 5k, workout reached Apple Fitness/Health but did NOT propagate to Strava. Path #1 (Strava-side toggle) pre-ruled-out by Joe in earlier clarification. Asked for a diagnostic, not code, not yet an ADR.
+
+**What I found:** `HealthKitWorkoutSubstrate` writes `HKWorkout(activityType=.running, locationType=.outdoor)` with distance/energy/HR samples — but **no `HKWorkoutRoute` and no `CLLocationManager`**. Repo-wide grep for `HKWorkoutRoute|CLLocation|workoutRouteBuilder` returns zero matches. Story 3 in v030-roadmap-proposal listed route-writing as a deliverable; the route half never shipped.
+
+**Root cause:** Outdoor workout with no route = Strava's auto-import filter drops/suppresses it. Same root cause as Joe's bench item #1 (GPS not recorded). **One bug, two symptoms.** Loud-coupling observation: Laughlin's GPS fix is the Strava fix.
+
+**Secondary hypothesis named (not load-bearing):** Strava may additionally filter by source-app (only Apple Workout app auto-imports). Counter-evidence exists (WorkOutDoors, iSmoothRun work). Treat as fallback diagnostic if GPS fix doesn't close gap.
+
+**Recommendation written:** Land GPS fix, re-bench, expect both items to clear together. Escalation path A (HealthFit/RunGap middleware FAQ) if not. Path B (direct Strava API + OAuth) deferred — name the trigger (≥3 TestFlight complaints OR strategic v0.6 social-export decision), don't pre-build it.
+
+**Output:** `.squad/decisions/inbox/richards-strava-integration-diagnosis.md`.
+
+### Key learning retained
+
+**When two user-reported bugs share a missing subsystem, name the coupling out loud and re-cost the prioritization.** Joe was about to treat "GPS recording" and "Strava sync" as two separate workstreams; they collapsed into one ~half-day fix the moment I traced the substrate and saw the route builder was simply absent. The architect's value here was not picking the path — it was preventing two parallel investigations into one underlying gap.
+
+### Pattern → skill candidate
+
+Generalizable triage pattern: **"third-party fitness platform integration triage"** — diagnose third-party-platform ingestion failures by (1) verify platform-side config first, (2) audit what HK shape we actually write vs. what the receiver's filter expects, (3) look for missing-subsystem coupling to other open bugs before recommending integration work. Wrote as `.squad/skills/third-party-fitness-platform-integration-triage/SKILL.md`.

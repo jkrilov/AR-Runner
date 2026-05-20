@@ -256,6 +256,10 @@ final class WorkoutViewModel {
         // Stop per-tick HUD pushes BEFORE the finish frame so the live HUD
         // can't race-overwrite the summary. The HK session keeps running
         // until `controller.end()` below.
+        // rc3 — `stopRuntimeTasks()` is now workout-scoped (per the
+        // post-rc2 BLE-UI-freeze fix on this method's docstring). The
+        // glasses observation tasks are intentionally preserved so the
+        // post-finish idle screen continues to reflect live BLE state.
         stopRuntimeTasks()
         // Push the finish screen while HK is still active — we still have
         // foreground runtime + BLE radio. Frames go out immediately.
@@ -291,6 +295,21 @@ final class WorkoutViewModel {
     /// rc17 BLE-link contract still holds: stop runtime tasks, but leave
     /// the BLE transport connected. The wearer disconnects explicitly via
     /// `disconnectGlasses()` per ADR-1.
+    ///
+    /// **rc3 (2026-05-20) bench-feedback fix — discard returns to start.**
+    /// Joe reported (v0.4.0-rc2 bench): "Discard a run → glasses disconnect,
+    /// stuck state, can't reconnect without killing app." Two coupled issues:
+    /// 1. `stopRuntimeTasks()` cancelled the glasses observation tasks,
+    ///    so the view-model went blind to subsequent connection-state
+    ///    changes — the UI showed stale "connected" but reconnect/disconnect
+    ///    operated on a transport whose observer was dead.
+    /// 2. Transitioning to `.cancelled` left the watch on a terminal state
+    ///    rather than the start screen, so the next workout attempt
+    ///    couldn't kick off cleanly.
+    /// Fix: now that `stopRuntimeTasks()` is workout-scoped (preserves
+    /// glasses observers — see its docstring), `confirmCancel` can safely
+    /// use it. Land back on `.idle` with live counters reset so the start
+    /// screen is functional with BLE still alive.
     func confirmCancel() async {
         guard let controller else { return }
         launchState = .ending
@@ -301,7 +320,12 @@ final class WorkoutViewModel {
             launchState = .failed(String(describing: error))
             return
         }
-        launchState = .cancelled
+        // Drop the controller so the next `start()` builds a fresh
+        // substrate/controller pair (the old streams were finished by
+        // `controller.discard()` and would yield nothing).
+        self.controller = nil
+        resetLiveCounters()
+        launchState = .idle
         await mirror?.sendLifecycle(.ended)
     }
 
@@ -789,13 +813,40 @@ final class WorkoutViewModel {
         await mirror.send(snapshot: snapshot)
     }
 
+    /// Cancel workout-scoped observation tasks. Per ADR-1 ("BLE link is
+    /// user-managed, not workout-scoped"), the glasses connection-state and
+    /// status-event observers are **transport-scoped** and intentionally
+    /// excluded — they must outlive every save/discard so the watch UI
+    /// continues to reflect the real BLE state on the post-workout screen.
+    ///
+    /// **rc2 (2026-05-20) bug fix — discard kills the glasses link, UI freezes.**
+    /// Joe reported (rc2 bench): discarding a run leaves the watch UI showing
+    /// "Glasses: Connected" while the BLE link is dead, and tapping
+    /// Disconnect does nothing — only killing the app recovers.
+    ///
+    /// Root cause: this method previously also cancelled
+    /// `glassesStateTask` and `glassesStatusTask`. After a discard those
+    /// tasks were torn down and never re-attached (the start path reuses
+    /// the existing transport without re-calling `attachGlasses`). The
+    /// view-model therefore stopped mirroring transport-state changes into
+    /// `glassesLinkState`, so:
+    ///   * the UI froze on the last-observed state (stale "connected"),
+    ///   * `disconnectGlasses()` actually *did* tear down the link, but the
+    ///     UI never saw the resulting `.disconnected` event,
+    ///   * `connectGlasses()` early-returned on the stale `.connected` read,
+    /// and the only recovery was an app restart, which re-built the
+    /// view-model and re-attached the observers.
+    ///
+    /// Fix: keep the glasses observation tasks alive across workout
+    /// terminal states. They are bound to the transport's lifetime (which
+    /// matches the view-model's), not the workout's.
     private func stopRuntimeTasks() {
         stateTask?.cancel(); stateTask = nil
         metricTask?.cancel(); metricTask = nil
         elapsedTask?.cancel(); elapsedTask = nil
         tickTask?.cancel(); tickTask = nil
-        glassesStateTask?.cancel(); glassesStateTask = nil
-        glassesStatusTask?.cancel(); glassesStatusTask = nil
+        // glassesStateTask / glassesStatusTask intentionally NOT cancelled —
+        // see method docs (rc2 BLE-UI-freeze fix / ADR-1).
     }
 
 }

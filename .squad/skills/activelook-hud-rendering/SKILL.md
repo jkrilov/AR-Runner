@@ -170,6 +170,93 @@
 > "make everything font 3" without re-deriving Y will silently push
 > a line off-screen (clipped per spec §5.5.6) — the same failure
 > mode that killed rc11.
+>
+> ## 🚨 CRITICAL — right-justifying one of two metrics on a shared line (rc2 lesson, 2026-05-20)
+>
+> When two metrics share a single line (e.g. finish-screen line 3:
+> `TIME    PACE` with TIME left-anchored and PACE right-anchored), the
+> ActiveLook `txt` primitive has NO built-in alignment — there is one
+> anchor per write and it lands wherever `(x, y)` says. Two viable
+> strategies; **pick (b) until `ALookFontMetrics` is extracted**:
+>
+> - **(a) Single write, padded string.** Build one combined string with
+>   inter-metric spaces (`"27:43          8:56/mi"`) and a single
+>   `txt`. Looks clean in code; **fails on proportional fonts** because
+>   space glyphs are narrower than digit glyphs, so the right-end
+>   position varies with the actual metric values. Acceptable only for
+>   a confirmed-monospace font (no ActiveLook stock font qualifies).
+>
+> - **(b) Two writes per line, shared y, different x.** TIME at
+>   `leftMargin` (canonical wearer-left). PACE at a *fixed* second
+>   anchor computed for the **worst-case pace string** using a
+>   conservative per-glyph width ceiling (font 2 → 20 px/char with
+>   ~11 % headroom over the empirical ~18; font 3 → 28 px/char). The
+>   constant lives in `Layout` with its derivation in a comment.
+>   Cost: one extra `txt` command per finish-frame push (one-shot,
+>   not per-tick) — negligible under the rc8+ write-serialization
+>   contract.
+>
+> **Formula for the right-justified anchor under `rotation = 4`
+> (topLR) + the Engo 2 lens flip:**
+>
+> ```text
+> rightAnchorX_fb = (303 − wearerRight) + (maxChars × fontWidthCeiling)
+> ```
+>
+> The anchor under topLR + lens flip lands on the wearer-LEFT edge of
+> the text block (see live-HUD `liveLeftMargin = 303 − 60 = 243`
+> derivation). So to pin the wearer-RIGHT edge of the *longest legal
+> pace string* at `wearerRight = 283` (20-px right margin), solve for
+> x_fb using the worst-case width. Shorter strings render with a
+> slight right inset — visually "right-aligned with a small gutter,"
+> acceptable trade-off vs. the precision of a measure-and-shift
+> implementation.
+>
+> **Rules:**
+>
+> 1. **Pin `payload.<metric>.count <= maxChars` in the formatter** for
+>    every metric whose anchor is computed against `maxChars`. A
+>    runtime overflow silently regresses the worst-case overlap math.
+> 2. **Add a `test_<line>_noHorizontalOverlap_worstCase` test** that
+>    asserts `wearer_right(leftMetric_worst) < wearer_left(rightMetric_worst)`
+>    using the same width ceiling. This catches a formatter regression
+>    OR a too-loose ceiling.
+> 3. **When `ALookFontMetrics` ships** (Richards rec #2), collapse the
+>    fixed-anchor constant to a computed expression
+>    `(303 − rightMargin) + ALookFontMetrics.width(string, font:)` and
+>    delete the width-ceiling magic numbers from `Layout`. The
+>    transition is a pure widening (precision goes up, on-panel
+>    invariants preserved).
+> 4. **Do NOT introduce a new `rotation` value for the right-justified
+>    half** (e.g. `topL` for left, `topR` for right). Two writes at
+>    the same bench-validated rotation is strictly safer than one
+>    write at a novel rotation under the Engo 2 lens flip.
+>
+> ## 🚨 CRITICAL — validate X extent for EVERY finish/banner string, not just Y (rc1 lesson, 2026-05-20)
+>
+> rc17's finish-screen tests pinned the Y formula (`y_fb = 255 − wearer_top`)
+> but did NOT pin string-width-fits-in-leftMargin. Joe's rc1 bench saw
+> "text cut off" on the finish screen; the most likely cause is the
+> 16-char "Workout Complete" banner overflowing the 284-px
+> left-extending bounding box at font 3 (16 × ~28 ≈ 448 > 284), with
+> the leading characters silently clipped per spec §5.5.6 — exact
+> same failure class as rc11 splash and rc15 "BPM" tail.
+>
+> **Add an X-extent test alongside every Y-extent test:**
+>
+> ```swift
+> for (string, font, anchor) in finishScreenStrings {
+>     let w = string.count * fontWidthCeiling(font)
+>     XCTAssertLessThanOrEqual(w, Int(anchor),
+>         "\(string) at font \(font) overflows \(anchor)-px left-extending box")
+> }
+> ```
+>
+> The rc17 finish-screen Y coords (239 / 159 / 79) were
+> mathematically correct under the rc16 lens-flip formula. The bug
+> was that nobody tested whether the *strings* fit the *anchor*. A
+> validated formula is not a validated layout.
+>
 
 ## Why this skill exists
 

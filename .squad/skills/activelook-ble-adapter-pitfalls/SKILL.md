@@ -290,3 +290,41 @@ The canonical reconnect cadence is `ExponentialBackoff.adrV04`
 Tests can still inject `maxReconnectAttempts: 1` (etc.) to exercise the
 terminal `.reconnectAbandoned` path without waiting for the unbounded
 default.
+
+## View-model: observer tasks are TRANSPORT-scoped, not workout-scoped (rc3)
+
+Symptom — Joe rc2 finding #4: discard a run → glasses BLE link physically
+drops → watch UI still shows "Glasses: Connected" → tapping Disconnect
+does nothing → only an app restart recovers.
+
+This is **not** a transport bug. It is a view-model lifecycle bug. Things
+to remember when wiring an `AsyncStream`-based BLE observer to a SwiftUI
+view-model in this codebase:
+
+1. **Two distinct lifetimes coexist on `WorkoutViewModel`.** Workout-scoped
+   tasks (`stateTask`, `metricTask`, `elapsedTask`, `tickTask`) end on
+   every save/discard. Transport-scoped tasks (`glassesStateTask`,
+   `glassesStatusTask`) MUST live as long as the transport instance does.
+   Mixing them in a single `stopRuntimeTasks()` is the bug.
+
+2. **If you cancel a transport-state observer at workout end, you also
+   need to recreate it at workout start.** Our `start()` reuses an
+   existing transport without re-calling `attachGlasses` — there is no
+   re-creation site, so once cancelled the observer is gone for the
+   life of the VM. Easy mistake. Either guarantee re-attach on every
+   start *or* (preferred, ADR-1 aligned) never cancel.
+
+3. **"Disconnect button does nothing" is a tell-tale UI-only symptom.**
+   The adapter's `disconnect()` is synchronous about transitioning to
+   `.disconnected` and tears down the CB connection. If the user sees
+   no UI change, the suspect is almost always the consumer of
+   `transport.connectionStates()`, not the producer.
+
+4. **Test rule:** whenever a fix changes which tasks `stopRuntimeTasks()`
+   cancels, add an XCTest (or hardware integration check) that drives
+   `start → confirmSave → externally toggle link state → assert
+   `glassesLinkState` reflects the new state`. We don't have a watch
+   unit-test target yet, so the rationale comment block on
+   `stopRuntimeTasks()` is currently the load-bearing artifact. Don't
+   delete it without a replacement test.
+

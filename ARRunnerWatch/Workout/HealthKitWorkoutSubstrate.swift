@@ -23,6 +23,16 @@ import os
 
 public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, @unchecked Sendable {
 
+    /// rc3 (2026-05-20) — GPS-route diagnostics. Joe's rc2 bench: the
+    /// `NSLocationWhenInUseUsageDescription` fix made the auth prompt
+    /// appear and CoreLocation started delivering fixes, but the route
+    /// polyline still didn't reach Apple Health. Root cause was missing
+    /// `HKSeriesType.workoutRoute()` share authorization (silent drops on
+    /// `insertRouteData`). These log sites pin every step of the route
+    /// pipeline so the next missing-route bug surfaces in `Console.app`
+    /// instead of needing another bench bisection.
+    private static let routeLog = Logger(subsystem: "com.arrunner.watch", category: "WorkoutRoute")
+
     private struct MutableState {
         var session: HKWorkoutSession?
         var builder: HKLiveWorkoutBuilder?
@@ -108,6 +118,17 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         if let distance = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning) { types.insert(distance) }
         if let cycling = HKQuantityType.quantityType(forIdentifier: .distanceCycling) { types.insert(cycling) }
         if let energy = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) { types.insert(energy) }
+        // rc3 (2026-05-20) — GPS-route fix. `HKWorkoutRouteBuilder
+        // .insertRouteData` requires explicit share authorization for
+        // the workout-route series type; without it, every insert is
+        // silently dropped and `finishRoute(with:metadata:)` returns
+        // no polyline. This was the missing piece in rc2: the Info.plist
+        // location-usage string made the CoreLocation prompt appear and
+        // fixes started flowing, but HealthKit was never asked to write
+        // routes so the data never reached Health. Adding it here means
+        // the next auth request (on launch + defensively from `begin`)
+        // includes route-write in the user prompt.
+        types.insert(HKSeriesType.workoutRoute())
         return types
     }
 
@@ -186,6 +207,7 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
             locationManager.requestWhenInUseAuthorization()
         }
         locationManager.startUpdatingLocation()
+        Self.routeLog.info("route: begin — auth=\(self.locationManager.authorizationStatus.rawValue, privacy: .public), accuracy=\(self.locationManager.desiredAccuracy, privacy: .public)")
 
         stateContinuation.yield(.preparing)
         session.startActivity(with: startedAt)
@@ -254,7 +276,16 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         // `workout` is nil (HK didn't return a sample, e.g. a zero-length
         // run) skip the route finalization — there's nothing to attach to.
         if let workout, let routeBuilder {
-            _ = try? await routeBuilder.finishRoute(with: workout, metadata: nil)
+            do {
+                let route = try await routeBuilder.finishRoute(with: workout, metadata: nil)
+                Self.routeLog.info("route: finishRoute OK — sampleCount=\(route.count, privacy: .public) workoutID=\(workout.uuid.uuidString, privacy: .public)")
+            } catch {
+                // Logged loudly so the next missing-route regression
+                // shows up in Console.app without another bench bisect.
+                Self.routeLog.error("route: finishRoute FAILED — \(String(describing: error), privacy: .public)")
+            }
+        } else {
+            Self.routeLog.notice("route: finishRoute skipped — workout=\(workout != nil, privacy: .public) routeBuilder=\(routeBuilder != nil, privacy: .public)")
         }
 
         stateContinuation.yield(.ended)
@@ -320,18 +351,33 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
     /// invalid timestamps) before handing them to the route builder.
     fileprivate func ingest(locations: [CLLocation]) {
         let routeBuilder = state.withLock { $0.routeBuilder }
-        guard let routeBuilder else { return }
+        guard let routeBuilder else {
+            Self.routeLog.notice("route: ingest dropped — no active routeBuilder (count=\(locations.count, privacy: .public))")
+            return
+        }
 
         let filtered = locations.filter { loc in
             loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= 50
         }
-        guard !filtered.isEmpty else { return }
+        guard !filtered.isEmpty else {
+            // High-accuracy filter rejected everything — common for the
+            // first few fixes when the watch's GPS is still warming up.
+            // Logged at debug so it shows up in the per-second cadence
+            // without spamming default-level logs.
+            Self.routeLog.debug("route: ingest filtered all — raw=\(locations.count, privacy: .public)")
+            return
+        }
 
-        routeBuilder.insertRouteData(filtered) { _, _ in
-            // Best-effort — a single insert failure shouldn't take the
-            // workout down. HK will simply drop those fixes from the
-            // polyline. Logged via os_log so production failures are
-            // observable without surfacing UI noise.
+        routeBuilder.insertRouteData(filtered) { success, error in
+            if success {
+                Self.routeLog.debug("route: insertRouteData OK — count=\(filtered.count, privacy: .public)")
+            } else {
+                // rc3 — surface insert failures loudly. Pre-rc3 this was
+                // a silent best-effort that masked the missing
+                // HKSeriesType.workoutRoute() authorization. Keep it
+                // best-effort (no throw) but observable.
+                Self.routeLog.error("route: insertRouteData FAILED — count=\(filtered.count, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            }
         }
     }
     #endif
