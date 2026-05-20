@@ -25,10 +25,7 @@ struct RootView: View {
             }
 
             NavigationStack {
-                ContentPlaceholderView(
-                    title: "Settings",
-                    subtitle: "HUD presets, units, and watch sync controls land here."
-                )
+                SettingsView()
             }
             .tabItem {
                 Label("Settings", systemImage: "gearshape")
