@@ -89,3 +89,29 @@ Wrote acceptance criteria for rc2 covering Joe's five bench-return items from th
 - **Bench execution order = severity-first, with a 60-second smoke at #1.** D1 is the rc2 60-second smoke (start → 30 s → discard → check Health). If D1 fails, halt the bench. Matches the rc17 pattern of leading with the load-bearing scenario before any wider sweep.
 
 Skill extracted: `terminal-path-data-leak-qa/SKILL.md` (four invariants + six bench checks + anti-pattern grep list + reuse contexts).
+
+### 2026-05-20T15:33:22-04:00 — v0.5 PR 1: TCX encoder (Strava upload format)
+
+Built the TCX 2.0 encoder per D-Strava-2 — pure Foundation, zero third-party deps, Swift 6 strict-concurrency clean. Three source files + two test files under `ARRunnerCore/Sources/ARRunnerCore/Strava/` and matching `Tests/`. Branch `feat/v05-tcx-encoder`. All 215 tests pass (was 195+, my +17 = 212; the rest came in via prior merges).
+
+**Files:**
+- `Strava/TCXWorkoutData.swift` — `Sendable` input model: `TCXWorkoutData`, `TCXTrackpoint`, `TCXLap`. Optionals on lat/lon/alt/HR make the same trackpoint type cover route-only, HR-only, and full samples.
+- `Strava/TCXEncoder.swift` — pure-function emitter, manual string interpolation, locale-safe Doubles (`en_US_POSIX` for `%.2f` / `%.7f`), XML escaping for text + attribute positions, namespace constants exposed as public.
+- `Strava/ActivityNaming.swift` — Strava-style "Morning/Afternoon/Evening/Night Run" with explicit hour thresholds [5,12)/[12,17)/[17,21)/night.
+- Tests: well-formedness via `XMLParser` round-trip, structural counts, field correctness, determinism (byte-equality — load-bearing for Strava `external_id` idempotency).
+
+**Patterns reinforced / new:**
+
+- **`XMLDocument` is macOS-only; `XMLParser` is cross-platform.** ARRunnerCore targets iOS/watchOS/macOS. Encoder uses string interpolation (write side). Tests use `XMLParser` (parse side) to assert well-formedness. Don't reach for `XMLDocument` in this package.
+
+- **Swift 6 strict concurrency forbids `static let` of non-Sendable Foundation classes** (`ISO8601DateFormatter`, `DateFormatter`, `NumberFormatter`). Inline allocation per call is the cleanest fix — cheap relative to TCX assembly (~thousands of trackpoints max), keeps the encoder a value-style pure function, avoids `@MainActor` or `nonisolated(unsafe)`. If hot-path profiling ever flags it, the proper fix is an `actor` formatter pool, not a static.
+
+- **Locale-dependent `Double.description` is a wire-format hazard.** A device in `fr_FR` will stringify `1.5` as `"1,5"`, which TCX rejects. Always route through `String(format:locale:)` with `en_US_POSIX`. Pinned by `testDecimalFormattingIsLocaleIndependent` and `testCoordinate…` — if anyone "simplifies" to `"\(value)"`, the test catches it.
+
+- **Determinism as an idempotency contract.** Strava uses `external_id` (HKWorkout UUID) for dedup but also compares uploaded bytes. Same input → byte-identical output is what makes retry-safe upload actually safe. Pinned by `testEncoderIsDeterministic`. Generalizes: any wire-format encoder feeding an idempotent endpoint needs a byte-equality test, not just a structural one.
+
+- **Raw-string interpolation gotcha (Swift):** `#""\#(x)""#` produces `"x"` (two literal quotes flanking the value). I wrote `xmlns=""http://…"` by accident — well-formed-XML test caught it instantly (`NSXMLParserError 111`). Lesson: when assembling attributes with quotes inside, plain `"\"\(x)\""` is less error-prone than raw-string gymnastics. The well-formedness test is the load-bearing guard against the entire class of "wrong number of quotes" bugs.
+
+- **"Empty input still emits valid output" as a schema contract.** TCX requires ≥1 `<Lap>` per `<Activity>`. If caller passes `laps: []`, encoder synthesizes a single lap from the summary fields rather than emitting invalid XML. Pinned by `testEmptyWorkoutProducesValidMinimalTCX`. Generalizes: any optional-field wire format with a structural minimum should synthesize the minimum from available data rather than relying on caller discipline.
+
+- **Time-of-day boundaries are off-by-one bait.** Each boundary needs both sides tested (5:00 morning AND 4:59 night, 12:00 afternoon AND 11:59 morning, etc.). `testNightBoundaries` covers the wraparound case (21:00 night, 23:00 night, 00:00 night, 04:59 night) which is the most likely regression spot if anyone refactors with two separate ranges instead of a `default:` clause.
