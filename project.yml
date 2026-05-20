@@ -13,7 +13,7 @@ settings:
   base:
     SWIFT_VERSION: '6.0'
     # SWIFT_STRICT_CONCURRENCY=complete is implicit under Swift 6 language mode — D8 still in effect.
-    CURRENT_PROJECT_VERSION: 32
+    CURRENT_PROJECT_VERSION: 33
     MARKETING_VERSION: 0.4.0
     # CODE_SIGN_STYLE is intentionally NOT pinned here. xcodegen would otherwise
     # bake Automatic into the project-level pbxproj, which has higher precedence
@@ -83,6 +83,14 @@ targets:
         NSHealthShareUsageDescription: AR-Runner reads workout metrics so your watch can drive the HUD and summary experience.
         NSHealthUpdateUsageDescription: AR-Runner saves completed workouts and summaries to Health.
         NSBluetoothAlwaysUsageDescription: AR-Runner connects your Apple Watch directly to ActiveLook glasses during workouts.
+        # rc2 (2026-05-20) — Joe's 5K bench feedback item #1: workouts
+        # arrived in Apple Health without a GPS route. CoreLocation can't
+        # deliver fixes (and HKWorkoutRouteBuilder stays empty) without
+        # this usage string in the watch Info.plist. Pairing this with
+        # the substrate's `CLLocationManager` + `HKWorkoutRouteBuilder`
+        # wiring restores the route polyline and, by extension, the
+        # Strava auto-import path that depends on it.
+        NSLocationWhenInUseUsageDescription: AR-Runner records your route during a workout so you can see the map in Apple Health and share runs to services like Strava.
         UIBackgroundModes:
           - bluetooth-central
         WKApplication: true

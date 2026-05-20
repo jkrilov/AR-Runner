@@ -256,6 +256,10 @@ final class WorkoutViewModel {
         // Stop per-tick HUD pushes BEFORE the finish frame so the live HUD
         // can't race-overwrite the summary. The HK session keeps running
         // until `controller.end()` below.
+        // rc3 — `stopRuntimeTasks()` is now workout-scoped (per the
+        // post-rc2 BLE-UI-freeze fix on this method's docstring). The
+        // glasses observation tasks are intentionally preserved so the
+        // post-finish idle screen continues to reflect live BLE state.
         stopRuntimeTasks()
         // Push the finish screen while HK is still active — we still have
         // foreground runtime + BLE radio. Frames go out immediately.
@@ -273,31 +277,92 @@ final class WorkoutViewModel {
         // from the ended/idle screen via `disconnectGlasses()` (rc17 fix).
     }
 
-    /// Cancel path: end the underlying HK session (the protocol does not
-    /// support a discard in v0.2) and mark the local UI as cancelled so no
-    /// summary is shown.
+    /// Cancel path: discard the underlying HK workout (no `HKWorkout`
+    /// sample is written) and mark the local UI as cancelled.
     ///
-    /// rc17 fix: matches `confirmSave` — we stop runtime tasks and end the
-    /// HK session but leave the BLE transport connected. Cancel is a UX
-    /// choice ("discard this run"), not a glasses-pairing teardown — the
-    /// wearer may immediately start another run, and forcing them to
-    /// re-pair is the regression Joe reported on rc16.
+    /// **rc2 (2026-05-20) bench-feedback fix — data integrity.** Joe ran a
+    /// 5K and discarded the run; it still appeared in Apple Fitness. Root
+    /// cause: prior to rc2 this method called `controller.end()`, which
+    /// goes through `HealthKitWorkoutSubstrate.end(at:)` → `builder
+    /// .finishWorkout()` and **always persists** an `HKWorkout`. We now
+    /// route through the dedicated `controller.discard()` terminal path
+    /// (rc2 — `WorkoutHealthSubstrate.discard(at:)`) which calls
+    /// `builder.discardWorkout()` so nothing reaches Health. There is
+    /// deliberately NO "save then maybe delete" — a delete-failure on
+    /// save-first would leak partial data, which is exactly the class of
+    /// bug we're closing.
+    ///
+    /// rc17 BLE-link contract still holds: stop runtime tasks, but leave
+    /// the BLE transport connected. The wearer disconnects explicitly via
+    /// `disconnectGlasses()` per ADR-1.
+    ///
+    /// **rc3 (2026-05-20) bench-feedback fix — discard returns to start.**
+    /// Joe reported (v0.4.0-rc2 bench): "Discard a run → glasses disconnect,
+    /// stuck state, can't reconnect without killing app." Two coupled issues:
+    /// 1. `stopRuntimeTasks()` cancelled the glasses observation tasks,
+    ///    so the view-model went blind to subsequent connection-state
+    ///    changes — the UI showed stale "connected" but reconnect/disconnect
+    ///    operated on a transport whose observer was dead.
+    /// 2. Transitioning to `.cancelled` left the watch on a terminal state
+    ///    rather than the start screen, so the next workout attempt
+    ///    couldn't kick off cleanly.
+    /// Fix: now that `stopRuntimeTasks()` is workout-scoped (preserves
+    /// glasses observers — see its docstring), `confirmCancel` can safely
+    /// use it. Land back on `.idle` with live counters reset so the start
+    /// screen is functional with BLE still alive.
     func confirmCancel() async {
         guard let controller else { return }
         launchState = .ending
         stopRuntimeTasks()
         do {
-            _ = try await controller.end()
+            try await controller.discard()
         } catch {
             launchState = .failed(String(describing: error))
             return
         }
-        launchState = .cancelled
+        // Drop the controller so the next `start()` builds a fresh
+        // substrate/controller pair (the old streams were finished by
+        // `controller.discard()` and would yield nothing).
+        self.controller = nil
+        resetLiveCounters()
+        launchState = .idle
         await mirror?.sendLifecycle(.ended)
     }
 
     func resumeFromFinish() async {
         await resume()
+    }
+
+    /// Synchronously leave `.pendingFinish` so SwiftUI's
+    /// `confirmationDialog` dismissal binding cannot observe the
+    /// pre-finish state when the user makes an explicit Save/Discard
+    /// choice. Must be called from the Save/Discard button actions
+    /// *before* scheduling the async terminal `Task`.
+    ///
+    /// **rc4 (2026-05-20) bench-feedback fix — discard returns to running
+    /// screen instead of start screen.** Joe reported (v0.4.0-rc3 bench):
+    /// discarding still doesn't go back to the start screen. Root cause was
+    /// a SwiftUI ordering race in `WorkoutView.finishMenuBinding`:
+    /// tapping "Discard" enqueued `Task { confirmCancel() }`, and in the
+    /// same tick SwiftUI also dismissed the dialog and invoked the
+    /// binding's `set(false)`. At that synchronous moment `launchState ==
+    /// .pendingFinish` was still true (the Task hadn't started), so the
+    /// binding setter spawned a second `Task { resumeFromFinish() }`. The
+    /// two terminal actions raced on the same controller; `resume()`
+    /// would resolve after `confirmCancel`'s final `.idle` write and
+    /// overwrite it with `.running`, stranding the wearer on the live
+    /// workout screen post-discard. Same race latently afflicted Save.
+    ///
+    /// Fix: synchronously transition `.pendingFinish` → `.ending` from the
+    /// button action. By the time the binding setter fires synchronously
+    /// next, the auto-resume guard (`launchState == .pendingFinish`) is
+    /// false and `resumeFromFinish()` is not spawned. `confirmCancel` /
+    /// `confirmSave` re-assert `.ending` (idempotent) so their own
+    /// preconditions still hold when invoked directly from tests.
+    func acknowledgeFinishChoice() {
+        if launchState == .pendingFinish {
+            launchState = .ending
+        }
     }
 
     /// Legacy entry point preserved for any callers that still issue an
@@ -533,10 +598,11 @@ final class WorkoutViewModel {
     fileprivate func pushHUDSummaryIfConnected() async {
         guard let transport else { return }
         guard await transport.connectionState == .connected else { return }
-        // rc14: finish-screen payload ignores HR/pace (summaryFrames
-        // renders only the Time + Distance "final stats" per Joe). We
-        // still pass HR through for Payload symmetry; the summary
-        // builder discards it.
+        // rc2: finish-screen reshape (3-line / 4-data layout — "Finished!",
+        // distance, time + right-justified pace). The summary builder now
+        // uses time, distance, and pace from the payload (rc14's HR/pace
+        // drop is superseded — see `RunningHUDFrame.summaryFrames`). HR
+        // is still passed through for Payload symmetry but unused.
         let payload = RunningHUDFrame.payload(
             elapsedSeconds: elapsed,
             distanceMeters: distanceMeters ?? 0,
@@ -764,6 +830,11 @@ final class WorkoutViewModel {
             sport: sport,
             phase: phase,
             timestamp: Date(),
+            // rc2 — propagate the workout's wall-clock start time so the
+            // phone mirror can show a "Started at …" row. Carried on
+            // every tick (not a one-shot lifecycle event) so a phone
+            // that wakes mid-run sees it on the first snapshot.
+            startedAt: startedAt,
             elapsedSeconds: elapsed,
             heartRateBeatsPerMinute: heartRate,
             distanceMeters: distanceMeters,
@@ -774,13 +845,40 @@ final class WorkoutViewModel {
         await mirror.send(snapshot: snapshot)
     }
 
+    /// Cancel workout-scoped observation tasks. Per ADR-1 ("BLE link is
+    /// user-managed, not workout-scoped"), the glasses connection-state and
+    /// status-event observers are **transport-scoped** and intentionally
+    /// excluded — they must outlive every save/discard so the watch UI
+    /// continues to reflect the real BLE state on the post-workout screen.
+    ///
+    /// **rc2 (2026-05-20) bug fix — discard kills the glasses link, UI freezes.**
+    /// Joe reported (rc2 bench): discarding a run leaves the watch UI showing
+    /// "Glasses: Connected" while the BLE link is dead, and tapping
+    /// Disconnect does nothing — only killing the app recovers.
+    ///
+    /// Root cause: this method previously also cancelled
+    /// `glassesStateTask` and `glassesStatusTask`. After a discard those
+    /// tasks were torn down and never re-attached (the start path reuses
+    /// the existing transport without re-calling `attachGlasses`). The
+    /// view-model therefore stopped mirroring transport-state changes into
+    /// `glassesLinkState`, so:
+    ///   * the UI froze on the last-observed state (stale "connected"),
+    ///   * `disconnectGlasses()` actually *did* tear down the link, but the
+    ///     UI never saw the resulting `.disconnected` event,
+    ///   * `connectGlasses()` early-returned on the stale `.connected` read,
+    /// and the only recovery was an app restart, which re-built the
+    /// view-model and re-attached the observers.
+    ///
+    /// Fix: keep the glasses observation tasks alive across workout
+    /// terminal states. They are bound to the transport's lifetime (which
+    /// matches the view-model's), not the workout's.
     private func stopRuntimeTasks() {
         stateTask?.cancel(); stateTask = nil
         metricTask?.cancel(); metricTask = nil
         elapsedTask?.cancel(); elapsedTask = nil
         tickTask?.cancel(); tickTask = nil
-        glassesStateTask?.cancel(); glassesStateTask = nil
-        glassesStatusTask?.cancel(); glassesStatusTask = nil
+        // glassesStateTask / glassesStatusTask intentionally NOT cancelled —
+        // see method docs (rc2 BLE-UI-freeze fix / ADR-1).
     }
 
 }

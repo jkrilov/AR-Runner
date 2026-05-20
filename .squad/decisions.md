@@ -3008,3 +3008,663 @@ Files modified by Laughlin/Amber/Richards in the same working tree (their territ
 - `amber-rc17-qa-scenarios` (Joe + reviewers can run §C1–C7 against rc17 with this code).
 - `paired-hardware-lifecycle-contract` skill (generalised pattern; AR-Runner is the reference application).
 - `activelook-ble-adapter-pitfalls` skill (updated with the per-link subscription + filter-reset rules).
+### 2026-05-20T10:48:00-04:00: User clarification — Strava IS configured, gap is between Apple Health → Strava for our workouts specifically
+**By:** Joe (via Copilot)
+**What:** Joe verified that:
+- Apple Workout app → Apple Health → Strava: ✅ WORKS (runs from Apple Workout app DO sync to Strava)
+- AR-Runner → Apple Health: ✅ WORKS (our runs appear in Apple Fitness/Health)
+- AR-Runner → Apple Health → Strava: ❌ BROKEN (our runs don't propagate to Strava from Health)
+
+**Why this matters:** Rules out Richards's investigation Path #1 entirely (Strava configuration is fine on Joe's device). The diagnostic narrows to Path #2 (HK workout metadata/sample shape — our workouts differ from Apple Workout's in a way Strava's auto-import filter rejects) and Path #3 (Strava ingestion likely depends on route data — couples to GPS-recording bug item #1; fixing GPS may unblock Strava for free).
+
+**Live hypotheses after clarification:**
+1. Missing HKWorkoutRouteBuilder route on our workouts (Path #3 — couples to item #1, fixing GPS likely unblocks)
+2. Missing or wrong workout metadata keys (Path #2 — need to diff what Apple Workout writes vs. what we write)
+3. Wrong HKWorkoutActivityType variant (Path #2 sub-case — verify we're writing `.running` exactly, not `.other` or a sub-type Strava ignores)
+
+**Recommended next-step ordering:** Land Laughlin's GPS fix (item #1) first, re-test Strava ingestion, then if still broken, Richards proposes metadata diff.
+### 2026-05-20T10:55:00-04:00: DIAGNOSTIC — Strava ingestion gap (research finding, not an ADR)
+
+**Author:** Richards (Lead / Architect)
+**Type:** Diagnostic recommendation feeding Joe's path-selection decision. NOT an ADR yet — ADR follows once Joe picks a path.
+**Audience:** Joe (decision-maker), Laughlin (HealthKit owner — likely implementor), Amber (workout lifecycle).
+
+---
+
+#### Context
+
+Joe ran a 5k this morning. Workout reached Apple Fitness / Health correctly. Did **not** appear in Strava. Joe's earlier clarification (`copilot-clarification-2026-05-20T10-48-strava-narrowing.md`) confirms:
+
+- Strava ↔ Apple Health is wired on Joe's device (Apple Workout app runs DO flow through).
+- Path #1 (Strava-side toggle) is ruled out.
+- Gap is specifically between **AR-Runner's HK write** and **Strava's auto-import filter**.
+
+Joe also flagged item #1 separately: **GPS was not recorded** for this morning's run.
+
+---
+
+#### What the code actually writes today
+
+Read `ARRunnerWatch/Workout/HealthKitWorkoutSubstrate.swift` (the only path into HK):
+
+| Field | Current value | Strava expectation |
+|---|---|---|
+| `HKWorkoutConfiguration.activityType` | `.running` | ✅ correct |
+| `HKWorkoutConfiguration.locationType` | `.outdoor` | ✅ correct (and important — `.unknown`/`.indoor` would actively suppress Strava map-based imports) |
+| Distance sample | `HKQuantityTypeIdentifier.distanceWalkingRunning` (pedometer-derived on watch) | ✅ present |
+| Active energy | `activeEnergyBurned` (kcal) | ✅ present |
+| Heart rate | `heartRate` samples via `HKLiveWorkoutDataSource` | ✅ present |
+| **`HKWorkoutRoute`** | **❌ NOT WRITTEN.** No `CLLocationManager` is started. No `HKWorkoutRouteBuilder` exists. The substrate has zero GPS code paths. | ❌ **This is the gap.** |
+| Source app metadata | Default (our bundle ID, "AR-Runner") | ⚠️ See below — possible secondary filter. |
+
+`grep -rniE "HKWorkoutRoute|CLLocation|workoutRouteBuilder"` across the entire repo returns **zero matches**. Story 3 of the v030 roadmap proposal listed "HKWorkoutRoute written" as a deliverable; that half of the story never shipped. We have an outdoor-configured workout with no route, which is exactly the shape that loses the auto-import lottery.
+
+---
+
+#### Most likely root cause (single best hypothesis)
+
+**We write an `HKWorkout` with `locationType = .outdoor` but no `HKWorkoutRoute` companion. Strava's Apple-Health auto-import treats outdoor running workouts without route data as low-fidelity / manual-equivalent and does not pull them into the activity feed.**
+
+This is the same root cause as Joe's bench item #1 (GPS not recorded) — it is **one bug, not two**. The pedometer-derived distance still made it to Apple Fitness (because Fitness happily renders any `HKWorkout`), but Strava's filter wants the route sample, not just the scalar distance.
+
+#### Secondary hypothesis worth naming
+
+Multiple 2025/2026 community reports claim Strava additionally filters by **source app** — i.e., only `HKWorkout` instances whose source bundle is the Apple Watch Workout app are auto-imported, regardless of route presence. I do **not** treat this as authoritative: counter-evidence exists (WorkOutDoors, iSmoothRun, HealthFit and several other third-party apps demonstrably auto-flow into Strava via Apple Health). But it is a known failure mode and gives us a clean fallback diagnostic: if Laughlin's GPS fix lands and Strava *still* drops the workout, the source-app filter is the next hypothesis to test (and the trigger to escalate to Path #4).
+
+---
+
+#### The cheapest fix that's likely to work
+
+**Laughlin's already-scoped GPS-recording fix (item #1) is the same fix.** Specifically, the work that needs to happen in `HealthKitWorkoutSubstrate`:
+
+1. Add a `CLLocationManager` started at `begin(sport:startedAt:)` with `kCLLocationAccuracyBest` and `activityType = .fitness`.
+2. Construct an `HKWorkoutRouteBuilder(healthStore:device:)` alongside the `HKLiveWorkoutBuilder`.
+3. Feed `CLLocation` samples into the route builder (`insertRouteData(_:completion:)`).
+4. At `end(at:)`, call `finishRoute(with:metadata:completion:)` on the route builder and associate it with the finished `HKWorkout`.
+5. Request `Location Always` / `When-In-Use` authorization during onboarding (add the `NSLocationWhenInUseUsageDescription` Info.plist key — checked: not currently present).
+
+**Estimated cost:** roughly half a day of Laughlin's time + an onboarding-flow tweak from Amber for the location-permission prompt. No new dependencies. No protocol changes — `WorkoutHealthSubstrate` already returns the relevant fields.
+
+**This is a 2-for-1.** Joe's item #1 (GPS) and the Strava ingestion gap are **the same fix**. Laughlin's prioritization for #1 should rise accordingly — it now unblocks two user-facing complaints, not one.
+
+---
+
+#### Coupling to Joe's item #1 (GPS) — stated loudly
+
+> **Fixing GPS recording is highly likely to fix Strava ingestion for free.** They are not "two related bugs." They are **one missing subsystem** (`HKWorkoutRoute` + `CLLocationManager`) presenting as two distinct symptoms. Ship the GPS fix once, re-test Strava with the next bench run, and we expect both to clear together.
+
+If they don't, see escalation below.
+
+---
+
+#### Recommended next step (single sentence)
+
+**Land Laughlin's GPS/`HKWorkoutRoute` recording fix as the next workstream after rc1 bench validation closes; Joe re-runs a bench 5k; if the workout appears in Strava, we're done — close both items with one commit.**
+
+---
+
+#### Escalation path if the cheap fix doesn't work
+
+In order, lowest cost first:
+
+1. **Verify in the Health app.** After the GPS fix, open Health → Browse → Workouts → tap the run → confirm a map renders. If no map, the route builder isn't actually associating with the workout (HK plumbing bug, not a Strava issue) — fix locally before blaming Strava.
+
+2. **Force-trigger Strava ingestion manually.** Strava iOS app → activity feed → pull-to-refresh; also Settings → Applications → Apple Health → toggle off/on to re-prime the bridge. Sometimes Strava's poll is lazy and the next run picks up the previous one too.
+
+3. **If routes are in Health but Strava still drops us, the source-app filter hypothesis becomes load-bearing.** At that point I'd ADR one of two paths:
+
+   - **Path A — Middleware bridge (low cost):** Document HealthFit / RunGap as the official AR-Runner → Strava recipe in the README. No code. Pushes the cost to the user but it's a 2-line FAQ entry. Acceptable for v0.4.
+   - **Path B — Direct Strava API integration (heavy):** Implement Strava OAuth on the iPhone companion + the `POST /uploads` endpoint with GPX/FIT generation from our HK samples. Costs: Strava developer account, app registration, ~200–400 LOC of OAuth + token storage (Keychain) + upload client + retry-on-reachability queue (we already have the WatchConnectivity queueing primitive — reuse pattern). This is **worth it only if** Apple Health source-app filtering is real *and* users explicitly ask for it. ADR triggers: ≥3 user complaints in TestFlight, OR a strategic decision that AR-Runner should own its own social-export story (the AR running niche makes a Strava share button table-stakes long-term, so this likely lands by v0.6 regardless — but not as a panic response to this bug).
+
+4. **Anti-recommendation: do not pre-emptively build Path B now.** The simpler fix has high prior probability of working, the architectural cost of carrying an OAuth client + upload queue is non-trivial, and we have no signal yet that the source-app filter even applies to us.
+
+---
+
+#### Confidence and evidence summary
+
+- **High confidence** that we write no `HKWorkoutRoute` (code-verified: zero matches across the tree).
+- **High confidence** that `locationType=.outdoor` + missing route is the dominant filter Strava applies (consistent across Strava help center, 2024–2026 community reports, and behavioural parity with the Apple Workout app which always writes a route).
+- **Medium confidence** that fixing the route alone closes the gap — caveat is the source-app filter hypothesis above.
+- **Code citations:** `ARRunnerWatch/Workout/HealthKitWorkoutSubstrate.swift:110-140` (configuration + builder setup, no route builder), `ARRunnerWatch/Workout/HealthKitWorkoutSubstrate.swift:170-200` (end path, no route finalize).
+- **No existing GitHub issue** on the AR-Runner repo describes this gap (`gh issue list --search strava` empty).
+
+---
+
+**Trade-off named (per charter):** Path B (direct Strava API) gives us deterministic delivery and route fidelity preservation, at the cost of OAuth maintenance, token rotation, Strava rate-limit handling, and a new external dependency to monitor. Path A (HealthKit + middleware fallback) gives us $0 maintenance cost and rides Apple's bridge, at the cost of a class of users we may never be able to serve (third-party-filtered) and zero ability to ship rich payloads (Strava can only see what Health stores). For v0.4 the trade favours Path A heavily; revisit at v0.6 if direct upload becomes strategic.
+### 2026-05-20T10:55:00-04:00: Weiss — rc2 finish-screen coordinate spec (advisory for Laughlin)
+
+**Status:** Advisory. Laughlin owns the edits in `RunningHUDFrame.swift` + tests.
+**Pairs with:** Joe's rc2 finish-screen restatement (Finished! / distance / time+pace),
+Joe's rc1 bench observation ("text was cut off").
+
+---
+
+#### 0. Constants used throughout
+
+- Framebuffer: 304 × 256 (`0..303` × `0..255`), Engo 2.
+- Anchor: `rotation = 4` (topLR) for **every** finish-screen line. Do not introduce a new rotation in rc2.
+- Lens-flip (canonical, rc16):
+  - `y_fb = 255 − wearer_top`   (NO font-height subtraction)
+  - `x_fb = 303 − wearer_left`  (anchor lands on wearer-LEFT edge under topLR + lens flip)
+- Empirical font heights (Visual-Assets README, pinned in code comments):
+  - Font 2 = 38 px tall, ~18 px/char proportional (use **20 px/char** as ceiling for layout math)
+  - Font 3 = 64 px tall, ~22–28 px/char proportional (use **28 px/char** as ceiling)
+- `leftMargin = 284` ← already canonical for all wearer-left ≈ 19 text. Reuse for finish lines 1, 2, and the TIME half of line 3.
+
+#### 1. Y coordinates (three lines, derived from `y_fb = 255 − wearer_top`)
+
+New finish-screen layout. Lines 1 and 2 keep font 3 (banner-class numbers,
+readable at arm's length). **Line 3 drops to font 2** because two metrics
+share a single 304-px line and font 3's ~28 px/char will not fit (see §2).
+
+```
+Wearer-space layout:
+  Top margin                                        : 16
+  Line 1  "Finished!"          (font 3, h=64)       : T=16 ..80
+  Gap                                               : 24
+  Line 2  "5.00 km" / "3.11 mi" (font 3, h=64)      : T=104..168
+  Gap                                               : 24
+  Line 3  "27:43   8:56/mi"    (font 2, h=38)       : T=192..230
+  Bottom margin                                     : 25
+  ────────────────────────────────────────────  total 255
+```
+
+```
+finishLine1Y = 255 − 16  = 239     // Finished!
+finishLine2Y = 255 − 104 = 151     // distance
+finishLine3Y = 255 − 192 = 63      // time + pace shared line
+```
+
+Pin the formula in a test:
+
+```
+forEach (Y, T) in [(239,16), (151,104), (63,192)]:
+    assert Y == 255 − T
+    assert T + fontHeight(line) ≤ 255    // on-panel invariant
+```
+
+These three Y values were derived under the **same** formula Laughlin used for
+the rc17 banner/time/distance constants, so the existing
+`test_finishScreenYCoords_followLensFlipFormula_rc17` test pattern transfers
+verbatim — just update the expected triples.
+
+#### 2. Line-3 right-justify: pick approach (b), two separate `txt` writes
+
+**Recommended: (b) two text writes per line.**
+
+```
+TIME write:  x_fb = leftMargin (284),  y_fb = finishLine3Y (63),
+             font = 2,  rotation = 4,  string = payload.time
+PACE write:  x_fb = finishPaceX (180), y_fb = finishLine3Y (63),
+             font = 2,  rotation = 4,  string = payload.pace
+```
+
+`finishPaceX` is a **fixed constant** computed for the *worst-case* pace
+string ("10:23/mi", 8 chars at font 2):
+
+```
+finishPaceX = 303 − (rightMargin + maxPaceChars × font2Width)
+            = 303 − (20 + 8 × 20)
+            = 303 − 180
+            = wait — wrong direction. Under topLR + lens flip, anchor =
+            wearer-left edge, so:
+            wearer_left_for_max_pace = 303 − x_fb
+            wearer_right_for_max_pace = wearer_left + paceWidth = 283 (20-px right margin)
+            → x_fb = (303 − 283) + (8 × 20) = 20 + 160 = 180
+```
+
+So **`finishPaceX = 180`** (Int16). Document the derivation in the constant
+comment exactly as above so a future shorter-pace assumption gets a compiler
+nudge.
+
+**Why approach (b) over (a):**
+
+- (a) "single anchor + measured string position" requires `ALookFontMetrics`
+  extracted from the Visual-Assets README. Richards's rc13–rc16 review rec #2
+  flagged that extraction as future work — it has NOT shipped. Building a
+  measure-and-shift path inline in `summaryFrames` would duplicate that
+  responsibility in a one-off spot.
+- (b) adds **one extra `txt` command per finish-frame push** (one-shot, not
+  per-tick). Trivial cost.
+- (b) keeps all writes on the bench-validated `rotation = 4` (topLR) +
+  `y_fb = 255 − T` combo. No new rotation, no new derivation, no new failure
+  mode for QA to triage.
+
+**Trade-off accepted:** with a fixed `finishPaceX`, a 7-char pace ("8:56/mi")
+renders ~20 px LEFT of the panel edge instead of flush right. Visually this
+reads as "right-aligned with a small inset" — fine. The alternative
+(measure-and-shift) buys a few pixels of precision at the cost of code we
+don't have a primitive for yet.
+
+**TIME left half — gap check:**
+- "27:43" at font 2 ceiling 20 px/char → 5 × 20 = 100 px wide.
+- Wearer extent: `[303−284 .. 303−284+100] = [19..119]`.
+- PACE "10:23/mi" at finishPaceX=180 → wearer extent `[303−180 .. 303−180+160] = [123..283]`.
+- Gap between TIME-right (119) and PACE-left (123) = **4 px**. Tight but
+  non-overlapping at worst case. For the typical 7-char pace gap widens to ~44 px.
+
+Pin this in a test too: assert wearer-right of `payload.time` < wearer-left of `payload.pace` for the worst-case `("9:59:59", "10:23/mi")` pair.
+
+#### 3. rc1 "cut-off" post-mortem
+
+**The rc17 Y constants were not the bug.** Walking them through the canonical formula:
+
+```
+finishBannerY   = 239  → wearer T=16  bottom=80   ✓ on-panel
+finishTimeY     = 159  → wearer T=96  bottom=160  ✓ on-panel
+finishDistanceY = 79   → wearer T=176 bottom=240  ✓ on-panel (16-px bottom margin)
+```
+
+All three are vertically valid for font 3 (h=64). What Joe almost certainly saw was **horizontal cut-off of the banner string "Workout Complete"** (16 chars × ~28 px/char ≈ 448 px), which exceeds the 284-px left-extending bounding box from `leftMargin=284`. The end of the string (wearer-right) falls in valid x; the start (wearer-left) is at `x_fb ≈ 284 − 448 = −164` and is silently clipped per spec §5.5.6 — exactly the rc11 / rc15 failure class.
+
+Joe would have seen something like "**ut Complete**" or similar tail-end fragment. If Joe's words were "the time line was cut off" rather than the banner, then it's a different bug (the time string is only 5–7 chars and trivially fits, so the only way to clip it horizontally is a regression in `leftMargin`). The new spec replaces the banner with **"Finished!"** (9 chars × 28 = 252 ≤ 284 ✓), so the horizontal-clip class disappears regardless. **Cannot rule out a Y issue from notes alone — Laughlin's recompute resolves it either way; flagging the H-clip as the most likely root cause for skill-update purposes.**
+
+#### 4. Anchor recommendation per line
+
+| Line | Content                  | Font | x_fb        | y_fb | rotation |
+| ---- | ------------------------ | ---- | ----------- | ---- | -------- |
+| 1    | "Finished!"              | 3    | 284         | 239  | 4 (topLR) |
+| 2    | distance (e.g. "5.00 km")| 3    | 284         | 151  | 4 (topLR) |
+| 3a   | time (e.g. "27:43")      | 2    | 284         | 63   | 4 (topLR) |
+| 3b   | pace (e.g. "8:56/mi")    | 2    | 180         | 63   | 4 (topLR) |
+
+**Do not** mix `topL` / `topR` on line 3. `topLR` is the only rotation we
+have bench evidence for under the Engo 2 lens flip. Two `txt` writes at
+the same rotation + different x is strictly safer than one `txt` write at
+a novel rotation.
+
+#### 5. Risk callouts
+
+1. **rc15-class off-panel (highest risk):** the line-3 gap math is **4 px at
+   worst case** ("9:59:59" time + "10:23/mi" pace). If Joe's real pace
+   exceeds 8 chars (e.g. ultra-slow run at "13:45/mi", still 8 chars — OK;
+   "no GPS, --:--/mi", 8 chars — OK), we are fine; if any pace formatter
+   path can emit 9 chars, the worst-case overlap goes negative. **Action:**
+   Laughlin should pin `payload.pace.count <= 8` as a precondition in the
+   formatter and add a test that the runtime can't violate it.
+
+2. **rc16-class "fits-on-bench-by-coincidence":** font 2 width is `~18
+   px/char` per the live-HUD comment. The 20 px/char ceiling has only ~11 %
+   safety margin. **Action:** bench-test with the *worst-case combined
+   string* before signing off rc2: time = "9:59:59", pace = "10:23/mi" (or
+   whatever the formatter's longest legal output is). If glyphs overlap on
+   bench, raise `font2WidthCeiling` to 22 and recompute `finishPaceX`.
+
+3. **rc11-class horizontal overflow** on lines 1 and 2: "Finished!" at font 3
+   (9 × 28 = 252) and "5.00 km" / "5.00 mi" / "26.21 mi" (≤ 8 × 28 = 224)
+   both fit inside the 284-px bound. **But:** if a longer banner string
+   ("Workout Saved!" 14 chars × 28 = 392) is ever swapped in, the bug
+   returns. Add a test asserting `string.count × 28 <= leftMargin` for
+   every font-3 finish-line string at compose time.
+
+4. **Font-metric extraction is still future work** (Richards rec #2). The
+   `font2WidthCeiling = 20` and `font3WidthCeiling = 28` magic numbers are
+   *load-bearing* for rc2. They deserve a named constant pair in `Layout`
+   with a one-line comment pointing at this spec entry. When
+   `ALookFontMetrics` lands (rc3 or later), `finishPaceX` becomes a
+   computed property and the ceiling constants come down.
+
+5. **No firmware risk** (sanity check): all writes use
+   `cfgSet("ALooK")` → `power(on:true)` → finish frame burst (unchanged
+   from rc17 `summaryFramesWithPowerOn`). Two `txt` writes per line
+   instead of one is well within the write-serialization budget — the
+   per-frame `didWriteValueFor` await already handles it.
+
+#### 6. Implementation checklist (for Laughlin)
+
+- [ ] Add `finishLine1Y/2Y/3Y = 239/151/63` (Int16) to `Layout`. Deprecate
+      the rc17 `finishBannerY/finishTimeY/finishDistanceY` triplet with
+      `@available(*, deprecated, renamed:)` aliases — same pattern as
+      rc17 used for the old `timeY/distanceY/paceY`.
+- [ ] Add `finishLine3Font: UInt8 = 2`, `finishPaceX: Int16 = 180`,
+      `font2WidthCeiling: Int16 = 20`, `font3WidthCeiling: Int16 = 28` to
+      `Layout` with the derivation comments above.
+- [ ] Update `summaryFrames(for:)` to emit 4 `txt` commands: Finished!,
+      distance, time (left half of line 3), pace (right half of line 3).
+- [ ] Add `payload.pace: String` to `RunningHUDFrame.Payload` (currently
+      only `time` and `distance` for the finish path).
+- [ ] Tests:
+  - `test_finishScreenYCoords_followLensFlipFormula_rc2` — formula pin
+    for the three new Y constants.
+  - `test_finishScreenLine3_noHorizontalOverlap_worstCase` — wearer-right
+    of worst-case time < wearer-left of worst-case pace.
+  - `test_summaryFrames_emitsFourTextCommands_rc2` — wire-byte assertion
+    that the right anchor goes to each line/half.
+  - `test_finishScreenStrings_fitWithinLeftMargin` — every finish-frame
+    string × its ceiling-per-char ≤ 284.
+
+Spec ends. Laughlin owns the edits; ping if any constant needs re-derivation.
+
+---
+### 2026-05-20T11:00:00-04:00: rc2 (v0.4.0-rc2) — Joe's 5K bench-feedback bundle (4 of 5 items; Strava parallel)
+**By:** Laughlin
+**What:** Shipped PR #79 covering items #1, #3, #4, #5 from Joe's 5K bench. Item #2 (Strava) is Richards's diagnosis lane in parallel — Joe's clarification narrowed it to a GPS-route dependency, so item #1 here is the most likely unblock.
+
+**Item #1 — GPS route recording.**
+- Added `NSLocationWhenInUseUsageDescription` to the **watch Info.plist via `project.yml` properties block** (the Config/ plist is xcodegen-generated and gitignored; editing it directly doesn't persist). Without this string the system never prompts and CoreLocation silently drops every fix — that's why the rc1 5K reached Apple Health with HR/distance but no polyline.
+- Wired `CLLocationManager` into `HealthKitWorkoutSubstrate`: `kCLLocationAccuracyBest`, `activityType = .fitness`, `distanceFilter = kCLDistanceFilterNone`. Lifecycle is workout-scoped (start in `begin(...)`, stop in `end(...)` and `discard(...)`).
+- Created `HKWorkoutRouteBuilder` in `begin(...)`, ingested fixes from the `CLLocationManagerDelegate` (filtered horizontalAccuracy > 50 m or < 0 per Apple's HK guidance) via `insertRouteData(_:)`, finalized via `finishRoute(with:metadata:)` inside `end(...)` so the polyline attaches to the persisted `HKWorkout`. **`discard(...)` deliberately skips `finishRoute` so the route samples drop with the discarded workout.**
+
+**Item #4 — Discard-vs-save data integrity (highest severity).**
+- Root cause: `WorkoutViewModel.confirmCancel` was calling `controller.end()`, which delegates to `substrate.end(at:)`, which on the real HK substrate runs `builder.finishWorkout()` and **always persists an `HKWorkout` sample regardless of user intent**.
+- Fix: split save and discard onto distinct terminal substrate methods.
+  - `WorkoutHealthSubstrate.discard(at:)` (new protocol method).
+  - `HealthKitWorkoutSubstrate.discard` = `session.end()` + `builder.discardWorkout()` (no `finishWorkout`, no route finalize). `InMemoryWorkoutHealthSubstrate` and `FakeHealthKitSubstrate` record `.discard(at:)` distinct from `.end(at:)`.
+  - `WorkoutController.discard()` (new terminal method, no `WorkoutSummary` returned).
+  - `WorkoutViewModel.confirmCancel` now routes through `controller.discard()`.
+- **No "save then maybe delete"** — a failed delete leaks partial data into Health, which is exactly the class of bug we're closing.
+- `WorkoutDiscardTerminalPathTests` pins the contract at the substrate seam where the bug lived: save → `substrate.end` called exactly once and NEVER `discard`; discard → `substrate.discard` called exactly once and NEVER `end`. Regression of this bug trips CI.
+
+**Item #3 — Finish-screen reshape (3-line / 4-data layout).**
+- New layout:
+  ```
+  Line 1: Finished!
+  Line 2: <distance>                e.g. "3.11 mi"
+  Line 3: <time>          <pace>    e.g. "27:43     8:56/mi"
+  ```
+- Y constants unchanged from rc17 (239 / 159 / 79) — the new layout fits at the same wearer-tops (16 / 96 / 176) under font-3 height 64. Renamed `finishBannerY/finishTimeY/finishDistanceY` → `finishLine1Y/finishLine2Y/finishLine3Y` because the rc17 names lie about the new responsibility (line 2 is no longer time, line 3 is no longer distance). Old names kept as `@available(deprecated)` aliases with rename hints.
+- Line 3 uses **font 2** (`finishLine3Font: 2`) — at font 3 (~28 px/char) a 5-char time + 7-char pace overlap on a 304-px wide panel; font 2 (~18 px/char) leaves ~49 px of breathing room. Mirrors the rc16 live-HUD line-1 two-metric trick.
+- Pace right-justified via `summaryPaceXFB(for:)` — width-derived anchor using the new `ALookFontMetrics` table. The rc16 lens-flip formula maps wearer-right to framebuffer-anchor: `x_fb = 303 − (finishLine3PaceWearerRight − width)`.
+- Extracted `ALookFontMetrics` per Richards's rc13 nudge ("metrics-as-typed-code is a readability risk"). Heights from the ActiveLook-Visual-Assets repo README; widths empirical per-font (sufficient for the ≤ 10-char HUD strings).
+- **Two-field rule supersession.** rc14 (Richards's call) enforced "finish = Time + Distance only at the encoder." Joe's rc2 directive evolves it to 4 data items (banner, distance, time, pace) across 3 visual lines. Documented as a deliberate evolution of the encoder rule, not a violation. Live HUD's 4-fields / 3-lines shape (rc16) is unchanged.
+- Tests rewritten: `test_summaryFrames_renderRc2ThreeLineFourDataLayout`, `test_summaryFrames_topLineReadsFinished_rc2`, `test_summaryFrames_yAnchorsUseFinishScreenConstants_rc2`, `test_summaryPaceXFB_rightJustifiesWithinPanel`, `test_finishScreenYCoords_followLensFlipFormula_rc2`.
+
+**Item #5 — Phone mirror "Started at HH:MM".**
+- Added optional `startedAt: Date?` to `WorkoutTickMessage`. Carried on **every tick** (not a one-shot lifecycle event) so a phone joining the mirror mid-run sees the value on the first snapshot — no race with lifecycle ordering.
+- WC schema **v3 → v4**. Field is **optional**, so v3 snapshots from older watch builds still decode on v4 phones; phone-side falls back to `timestamp − elapsedSeconds` for display when nil. Round-trip + backward-compat pinned in `WorkoutTickMessageTests`.
+- Phone-side: added "Started" row (`flag.checkered` SF Symbol + `DateFormatter` `.short` style) above the metrics grid. Phone-optional contract unchanged.
+
+**Release mechanics (bundled-bump v5).** `project.yml` bundle 32 → 33, MARKETING_VERSION stays 0.4.0 (fix-rc, not marketing bump). Info.plist `$(VAR)` placeholders preserved (skill gotcha #2). xcodegen regenerated once; `.pbxproj` deltas as expected for the single-line yml change + new ALookFontMetrics source file.
+
+**Tests:** 186 → 195 Core (+9). `xcodebuild ARRunnerWatch` BUILD SUCCEEDED. CI will validate.
+
+**PR:** [#79](https://github.com/jkrilov/AR-Runner/pull/79) on branch `rc2/v0.4.0-rc2-bench-feedback`.
+
+**Coordination notes:**
+- Weiss's parallel sanity-check inbox file did not land before push; he'll comment on the PR if the Y math needs adjustment. The Y constants are unchanged from rc17 (only renamed) so the live-coord risk surface is limited to line 3's new right-justified pace anchor, which is pinned by an on-panel + clearance-from-time-column invariant.
+- Richards's Strava diagnosis (item #2) — if his finding requires HK metadata keys after this lands, the changes attach to the substrate's `end(...)` path cleanly (route is already finalized there).
+- Amber's `terminal-path-data-leak-qa` skill landed in `.squad/skills/` from her parallel QA workstream; the rc2 confirmCancel→discard fix and tests directly instantiate that pattern.
+## 2026-05-20 — Amber rc2 bench-feedback acceptance criteria (post-rc1 5k bench run)
+
+**By:** Amber (QA & Fitness Domain)
+**Branch (expected):** `fix/rc2-route-finish-discard-mirror` (Laughlin lead; Weiss consult on §C coords; Richards research-only on §B)
+**Scope:** rc2 — the five items returned from Joe's 2026-05-20 real-5k bench run on the v0.4.0-rc1 TestFlight build.
+**Pairs with:** Laughlin's rc2 implementation PR. Richards's parallel Strava-integration diagnosis (research, not code).
+
+### Source: Joe's bench report (2026-05-20)
+
+1. GPS route polyline not recorded in Apple Health → Laughlin adding `HKWorkoutRouteBuilder` + `CLLocationManager`.
+2. Strava didn't auto-ingest from Health → Richards diagnosing; likely fix is (a) Strava-app setting or (b) HK metadata, not (c) OAuth direct upload.
+3. Finish-screen text cut off → rework to 3-line layout (Finished! / distance / time-LEFT pace-RIGHT).
+4. **🚨 Discarded runs still appeared in Apple Fitness** — `confirmCancel` is hitting the save path. Laughlin to split the terminal paths cleanly.
+5. Phone-mirror minor: add "Started" row (workout start time); WCMessage v3→v4.
+
+---
+
+### §A — GPS / Route Recording (Item 1)
+
+**A1 (happy path).**
+- **Steps:** Outdoors, clear sky. Tap Start. Wait for HK to grant runtime. Run/walk ~100 m. Tap Stop → Save.
+- **Expected:** In iPhone Health → Activity → most-recent workout, the detail view shows a map with a polyline tracing the actual path. Total distance on the workout matches the polyline length within ±10 % (GPS noise).
+- **Failure mode:** No map = `HKWorkoutRouteBuilder` was never associated with the session, or `finishRoute(with:metadata:)` was never called before `controller.end()`. Map present but empty = builder created but `insertRouteData([])` never received samples (CLLocationManager not started, or accuracy filter rejected every fix).
+
+**A2 (first-run permission denial, graceful).**
+- **Steps:** Fresh install (delete app, reinstall from TestFlight). Open app. Tap Start on first workout. System prompts for "Allow While Using App" location. Tap **Don't Allow**.
+- **Expected:** Workout still starts. Live HUD shows Time + HR + Distance (HK pedometer) + Avg Pace as normal. On Stop → Save, the saved workout has distance/time/HR but **no** route polyline. No crash, no modal error, no "GPS unavailable" banner blocking the run.
+- **Failure mode:** Workout fails to start = a `guard authorizationStatus == .authorizedWhenInUse` is gating session start instead of route recording only. Crash on save = unguarded `routeBuilder.finishRoute(...)` when builder has zero samples.
+
+**A3 (permission previously granted, silent).**
+- **Steps:** After A2 reversed (Settings → AR-Runner → Location → "While Using"). Run a second workout. Then a third.
+- **Expected:** No re-prompt on either workout. Route records silently both times; both appear with polylines in Health.
+- **Failure mode:** Re-prompt = manager is being recreated per-workout with `requestWhenInUseAuthorization()` called unconditionally; should be called only when status is `.notDetermined`.
+
+**A4 (indoor / no-GPS-signal).**
+- **Steps:** Start workout indoors (basement / interior room) with weak/no GPS. Walk in place for 60 s. Stop → Save.
+- **Expected:** Workout saves with time/HR/distance (HR + pedometer still functional). No route polyline (or empty route metadata, not displayed). No crash, no zero-length polyline artifact in Health (a single dot at (0,0) is a bug).
+- **Failure mode:** Single dot or polyline at lat 0 / lon 0 = uninitialized CLLocation defaulting; `insertRouteData` is being called with placeholder samples. Crash = `finishRoute` on a builder that received zero samples without nil-guard.
+
+**A5 (mid-workout signal loss → recovery).**
+- **Steps:** Start outdoors with GPS lock. Run 200 m. Walk into a building (tunnel / parking garage) for 60 s — let signal drop. Walk back outdoors, run another 200 m. Stop → Save.
+- **Expected:** Polyline shows the two outdoor segments. The gap is either (a) stitched with a straight line (CLLocationManager's behavior when fixes resume) or (b) shown as two disconnected segments. **Document which in code comments** — both are acceptable, but the choice must be intentional and tested. Total distance from HK pedometer (not route) covers the full run including the gap.
+- **Failure mode:** Polyline shows the user teleporting to (0,0) and back = manager surfaced a degraded fix without filtering on `horizontalAccuracy`. Polyline missing both segments = manager was stopped during the dropout and never restarted.
+
+**A6 (workout discarded → no route).**
+- **Steps:** Outdoors, GPS locked. Start workout. Run 100 m. Tap Stop → **Discard**. Open Health → Workouts.
+- **Expected:** No workout appears (couples with §D1). Critically: no orphaned `HKWorkoutRoute` sample either — querying `HKQuery` for routes in the last hour returns zero from this session. Joe's bench verification: scroll Health → Browse → Activity → Routes (if surfaced) and confirm no stray entry.
+- **Failure mode:** Route appears as an "untitled" workout-less route = `routeBuilder.finishRoute(...)` was called on the discard path. Couples tightly to §D — if §D is broken, §A6 is broken.
+
+---
+
+### §B — Strava ingestion (Item 2 — pending Richards's diagnosis)
+
+**Pre-condition:** Richards's diagnosis lands first. §B then resolves into either (a) "Joe flips a Strava-app setting and §B is purely a regression check on our HK write shape" or (b) "we add HK metadata keys, and B4 + B5 validate them." Scenarios below are written to cover both; skip OAuth-direct (option c) per Joe's directive.
+
+**B1 (happy path with Strava auto-import enabled).**
+- **Steps:** Confirm Strava iOS app → Settings → Applications, Services and Devices → Health → "Allow Strava to read workouts" enabled. Complete §A1 (outdoor 100 m → Save). Open Strava feed.
+- **Expected:** Workout appears in Strava feed within **≤15 minutes** (Strava's own poll cadence; not under our control). Distance, time, HR, calories match Health. Route map renders if §A1 produced a polyline.
+- **Failure mode:** Doesn't appear after 15 min = HK write shape changed (e.g., `HKWorkoutActivityType` mismatch, or `metadata[HKMetadataKeyWasUserEntered]` flipped to true). Appears but with no map despite §A1 polyline = `HKWorkoutRoute` not associated with the parent `HKWorkout` — verify `routeBuilder.finishRoute(with: hkWorkout, metadata:)` was called with the saved workout reference, not the in-progress builder's session.
+
+**B2 (route present vs. absent — both ingest).**
+- **Steps:** Run §A1 (outdoors, polyline). Then run §A4 (indoors, no polyline). Wait 15 min. Check Strava.
+- **Expected:** Both appear. A1 has a map; A4 is mapless but has time/distance/HR. Strava does not require route data for ingestion.
+- **Failure mode:** Only A1 ingests = something in the workout (sample count? distance non-zero?) is gating Strava's importer. Likely an HK metadata key flipped only on the routed path; harmonize the two write paths.
+
+**B3 (discarded run does NOT appear in Strava).**
+- **Steps:** Run §A6 (discard). Wait 15 min. Check Strava feed.
+- **Expected:** Nothing appears. Discarded run never reached HK, so Strava has nothing to ingest. (Couples with §D — if §D is broken, §B3 will also fail.)
+- **Failure mode:** Discarded run appears in Strava = §D is broken (discard is hitting save path). This is the most user-visible symptom of the §D data-integrity bug — a "discarded" run shared publicly to Strava followers is a privacy incident.
+
+**B4 (conditional — if Richards's diagnosis adds HK metadata keys).**
+- **Steps:** After Richards lands HK metadata additions, run §A1. Inspect the saved workout via the iOS Shortcuts app → "Find Health Sample" → filter to Workouts → show all metadata keys.
+- **Expected:** All metadata keys Richards specified are present and match expected values (e.g., `HKMetadataKeyExternalUUID`, `HKMetadataKeyIndoorWorkout: false`, any app-source identifier Strava looks for).
+- **Failure mode:** Keys absent = write path lost the metadata dictionary, or builder's `addMetadata(_:)` was overwritten by `finishRoute(with: metadata:)` (HK has overwrite semantics, not merge).
+
+**B5 (regression — HK write shape stays Strava-compatible).**
+- **Steps:** Diff the HK workout write site (e.g., `HKWorkoutBuilder.endCollection(...) → finishWorkout(...)`) between rc1 and rc2. Verify activityType, totalDistance, totalEnergyBurned, start/end timestamps, and metadata dictionary shape are unchanged except for additions.
+- **Expected:** No subtraction or type-change to any field rc1 was already writing. Only additions (route + any Richards-recommended metadata).
+- **Failure mode:** Strava regression in B1 = a field rc1 was writing is now missing or changed type. Common culprit: switching from `HKWorkout(...)` direct initializer to `HKWorkoutBuilder` flow can drop fields if not carefully mapped.
+
+---
+
+### §C — Finish-screen rework (Item 3)
+
+**C1 (visual correctness — no clipping).**
+- **Steps:** Complete any workout outdoors. Tap Stop → Save. Read the glasses HUD.
+- **Expected:** All three lines fully visible end-to-end. No characters clipped at top, bottom, left, or right edge of the wearer's field of view. Coords computed via canonical rc16 formula `y_fb = 255 − wearer_top`, font heights from Visual-Assets README (F1=24 / F2=38 / F3=64 / F4=75 / F5=82).
+- **Failure mode:** Clipping at bottom = old `paceY=6` style constant snuck back in (rc12-era formula). Clipping at top = wearer_top < 16 (no margin). Clipping at right = string width exceeds `leftMargin + textBox(width)`; this is the most likely new defect class with the 3rd line being two right-aligned tokens — see C4.
+
+**C2 (line 1 = "Finished!" exact).**
+- **Steps:** Inspect line 1 of the finish frame.
+- **Expected:** Exact string `Finished!` — with the exclamation, no truncation, no ellipsis. Font sized so the 9-char string fits within `leftMargin + textBox`. Likely font 2 or font 3; document choice.
+- **Failure mode:** "Finished" without `!` = string-width budget cut the last glyph silently (no truncation marker because ActiveLook just drops glyphs past the box). "Fini…" = string formatter applied truncation; should not be on a 9-char string.
+
+**C3 (line 2 = final distance, user's preferred units).**
+- **Steps:** Inspect line 2. Verify against AR-Runner's unit setting (check whether the codebase defaults to km or mi — open question for Laughlin to document; HealthKit on US locale defaults to mi, EU to km).
+- **Expected:** Distance value matches Health's "Total Distance" within rounding (e.g., "5.02 km" or "3.12 mi"). Units suffix present. No leading zero on distances ≥ 1 (write `5.02` not `05.02`).
+- **Failure mode:** Wrong unit = locale read at app launch but not at workout end; lock unit at workout-start time to avoid mid-run flip. Distance off by ~1.6× = unit conversion mismatch (km value displayed with `mi` label or vice versa).
+
+**C4 (line 3 = time LEFT + avg pace RIGHT, properly spaced).**
+- **Steps:** Inspect line 3. Verify time is left-aligned at the standard leftMargin; verify avg-pace token starts at an x-coordinate that places its **right edge** at or near the right edge of the wearer's text box. Verify visible gap between the two tokens (no glyph collision at any typical value).
+- **Expected:** With typical values (e.g., `28:14` time, `5:38/km` pace), both tokens fully visible, no overlap, ≥ one glyph-width of gap between them. Right-alignment math: `paceX = leftMargin + textBoxWidth − textWidth(paceString, font)`. **This requires font metrics — Weiss consults; if `ALookFontMetrics` typed table doesn't exist yet, this is the forcing function to extract it (Richards rec).**
+- **Failure mode:** Pace runs off the right edge = textWidth estimated low (advance-width table wrong). Pace overlaps time = `paceX` computed against full panel width (304) instead of wearer text box width. Pace is left-aligned beside time = the right-alignment computation was skipped entirely; pace is using the same `leftMargin + smallGap` it used in the 4-line live HUD.
+
+**C5 (zero-state — 0m / 0s).**
+- **Steps:** Tap Start, immediately tap Stop → Save (don't move, don't wait for HR).
+- **Expected:** Either: (a) finish screen renders with `0.00 km`, `00:00`, `—:—/km` (or `0:00/km`) and is sensible, OR (b) a separate "Run too short to save" code path runs and the workout doesn't save / shows a different glasses frame. **Define which behavior is intended in code comments.**
+- **Failure mode:** Division-by-zero pace = `distance / time` with no guard. NaN in distance = same. App crash = unwrap on optional Apple-Health workout that never reached `finishWorkout`.
+
+**C6 (persists until next workout or explicit disconnect).**
+- **Steps:** Complete workout → Save. Wait 5 minutes. Wait 10 minutes. Glasses still on, still paired.
+- **Expected:** Finish screen still visible on glasses. No HUD blanking, no auto-clear. Matches rc17 contract (link stays up; user reads at own pace). Re-asserted as canonical per ADR-1.
+- **Failure mode:** Goes blank within 60 s = a timer-based auto-clear snuck back in (rc18 was explicitly told not to add this). Reverts to live HUD = a residual per-tick HUD push wasn't stopped at `confirmSave` (rc17 regression).
+
+**C7 (live HUD layout unchanged — regression).**
+- **Steps:** Start a workout. Before tapping Stop, inspect the live HUD: 4 fields (Time + HR icon on line 1; Distance + icon on line 2; Avg Pace + icon on line 3 in rc1 — verify the field count matches rc1 baseline). Photograph if possible; compare to rc1 photo.
+- **Expected:** Pixel-stable vs. rc1. No coordinate drift, no icon swap, no font change.
+- **Failure mode:** Anything different = Laughlin's finish-screen rework leaked into live HUD constants. Common cause: shared y-anchor constants across surfaces. Fix: surface-scoped layout types (`LiveHUDLayout` / `FinishLayout`), per Richards rec.
+
+---
+
+### §D — Discard-gating (Item 4 — CRITICAL, 🚨 DATA INTEGRITY)
+
+**D1 (🚨 PRIMARY smoke — discard means discard).**
+- **Steps:** Open AR-Runner on watch. Tap Start. Let workout run **30 seconds** (HR + pedometer + GPS all flowing). Tap Stop → **Discard** (confirm Discard if prompted).
+- Now check BOTH:
+  - iPhone **Fitness** app → Workouts tab → most-recent date.
+  - iPhone **Health** app → Browse → Activity → Workouts → most-recent date.
+- **Expected:** Neither surface shows a workout from the last 5 minutes. No "Outdoor Run" entry of duration ~30s exists anywhere.
+- **Failure mode:** Workout appears in either = `confirmCancel` is still hitting `controller.endAndSave()` (or whatever the save-path verb is) somewhere. Most likely shape post-Laughlin's split: a defensive `endCollection` + `finishWorkout` left behind from the old conflated path. This is the rc1 bug, and rc2 must not ship until D1 is green twice in a row.
+
+**D2 (no orphaned route either).**
+- **Steps:** Same as D1, outdoors with GPS lock. After discard, open Health → Browse → search for "Workout Route" samples in the last 10 min (via Shortcuts "Find Health Sample" if necessary).
+- **Expected:** Zero workout-route samples from this session. The route builder must be **cancelled** (`HKWorkoutRouteBuilder.discard()` or its equivalent — verify against HK docs) on the discard path, not finished.
+- **Failure mode:** Orphaned route sample present = discard path is calling `routeBuilder.finishRoute(...)`. This produces a route in Health that isn't attached to any workout — a privacy bug if the user discarded the run intentionally (they may have aborted because they didn't want it recorded).
+
+**D3 (sequential — discard one, save the next, only one shows).**
+- **Steps:** Run workout #1 for 30 s → Discard. Immediately run workout #2 for 60 s → Save. Open Health → Workouts.
+- **Expected:** Exactly **one** workout in the last 10 min — the 60 s saved one. No 30 s ghost.
+- **Failure mode:** Two workouts = #1 leaked through discard. One workout but with duration 90 s = the two runs merged (HK session was never actually ended on discard). Either is a regression of Laughlin's terminal-path split.
+
+**D4 (discard mid-stream of HR/route collection).**
+- **Steps:** Start workout. Wait for HR to appear on the live HUD (10–30 s). Wait for GPS lock indicator (if any). Verify both data classes are actively flowing. Tap Stop → Discard.
+- **Expected:** No partial save. No HR samples from this session show up in Health under "Heart Rate" → "Workouts" filter. No route samples per D2.
+- **Failure mode:** Partial HR samples in Health = the HK collection builder is auto-flushing samples to the store on `endCollection` without checking if the parent workout was abandoned. Discard must call the cancellation API (`discardWorkout()` or builder-level `discard()`), not just skip the final `finishWorkout`.
+
+**D5 (app killed during discard flow).**
+- **Steps:** Start workout. Run 60 s. Tap Stop. On the Discard confirmation prompt, force-quit the app (digital crown long-press, swipe up, etc.). Reopen app.
+- **Expected:** On relaunch, app boots cleanly. Open Health → Workouts. The 60 s workout does **not** appear. (Force-quit during an unresolved terminal path is equivalent to discard — partial data must not auto-promote to saved.)
+- **Failure mode:** Workout appears in Health = the HK builder was auto-flushing on suspend/terminate. Fix: explicitly call discard on the builder when leaving the "confirm" screen via any path other than confirmSave.
+
+**D6 (recommended unit test for Laughlin — assertable invariant).**
+- **Test:** Compose a `WorkoutViewModel` with a spy `WorkoutController`. Drive `confirmCancel`. Assert: spy recorded `discard()` (or equivalent terminal-cancel verb) exactly **once**, and recorded `endAndSave()` / `saveWorkout()` (or any save-path verb) exactly **zero** times. Then drive `confirmSave` on a fresh VM. Assert: inverse — `save()` once, `discard()` zero.
+- **Why:** This is the single test that would have caught the rc1 bug at PR time. It's a 20-line test against the state machine, no HK dependency, no UI dependency. **Must land in the same PR as the fix.** Without it, the same regression will return in rc5 or rc12.
+
+---
+
+### §E — Phone mirror: start time (Item 5)
+
+**E1 (happy path — phone reachable).**
+- **Steps:** iPhone unlocked, AR-Runner mirror app in foreground. Start workout on watch.
+- **Expected:** Within ≤2 s, phone mirror shows a row above the live metrics labeled "Started" with the workout start time (e.g., "Started 9:42 AM" or "Started 09:42").
+- **Failure mode:** Row doesn't appear = WCMessage v4 case wasn't sent on workout-start, or the phone-side decoder dropped the unknown case (see E6 — should not happen if both sides are rc2). Row appears but with current time, not start time = phone-side is computing `Date()` on receipt instead of decoding the embedded start timestamp.
+
+**E2 (time format locale-correct).**
+- **Steps:** Switch iPhone region (Settings → General → Language & Region) between US ("9:42 AM") and UK/24h ("09:42"). Start a workout in each.
+- **Expected:** Format matches device locale. Uses `DateFormatter` with `timeStyle = .short` (or equivalent) — not hardcoded format string.
+- **Failure mode:** Always 12h with AM/PM despite 24h locale = hardcoded `HH:mm a` or similar. Show seconds = `.medium` style used instead of `.short`.
+
+**E3 (start-time persists across phone-app backgrounding/foregrounding).**
+- **Steps:** Start workout (E1 succeeds). Background phone app (home button / swipe up). Wait 30 s. Foreground again.
+- **Expected:** "Started" row still shows the original start time, not a refreshed value. Live metrics resume updating from `applicationContext`.
+- **Failure mode:** Start time changes = phone is recomputing on foreground (likely from `Date()` instead of cached). Start time disappears = phone state was cleared on background; the start time should live in the same `WorkoutMirrorViewModel` state container that survives backgrounding.
+
+**E4 (phone NOT reachable at workout start — defined fallback).**
+- **Steps:** Power phone off (or airplane mode + close app). Start workout on watch (full run, 60 s). Save. Now power phone on / foreground app.
+- **Expected:** **Define which:**
+  - **Preferred:** Watch queues start-time via `transferUserInfo` (latest-only is fine; only one start per workout). When phone comes online, it receives the queued message and displays the original start time even though it arrived late.
+  - **Acceptable fallback:** Phone shows "Started —" or "Started: unknown" until next workout starts with phone reachable.
+- Document which is implemented. Per phone-optional-companion-qa skill: the start-time message **must not** block the watch run; the send is fire-and-forget through the three-tier helper.
+- **Failure mode:** Watch stalled on workout-start because the WC send blocked = reachability gate or sync send (violation of phone-optional contract). Phone shows nothing at all forever = no `transferUserInfo` fallback **and** no placeholder UI for the "no message received" case.
+
+**E5 (new workout overwrites previous start time).**
+- **Steps:** Run workout A (Start → 30 s → Stop → Save). Mirror shows "Started 9:42 AM". Wait 1 min. Run workout B (Start → ...). Inspect mirror.
+- **Expected:** Mirror now shows workout B's start time (e.g., "Started 9:43 AM"). No stale 9:42 from workout A.
+- **Failure mode:** Still showing 9:42 = phone-side state isn't being cleared on receipt of a new `workoutStarted` event, OR the v4 message isn't being sent on workout B (cached-locally bug on watch side, "we already sent start for this session").
+
+**E6 (WCMessage v3 backwards compat).**
+- **Steps:** Install rc1 phone build (TestFlight prior version) on the phone. Install rc2 watch build. Start workout.
+- **Expected:** Phone does not crash. Live metrics still render (v3 cases still work). The v4 `workoutStarted(at:)` case (or whatever the new case name is) is silently dropped by the v3 decoder — phone shows live metrics without the "Started" row. **The decoder's default/unknown case must be a no-op, not a fatalError or throw.**
+- **Failure mode:** Phone crashes on receipt = decoder uses `fatalError` or force-unwrap on unknown case. Phone shows "decode error" UI = error surfaced to user; should be silent. Live metrics stop = single decode failure aborted the whole message-handling loop.
+
+---
+
+### §F — Regression guards
+
+**F1 (rc17 / rc1 contracts all hold).**
+- All `amber-rc17-qa-scenarios` §A–§E pass: BLE link persists past workout stop; finish screen renders and persists; battery routing via `transferUserInfo` works; phone-optional contract holds in all three phone states (reachable / airplane / off). ADR-1 (BLE link is user-managed, not workout-scoped) still canonical.
+
+**F2 (test count goes up, not down).**
+- Baseline: 186/186 passing on rc1. rc2 must land with ≥186/186, plus new tests for §A (route lifecycle), §C (3-line finish layout), §D (discard-gating, see D6 — this is the load-bearing one), §E (mirror start-time + v3 compat). Expected new floor: ~190+/190+. Any test count regression = a test was deleted or `@available` disabled to make the PR green; reject the PR.
+
+**F3 (bundled-bump pattern).**
+- Single PR contains: feature code + `CURRENT_PROJECT_VERSION 32→33` (Info.plist build number) + `MARKETING_VERSION` stays `0.4.0` + `xcodegen generate` rerun with no `.pbxproj` delta + Info.plist `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)` placeholders untouched. Tag will be `v0.4.0-rc2`. Standard release-mechanics-bundle-bump skill.
+
+---
+
+### §G — Bench execution order (highest-severity-first)
+
+Run in this order on Joe's next bench session. Stop and report if any 🚨 fails; do not continue to lower-priority scenarios on top of a known data-integrity bug.
+
+1. **D1** (🚨 60-second smoke; catches the worst bug — discarded run in Fitness). If this fails, **stop**: rc2 isn't ready.
+2. **D2** (route-discard verification — outdoors, 60 s). Same data-integrity tier as D1.
+3. **D3** (sequential discard→save). Confirms terminal-path separation under realistic flow.
+4. **F1 baseline-regression sweep** (~5 min) — confirm rc17 / rc1 didn't break. Especially: BLE link persists past stop (rc17 §A); finish screen persists (rc17 §B); phone-optional (rc17 §D).
+5. **A1** (GPS happy path) — the headline rc2 feature. ~5 min outdoor.
+6. **C1–C4** (finish screen — visual correctness, exact text, units, right-aligned pace) — read on glasses immediately after A1's Save.
+7. **C7** (live HUD unchanged regression) — Joe verifies vs. rc1 photo / memory before tapping Stop in #6.
+8. **A2** (permission-deny graceful) — requires fresh install, so batch with any other fresh-install scenario.
+9. **E1** (phone mirror "Started" row appears) — phone in foreground, easy verify.
+10. **A6 + D4** (discard during data flow + no orphaned route) — combined, single run.
+11. **B1** (Strava ingestion happy path) — start a 15-min timer after A1's save; check Strava feed.
+12. **A4 + A5** (indoor + signal-loss edge cases) — go indoors after the outdoor runs.
+13. **B3** (Strava does NOT receive discarded run) — at the 15-min mark after D1.
+14. **E4** (phone-off start-time fallback) — power off phone, run workout. Highest-load-bearing phone-optional check per skill.
+15. **E6** (v3 compat) — only if a rc1 phone build is easily reinstallable. Defer if logistics-prohibitive.
+16. **C5** (zero-state finish screen) — final edge case.
+17. **D5** (app killed during discard flow) — destructive test, run last.
+
+Pass criteria for rc2 merge: **D1–D4, D6 unit test, A1, A2, A6, C1–C4, C6, C7, E1, E5, F1, F2, F3 all pass.** B1 + B3 are highly desired but partially out of our control (Strava poll cadence + Richards diagnosis dependency); defer with sign-off if blocked. E4, E6, C5, A5, D5 are edge-cases — sign-off acceptable.
+
+---
+
+### Unit-test recommendations (split by agent)
+
+**For Laughlin (watchOS / Core state machine — must land in rc2 PR):**
+
+1. **`test_confirmCancel_callsDiscardOnce_neverSave`** (D6 — the load-bearing test for Item 4). Spy controller; assert exact call shape after `confirmCancel`. Mirror test: `test_confirmSave_callsSaveOnce_neverDiscard`. Together these pin the terminal-path bifurcation and would have caught the rc1 bug.
+
+2. **`test_confirmCancel_discardsRouteBuilder`** — spy on the route-builder boundary; assert `discard()` (or equivalent) called once, `finishRoute(...)` never called.
+
+3. **`test_routeBuilder_lifecycleMatchesSessionLifecycle`** — start → samples flow → save: builder is created on start, receives samples between start and save, is finished with metadata exactly once on save. Same setup with discard: builder is created, may receive samples, is discarded once.
+
+4. **`test_locationManager_requestsAuthOnlyWhenNotDetermined`** — given status `.notDetermined`, asserts `requestWhenInUseAuthorization()` is called; given `.authorizedWhenInUse` or `.denied`, asserts it is NOT called.
+
+5. **`test_locationManager_deniedAuth_workoutStillStarts`** — given `.denied`, start workout; assert HK session activates, HUD ticks proceed, no exception thrown. Route builder is not created (or created and immediately torn down with no samples).
+
+6. **`test_finishScreenLayout_threeLines_allOnPanel_rc2`** — assert each of banner / distance / time-pace row computes y via `255 − wearer_top`, with wearer-top ≥ 16 and wearer-bottom ≤ 240 (16-px top + bottom margins). Pin coords numerically.
+
+7. **`test_finishScreenLine3_paceRightAligned`** — given a typical pace string and time string, assert paceX = `leftMargin + textBoxWidth − textWidth(paceString, font)` and `paceX > timeX + textWidth(timeString, font) + minGap`. **Requires `ALookFontMetrics` typed table — if it doesn't exist, this test is the forcing function (Richards rec #2).**
+
+8. **`test_finishScreenLine1_exactText_Finished`** — assert the composed frame for line 1 contains exactly `"Finished!"` as bytes; pin against accidental locale/punctuation drift.
+
+9. **`test_finishScreenLine2_distanceUnitMatchesUserPreference`** — given mock unit preference `.kilometers`, assert string contains `km`; given `.miles`, assert `mi`. Locks the conversion path and prevents km/mi label/value mismatch.
+
+10. **`test_wcMessage_v4_workoutStartedCase_roundTripsCodable`** — encode `.workoutStarted(at: knownDate)`, decode, assert equality. Locks the wire format across the WC boundary (analogous to the `MetricKind.energy` raw-value lock).
+
+11. **`test_wcMessage_v3Decoder_handlesV4UnknownCaseAsNoop`** — encode a v4 case via the v4 encoder, decode via a simulated v3 decoder, assert no throw, no fatal, no crash. (Implementation tip: rawValue-backed enum + decoder using `init(rawValue:)` with nil-coalescing to `.unknown` case.)
+
+12. **`test_workoutMirror_startTimeSurvivesBackgrounding`** — simulate viewmodel receive `.workoutStarted(at:)`, simulate scene phase background→foreground, assert `startTime` property unchanged.
+
+13. **`test_workoutMirror_startTimeReplacesOnNewWorkout`** — receive `.workoutStarted(at: t1)`, receive `.workoutEnded`, receive `.workoutStarted(at: t2)`, assert published start time is t2.
+
+**For Weiss (BLE adapter — no direct rc2 implementation work expected):**
+
+- No new tests required for rc2 — the BLE adapter is not on the change list. However, **consult on §C4 font-metrics math**: if `ALookFontMetrics` table extraction happens in rc2 (per Richards rec), Weiss reviews advance-width values against Visual-Assets README to lock the source of truth.
+
+**For Richards (architecture — research, not code in rc2):**
+
+- Strava-integration diagnosis (option a vs. option b). Once chosen, sign off on §B4 / §B5 metadata key list.
+- If `ALookFontMetrics` extraction happens (forced by §C4 / C7 test), review the API surface — `LiveHUDLayout` vs. `FinishLayout` surface-scoped types are a natural co-landing per the prior cross-agent recommendation.
+
+---
+
+### What I'm NOT covering (scope boundary)
+
+- Strava OAuth direct upload (option c) — per Joe's directive, defer.
+- Low-battery glasses-LUT thresholds (rc17 §C8 deferral) — still deferred to a later rc unless Joe directs.
+- New live HUD fields or coordinate changes — explicitly out of scope; C7 guards against drift.
+- `ALookFontMetrics` extraction is *forced* by C4 / C7 if not already extracted; it is not an independent rc2 deliverable.
+
+---
+
+**Author note:** §D is the load-bearing section of rc2. Items 1 / 3 / 5 are visible features; Item 4 is the silent data-integrity bug that already shipped to TestFlight in rc1. The discard-leak generalizes to a reusable pattern — see new skill `terminal-path-data-leak-qa` extracted from this work.

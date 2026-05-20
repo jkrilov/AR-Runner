@@ -68,3 +68,49 @@ Joe explicitly greenlit parallel kickoff after public-repo flip; all three agent
 **Scope locked:** rc1 = Live HR, rc2 = Finish Screen, rc3 = Battery indicator. All v0.4.0 work blocked on Joe's rc9 bench confirmation.
 
 **Learnings:** Roadmap proposals with explicit open questions are more valuable to leadership than narrative proposals. Joe answered all 5 questions in a single pass, suggesting the question structure made decision-making faster. The "pick 0-2" suggestions framework (with effort/signal labels) enables product trade-offs at the decision point rather than mid-implementation.
+
+### 2026-05-19: Post-rc17 docs cleanup sweep (PR #78)
+
+**Work:** README refresh + Swift comment hygiene pass. Branch `cleanup/post-rc17-docs-sweep`, two commits, no functional change, no version bump.
+
+**README pattern that landed** (Joe-flavoured, for future hardware-app READMEs):
+
+1. Status badge tells the truth — actual rc/build, not "scaffolding".
+2. Lead with the contract, not the marketing line — for AR-Runner that's "Watch + glasses is the product, phone is optional."
+3. "What works today" before "What's planned." Bullets are concrete shipped capabilities, not narrative.
+4. One "Architecture notes worth knowing" section for the 3-5 non-obvious facts a new contributor needs (lens-flip framebuffer, BLE serialization, curated-layout-not-runtime-upload). Each bullet links to where the long form lives.
+5. Release-pattern section names the convention explicitly (bundled bumps, auto-release, immutable tags) — it's not folklore.
+6. Bench-testing section just points at `.squad/decisions.md` rather than duplicating the matrix. Decisions ledger is the source of truth.
+7. No fluff, no roadmaps, no emoji. ~140 lines is the budget.
+
+**Comment hygiene heuristics applied** (kept the bar high — only deleted when both stale and redundant):
+
+- **Drop** "v0.X audit Py.z" tags when the audit's fix is now obvious from the code shape and captured in a skill or ADR. The tag is archaeology, not signal.
+- **Drop** dated provenance ("v0.2.0 device feedback (Joe)") on features that have long-shipped — the rationale stays, the date tag goes.
+- **Replace** version-numbered references to old per-release decisions (`v0.2 decision #3`) with the canonical contract language now used everywhere (`phone-optional`). One vocabulary, one place to update.
+- **Drop** "not yet exposed in vX.Y UI" qualifiers that are now technically true but misleadingly versioned.
+- **Keep** lens-flip formulas, BLE wire-byte annotations, ADR references, skill citations, "why" rationale, fall-through-order explanations. Cost of a stale comment is small; cost of deleting context Weiss/Laughlin needs next month is large.
+- **Conservative rule of thumb:** if shortening required more than ~3 lines of net change to a single comment block, it was too aggressive.
+
+Final touch: 10 files, 21 net lines removed, 186/186 still green. Wrote skill `swift-comment-hygiene-checklist` capturing the rubric.
+
+---
+
+### 2026-05-20T14:50:00Z — Cross-agent note: rc2 feature surface evolved
+
+**From:** Scribe (on behalf of rc2 batch agents)  
+**Heads-up:** README item-level features have evolved in rc2 (PR #79, pending merge).
+
+**What changed:**
+- Item #1 (GPS): Now recorded end-to-end via CLLocationManager + HKWorkoutRouteBuilder (was: not implemented in rc1).
+- Item #2 (Strava): Richards diagnostic confirmed it couples to item #1; likely unblocks for free once GPS fix ships. README can mention "Strava auto-import support via Apple Health" as planned.
+- Item #3 (Finish screen): Layout reflowed to 3-line / 4-data (was: 2-line / 3-data in rc1). Readability improved.
+
+**Action for you:** After Joe's rc2 bench validates and PR #79 merges, README feature list may need a bump to reflect:
+- "GPS tracking and route recording ✓"
+- "Strava auto-import via Apple Health (post-rc2)" or similar
+- Finish-screen description if the new layout changes the marketing story
+
+**No action needed now** — just flagging so you're not surprised when Joe asks for the README refresh. The v0.4.0 "What works today" section will be the main surface area to touch.
+
+**Link:** See decisions.md entries 2026-05-20T for full rc2 context (richards diagnostic, weiss coords, amber criteria, laughlin implementation).

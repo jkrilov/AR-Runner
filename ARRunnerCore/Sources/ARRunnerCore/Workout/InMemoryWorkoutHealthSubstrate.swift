@@ -22,6 +22,9 @@ public actor InMemoryWorkoutHealthSubstrate: WorkoutHealthSubstrate {
         case pause(at: Date)
         case resume(at: Date)
         case end(at: Date)
+        /// rc2 (2026-05-20): user-initiated cancel terminal path. Distinct
+        /// from `.end` so tests can assert no HK save happened on cancel.
+        case discard(at: Date)
     }
 
     private let stateContinuation: AsyncStream<WorkoutSubstratePhase>.Continuation
@@ -153,5 +156,20 @@ public actor InMemoryWorkoutHealthSubstrate: WorkoutHealthSubstrate {
             endedAt: date,
             activeDuration: max(0, duration)
         )
+    }
+
+    /// rc2 — discard terminal path. NO `WorkoutHealthResult` is returned
+    /// because no `HKWorkout` is created. Cleanly closes the streams so
+    /// the controller's forwarding tasks unwind exactly as they do on `end`.
+    public func discard(at date: Date) async throws {
+        if let queuedError {
+            self.queuedError = nil
+            throw queuedError
+        }
+        recordedCalls.append(.discard(at: date))
+        currentPhase = .ended
+        stateContinuation.yield(.ended)
+        stateContinuation.finish()
+        metricContinuation.finish()
     }
 }

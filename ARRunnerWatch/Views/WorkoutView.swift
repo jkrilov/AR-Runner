@@ -60,9 +60,18 @@ struct WorkoutView: View {
             isPresented: finishMenuBinding,
             titleVisibility: .visible
         ) {
-            Button("Save Run") { Task { await viewModel.confirmSave() } }
-            Button("Discard", role: .destructive) { Task { await viewModel.confirmCancel() } }
-            Button("Resume", role: .cancel) { Task { await viewModel.resumeFromFinish() } }
+            Button("Save Run") {
+                viewModel.acknowledgeFinishChoice()
+                Task { await viewModel.confirmSave() }
+            }
+            Button("Discard", role: .destructive) {
+                viewModel.acknowledgeFinishChoice()
+                Task { await viewModel.confirmCancel() }
+            }
+            Button("Resume", role: .cancel) {
+                viewModel.acknowledgeFinishChoice()
+                Task { await viewModel.resumeFromFinish() }
+            }
         } message: {
             Text("Saving writes the workout to Health. Discard removes it from this view (it remains in Health and can be deleted there).")
         }

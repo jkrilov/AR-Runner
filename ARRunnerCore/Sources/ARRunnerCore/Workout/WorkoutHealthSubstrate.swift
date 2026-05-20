@@ -39,6 +39,21 @@ public protocol WorkoutHealthSubstrate: Sendable {
     /// End the workout and finalize HealthKit storage. Returns the resulting
     /// HealthKit workout UUID (D9 side-store key) and aggregate tallies.
     func end(at date: Date) async throws -> WorkoutHealthResult
+
+    /// Discard the workout without writing it to HealthKit. End the
+    /// underlying `HKWorkoutSession` and call `HKLiveWorkoutBuilder
+    /// .discardWorkout()` so no `HKWorkout` sample is persisted.
+    ///
+    /// **rc2 (2026-05-20) — data-integrity fix.** Joe reported that runs he
+    /// explicitly cancelled were still appearing in Apple Fitness. Root
+    /// cause: `WorkoutViewModel.confirmCancel` was calling `controller.end()`
+    /// (the save path), so `HKLiveWorkoutBuilder.finishWorkout()` always
+    /// wrote a sample regardless of the user's intent. The save and
+    /// discard paths MUST be different terminal methods on this protocol —
+    /// there is no "save then maybe delete" because a failed delete leaks
+    /// partial data into Health. Implementations MUST guarantee no
+    /// `HKWorkout` is created when this method is called.
+    func discard(at date: Date) async throws
 }
 
 /// Substrate-level lifecycle phase. Maps onto `HKWorkoutSessionState` but is

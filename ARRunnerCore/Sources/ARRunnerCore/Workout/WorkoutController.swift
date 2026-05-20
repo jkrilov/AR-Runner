@@ -169,6 +169,46 @@ public actor WorkoutController {
         return makeSummary(from: result)
     }
 
+    /// Discard the workout without writing it to HealthKit.
+    ///
+    /// **rc2 (2026-05-20) — data-integrity fix.** Joe reported (5K bench)
+    /// that runs he discarded from the Finish menu were still appearing in
+    /// Apple Fitness. Root cause: `WorkoutViewModel.confirmCancel` was
+    /// calling `controller.end()`, which delegates to `substrate.end(at:)`,
+    /// which on the real HealthKit substrate ends with
+    /// `builder.finishWorkout()` and persists the sample. Save and discard
+    /// MUST be distinct terminal paths: there's no safe "save then maybe
+    /// delete" because a delete failure would leak partial data into Health.
+    ///
+    /// Transitions to `.ended` (not `.failed`) because from the workout
+    /// state-machine's perspective the session is over; the watch view-model
+    /// distinguishes "saved" vs "cancelled" via its own `LaunchState`.
+    public func discard() async throws {
+        switch phase {
+        case .idle, .ended:
+            throw Error.notStarted
+        case .running, .paused, .preparing, .failed:
+            break
+        }
+
+        let now = clock()
+        do {
+            try await substrate.discard(at: now)
+        } catch {
+            let reason = String(describing: error)
+            transition(to: .failed, at: now, reason: reason)
+            throw Error.substrateFailure(reason: reason)
+        }
+
+        endedAt = now
+        transition(to: .ended, at: now)
+
+        forwardingTask?.cancel()
+        stateMirrorTask?.cancel()
+        stateContinuation.finish()
+        metricContinuation.finish()
+    }
+
     // MARK: - Glasses signal (D4 — never pauses the workout)
 
     /// Record a glasses connectivity event. Per D4 the workout runs whether or

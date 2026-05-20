@@ -13,11 +13,14 @@ public enum LifecycleEvent: Sendable, Codable, Equatable {
 public enum WCMessage: Sendable, Codable, Equatable {
     /// v1 — layoutConfig / workoutTick (per-metric) / workoutLifecycle.
     /// v2 — adds workoutSnapshot for the iPhone live mirror (v0.2 #3).
-    /// v3 — adds glassesBattery for v0.4 phone-side battery indicator. Watch
-    ///      forwards 0–100 percent from the Battery Service (0x180F / 0x2A19)
-    ///      via transferUserInfo. Phone-optional: missing the iPhone never
-    ///      blocks the watch.
-    public static let currentSchemaVersion = 3
+    /// v3 — adds glassesBattery for v0.4 phone-side battery indicator.
+    /// v4 — `WorkoutTickMessage.startedAt` (optional) for the rc2 phone
+    ///      mirror "Started at …" row. Additive + optional, so a v4 phone
+    ///      still decodes v3 snapshots and a v3 phone simply doesn't see
+    ///      the new field. Watch forwards 0–100 percent from the Battery
+    ///      Service (0x180F / 0x2A19) via transferUserInfo. Phone-optional:
+    ///      missing the iPhone never blocks the watch.
+    public static let currentSchemaVersion = 4
 
     case layoutConfig(HUDLayout)
     case workoutTick(WorkoutMetric)
