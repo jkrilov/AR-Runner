@@ -37,10 +37,19 @@ enum StravaConfig {
     /// codes for tokens and refreshes expired access tokens.
     static let baseURL = URL(string: "https://strava-connect.ar-runner.app")!
 
-    /// Custom URL scheme bound to the phone target. Registered in
-    /// `Config/ARRunnerPhone-Info.plist` under `CFBundleURLTypes`. The scheme
-    /// MUST match the redirect URI registered on the Strava API console.
-    static let redirectURI = "arrunner://strava/callback"
+    /// Redirect URI handed to Strava's mobile authorize endpoint.
+    ///
+    /// Strava's iOS guidance (https://developers.strava.com/docs/authentication/)
+    /// requires the form `YourScheme://your.real.domain/path` — the host
+    /// segment MUST be a real domain that matches the "Authorization Callback
+    /// Domain" set in the Strava API console (here: `ar-runner.app`). The
+    /// previous form `arrunner://strava/callback` was rejected with
+    /// "Bad Request: redirect_uri invalid" because `strava` is not a domain.
+    ///
+    /// The custom scheme `arrunner` is registered in
+    /// `Config/ARRunnerPhone-Info.plist` (via `project.yml` → `CFBundleURLTypes`)
+    /// so iOS routes the redirect back into this app.
+    static let redirectURI = "arrunner://ar-runner.app/callback"
 
     /// `activity:write` is the minimum scope required to upload activities.
     /// Per Strava docs: implies `activity:read`, sufficient for our flow.
