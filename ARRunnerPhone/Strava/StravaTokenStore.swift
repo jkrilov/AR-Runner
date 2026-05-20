@@ -130,6 +130,24 @@ final class StravaTokenStore: @unchecked Sendable {
         try backing.save(record)
     }
 
+    /// Force a refresh regardless of the cached `expiresAt`. Used by the
+    /// upload service when Strava returns 401 even though our cached token
+    /// looked fresh — the only recovery path is to swap it for a new one and
+    /// retry the request once.
+    func forceRefresh() async throws -> String {
+        guard let record = try backing.load() else {
+            throw StravaTokenStoreError.notConnected
+        }
+        let refreshed = try await refresher.refresh(refreshToken: record.refreshToken)
+        var updated = record
+        updated.accessToken = refreshed.access_token
+        updated.refreshToken = refreshed.refresh_token
+        updated.expiresAt = refreshed.expires_at
+        try backing.save(updated)
+        logger.log("Force-refreshed Strava access token after 401.")
+        return updated.accessToken
+    }
+
     func disconnect() {
         do {
             try backing.delete()

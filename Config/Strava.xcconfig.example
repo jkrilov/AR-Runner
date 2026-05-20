@@ -1,0 +1,4 @@
+// Strava API credentials
+// Copy this file to Strava.xcconfig and fill in your client ID
+// Get yours at https://www.strava.com/settings/api
+STRAVA_CLIENT_ID = YOUR_CLIENT_ID_HERE
