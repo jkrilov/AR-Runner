@@ -15,10 +15,7 @@ struct RootView: View {
             }
 
             NavigationStack {
-                ContentPlaceholderView(
-                    title: "History",
-                    subtitle: "Saved HealthKit workouts and AR metadata summaries land here."
-                )
+                HistoryView()
             }
             .tabItem {
                 Label("History", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
@@ -31,24 +28,6 @@ struct RootView: View {
                 Label("Settings", systemImage: "gearshape")
             }
         }
-    }
-}
-
-private struct ContentPlaceholderView: View {
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.title2)
-                .fontWeight(.semibold)
-            Text(subtitle)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding()
-        .navigationTitle(title)
     }
 }
 
