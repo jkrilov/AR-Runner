@@ -4,15 +4,14 @@
 import Foundation
 
 /// Pure, platform-agnostic formatters for the in-run watch display.
-/// Lives in Core (not in the watch target) so the formatting contract
-/// is exercisable from `ARRunnerCoreTests` without a watchOS test host
-/// — Joe's v0.2.0 device feedback regressed twice on the same surface
-/// (per-sample distance, missing avg-pace, divide-by-zero), so the
-/// helpers are intentionally narrow and unit-tested.
+/// Lives in Core (not the watch target) so the formatting contract is
+/// exercisable from `ARRunnerCoreTests` without a watchOS test host.
+/// Helpers are intentionally narrow and unit-tested — this surface has
+/// regressed on per-sample distance, missing avg-pace, and divide-by-zero
+/// in the past.
 public enum RunMetricFormatting {
-    /// Meters → statute miles. Apple's `HKUnit.mile()` uses the same
-    /// constant; duplicated here so non-HealthKit callers (tests, the
-    /// iPhone mirror view) don't need to import HealthKit.
+    /// Meters → statute miles. Matches `HKUnit.mile()` exactly; duplicated
+    /// so non-HealthKit callers (tests, iPhone mirror) don't import HK.
     public static let metersPerMile: Double = 1609.344
 
     /// Convert meters to miles. No clamping — callers handle 0 / nil.
@@ -20,9 +19,8 @@ public enum RunMetricFormatting {
         meters / metersPerMile
     }
 
-    /// "2.34 mi" — two decimal places, suffixed with " mi". Matches
-    /// Joe's device-test ask (v0.2.0 feedback). Negative inputs are
-    /// preserved verbatim so a bug elsewhere surfaces rather than
+    /// "2.34 mi" — two decimal places, suffixed with " mi". Negative inputs
+    /// are preserved verbatim so a bug elsewhere surfaces rather than
     /// silently rounding to zero.
     public static func formatMiles(meters: Double) -> String {
         String(format: "%.2f mi", miles(fromMeters: meters))

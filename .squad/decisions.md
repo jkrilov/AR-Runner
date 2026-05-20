@@ -2554,3 +2554,457 @@ Listed in rough order of architectural urgency, not as a sequence:
 - **Scope-guard discipline is excellent.** Every PR named the constants it WOULDN'T touch. This is what kept the load-bearing BLE adapter, queryID protocol, holdFlush serialization, and rotation/leftMargin from regressing across 4 fast-turn releases.
 - **Joe's "one thing at a time" directive** (rc15 deferring icons to rc16) was the right call and produced a cleaner rc16 fix in retrospect — the layout correction and icon plumbing were independent and bench-testable separately.
 
+
+## 2026-05-19 — Amber rc17 QA scenarios (acceptance criteria)
+
+**Date:** 2026-05-19T18:19:51-04:00
+**Author:** Amber (QA & Fitness Domain)
+**Scope:** rc17 — BLE keep-alive past workout end, finish-screen visibility, glasses-battery indicator (0x180F/2A19), reaffirmed phone-optional contract.
+**Audience:** Joe (bench test), Weiss (BLE adapter unit tests), Laughlin (watchOS lifecycle + WatchConnectivity unit tests).
+**Inputs:**
+- Joe's bench report (rc16): *"connection drops when I finish a run, I don't see the finish screen we planned, the connection to the glasses is lost."*
+- Joe's clarification: not a regression — the existing workout-stop flow has always torn down BLE; rc17 fixes the design.
+- Richards's in-flight ADR: **BLE link is user-managed, not workout-scoped.**
+- User directive 2026-05-19T18:20: **phone is NEVER a requirement.** Watch + glasses must function fully with phone off / out of range / airplane mode.
+- Engo 2 battery service spec: service `0x180F`, characteristic `0x2A19`, notify cadence ~30 s (firmware-managed).
+
+**Convention:** Each item is `Steps → Expected → Failure mode`. "Failure mode" describes the symptom that should make Joe / a reviewer suspect a specific defect — these are diagnostic hooks, not pass/fail prose.
+
+---
+
+### A. BLE link lifecycle — workout-stop must NOT disconnect
+
+**A1. Happy path — stop preserves link.**
+- **Steps:** Pair glasses → start workout from watch → run/walk for 30 s → stop workout from watch (long-press or stop button) → leave watch idle for 10 s.
+- **Expected:** Finish screen renders on glasses (see §B). BLE link indicator on watch remains "connected" continuously. No reconnect spinner. No pairing prompt. Glasses HUD eventually goes idle/empty but the radio link stays up.
+- **Failure mode:** If the link indicator flips to "disconnected" within ~1 s of stop, `teardownTransport()` is still being called somewhere (regression of the rc17 fix). If it drops after 5–10 s, suspect HK extended-runtime release is killing the central — Richards's ADR will say this is the OS, not us, but verify by re-pairing without restarting the app (should succeed instantly).
+
+**A2. Sequential workouts — second start has no reconnect cost.**
+- **Steps:** Run A1 → wait 30 s with watch on wrist → start a new workout.
+- **Expected:** Live HUD frames appear within the first 1 s tick (no pairing prompt, no reconnect spinner, no "connecting…" splash). `connectFrames()` re-asserts splash/power-on cleanly.
+- **Failure mode:** If second start shows a reconnect spinner ≥ 2 s, the link dropped silently between workouts — check whether OS suspended the central (background-mode plist) vs. our code disconnected. If HUD appears but first 1–2 frames are blank, `needsHUDPowerOn` per-workout reset (rc13 pattern) regressed.
+
+**A3. Background → foreground between workouts.**
+- **Steps:** Run A1 → press digital crown to background the watch app → wait 30 s → re-foreground → start a new workout.
+- **Expected:** Link persists or auto-reconnects silently within ~2 s; HUD appears on first tick.
+- **Failure mode:** If link is dead and requires manual pairing, the central is being released on backgrounding — Weiss should confirm `bluetooth-central` UIBackgroundMode is set and that the `CBCentralManager` is retained as a long-lived property, not a local var.
+
+**A4. Watch sleep / wake between workouts.**
+- **Steps:** Run A1 → drop wrist (display sleeps) → wait 60 s → raise wrist → start a new workout.
+- **Expected:** Same as A3 — link persists or recovers silently.
+- **Failure mode:** Same diagnostic as A3.
+
+**A5. App kill / relaunch — link drops by design.**
+- **Steps:** Run A1 → force-quit watch app (long-press side button or remove from dock) → relaunch app.
+- **Expected:** Link is dropped (expected — different process lifecycle). On launch, normal connect-flow runs and re-pairs to the last known glasses without user intervention.
+- **Failure mode:** If the app crashes on relaunch or fails to reconnect, central-state restoration / `CBCentralManager` restore-identifier is missing.
+
+**A6. User-initiated disconnect — the ONLY allowed teardown path.**
+- **Steps:** Run A1 → on the post-run summary screen (or wherever the "disconnect glasses" affordance lives) → tap disconnect.
+- **Expected:** BLE link tears down cleanly; glasses HUD blanks; link indicator shows "disconnected"; no error toast.
+- **Failure mode:** If disconnect does nothing, the affordance was removed when `teardownTransport()` was deleted from the workout-stop path (collateral damage). If disconnect throws, it's calling into a torn-down state machine.
+
+**A7. Out-of-range mid-workout (auto-reconnect contract).**
+- **Steps:** Start workout → walk 30 m away from glasses (or power-cycle glasses) → confirm HUD freezes on watch's last sent frame and link indicator shows "reconnecting" → walk back into range / power glasses on → wait up to 30 s.
+- **Expected:** Link auto-reconnects without user action; HUD resumes pushing live frames on the next tick after reconnect. Per Richards's ADR, this is the contract: BLE link is the user's, OS-level transient drops auto-heal.
+- **Failure mode:** If HUD never resumes after reconnect, `needsHUDPowerOn` was not re-asserted on the reconnect path (only on per-workout `start()`). If reconnect needs manual re-pair, central is not retaining the peripheral identifier.
+
+**A8. Out-of-range across workout boundary.**
+- **Steps:** Start workout → walk out of range → stop workout while still out of range → walk back into range.
+- **Expected:** Link auto-reconnects (it was never explicitly torn down). On next workout start, HUD resumes.
+- **Failure mode:** If the stop-while-disconnected path threw, the post-stop code is assuming a live transport — should be guarded.
+
+---
+
+### B. Finish screen renders + persists
+
+**B1. Two-field finish frame appears on stop.**
+- **Steps:** Run a workout for 30 s → stop.
+- **Expected:** Glasses display switches from the 3-line live HUD to the finish-screen layout showing **Time** and **Distance** only. Visible within ~500 ms of stop.
+- **Failure mode:** If glasses go blank instead of showing the finish frame, the BLE write happened after HK extended-runtime release (rc17 root cause #1 regression — verify `pushHUDSummaryIfConnected()` runs BEFORE `controller.end()`). If glasses show stale live HUD, the finish frame was never composed.
+
+**B2. Finish screen persists (define the dismiss contract).**
+- **Steps:** Trigger B1 → do not touch watch or glasses.
+- **Expected:** Finish screen stays visible until ONE of:
+  - User starts a new workout (next `connectFrames()` overwrites with splash, then live HUD),
+  - User taps "disconnect glasses" (A6),
+  - User force-quits / power-cycles (A5).
+  - **NO time-based auto-dismiss for rc17.** Joe wants to read the stats without rush; the link persisting is the whole point of rc17. Re-evaluate in rc18 if battery cost is observable.
+- **Failure mode:** If the screen blanks after ~30 s, something is sending a `clear` or `holdFlush` epilogue that shouldn't fire. If it blanks after ~60 s, the glasses' own idle timer is the culprit — that's firmware, not us; Weiss can confirm via the ALooK doctor tool.
+
+**B3. Finish-screen Y anchors validate under rc16 lens-flip formula.**
+- **Steps:** Stop a workout with Time = `28:42` and Distance = `2.31 mi` → photograph the glasses output.
+- **Expected:** Both fields are vertically centered in the wearer's view; no clipping at top/bottom; Time above Distance with comfortable separation. Coords match Laughlin's rc17 finish-screen layout test (which should pin the rc16 formula `y_fb = 255 − wearer_top`).
+- **Failure mode:** If Distance is clipped at the bottom, the old `y_fb = 206 − T` formula still lives in the finish path (Richards flagged this). If both fields are offset upward by ~64 px, font 3 height was double-subtracted.
+
+**B4. Two-field discipline — HR and pace MUST NOT leak.**
+- **Steps:** Run a workout with heart-rate sensor active, average pace computed → stop.
+- **Expected:** Finish frame shows ONLY Time + Distance. No HR icon. No pace icon. No partial digits left over from the live HUD.
+- **Failure mode:** If HR or pace appear on the finish screen, `summaryFrames(for:)` is no longer discarding them — Richards's design intent was explicit; this is a regression of a deliberate filter.
+
+**B5. Zero-state finish — stop at 0:00 / 0.0 mi.**
+- **Steps:** Start a workout → stop within 1 s before any tick has fired.
+- **Expected:** Finish screen still renders with `Time = 0:00` and `Distance = 0.0 mi` (or `0.00 mi` — pin whichever formatter is canonical). No crash. No blank glasses.
+- **Failure mode:** If the watch crashes, a divide-by-zero or unwrap on `firstTickDate` is unguarded. If glasses go blank, the finish path early-returns when totals are zero (it shouldn't — the user explicitly stopped).
+
+**B6. Stop during BLE drop — graceful no-op.**
+- **Steps:** Start workout → walk out of range → stop.
+- **Expected:** Watch shows finish summary as normal. Glasses, on auto-reconnect (A8), do NOT replay the finish frame (it's stale by then). Next workout start clears state.
+- **Failure mode:** If the finish frame appears on glasses minutes later when the user reconnects (post-coffee-break), we're queueing BLE writes through the disconnect — should be drop-on-disconnect for non-live frames.
+
+---
+
+### C. Battery characteristic (0x180F / 2A19)
+
+**C1. Subscription enabled on link-establish.**
+- **Steps:** Cold-start watch app → connect to glasses → start a stopwatch.
+- **Expected:** Battery notification subscription (CCCD write) completes within **2 s** of GATT-ready. Verifiable via Weiss's BLE log or a `subscribedAt` timestamp in the adapter.
+- **Failure mode:** If first battery value doesn't appear for ~30 s, either the initial read (C2) was skipped or the subscription write itself was delayed (queued behind other GATT writes — Weiss should serialize discovery completion → CCCD write → other writes).
+
+**C2. Initial read fires before first notification.**
+- **Steps:** Cold-connect (as C1) → watch the battery indicator on watch.
+- **Expected:** A value appears within 2 s of connect (not blank for 30 s waiting for the first notification). Implementation: explicit `readValue(for:)` on 2A19 after subscribe completes.
+- **Failure mode:** If indicator stays blank for ~30 s then jumps to a value, no initial read was performed.
+
+**C3. Notification cadence.**
+- **Steps:** Sit with glasses on for 5 minutes → log timestamped battery values.
+- **Expected:** Values arrive every **~30 s ± 5 s** (firmware-managed; cadence is not exact). At least 8–10 values in 5 minutes.
+- **Failure mode:** If cadence is wildly off (e.g., 5 s or 5 min), firmware may be in a different mode — Weiss to confirm with ALooK doctor. If cadence is fine for a minute then stops, subscription was dropped silently (notify flag flipped off).
+
+**C4. Value sanity.**
+- **Steps:** Read several values across a session.
+- **Expected:** Each value is an integer in `[0, 100]`. Decreases (or stays flat) monotonically over a single session; never spuriously jumps up by >5% without charging.
+- **Failure mode:** Values outside 0–100 → endianness or byte-offset bug in the characteristic parser (2A19 is a single uint8 percentage per Bluetooth SIG spec). Values bouncing → adapter not deduping repeated notifications, or charger plug events.
+
+**C5. Watch UI updates on each value.**
+- **Steps:** Run C3 → observe watch UI.
+- **Expected:** Battery indicator on watch updates within ~1 s of each notification.
+- **Failure mode:** If UI is stale, the value is being parsed but not republished onto the MainActor observable; check the `@Published`/`AsyncStream` wiring.
+
+**C6. Phone UI updates when reachable.**
+- **Steps:** Run C3 with phone app foregrounded and reachable → observe phone UI.
+- **Expected:** Phone battery indicator updates within ~2 s of each notification (allowing one WCSession hop).
+- **Failure mode:** If phone never updates, Laughlin's WC send is gated on a stale `isReachable` check or fired before the session activated. If phone updates but lags by >10 s, the path is `transferUserInfo` (queued, slow) when it should be `updateApplicationContext` (latest-only) for this telemetry — see §D2 and skill `wcsession-three-tier-delivery`.
+
+**C7. Subscription survives auto-reconnect.**
+- **Steps:** Establish link with battery flowing (C3) → walk out of range until link drops → walk back into range → wait.
+- **Expected:** On reconnect, subscription is re-enabled automatically; battery values resume within the next notification interval (~30 s). Initial read (C2) repeats on reconnect so the user sees a value sooner than 30 s.
+- **Failure mode:** If battery never resumes after reconnect, the resubscribe step is missing from the reconnect path — Weiss should treat reconnect as "logical re-connect" and re-run the post-GATT-ready setup.
+
+**C8. Low-battery thresholds (warning surfaces).**
+- **Steps:** Use glasses until battery reads <20% / <10% / 0% (or simulate via a mock notification value).
+- **Expected:** Define and pin: at `<20%`, watch shows a yellow/dim battery glyph. At `<10%`, watch surfaces an explicit "Glasses battery low" notice (haptic? text?). At `0%`, glasses will power off — watch should surface "Glasses disconnected" cleanly, not "BLE error".
+- **Failure mode:** If watch shows raw percentages with no visual emphasis, the LUT is missing. If 0% causes a crash on the disconnect callback, the disconnect path doesn't tolerate a `0`-value last-notify before peripheral drop.
+
+**Note for rc17 scope:** If C8 thresholds are not implemented in rc17 (Weiss + Laughlin scope-cut), explicitly defer to rc18 in the decisions log — don't ship a numeric battery without ever testing the low-end UX.
+
+---
+
+### D. Phone-optional contract — THE BIG ONE
+
+> Per user directive 2026-05-19T18:20: *"the phone can't be a requirement."* The watch + glasses must be a complete product without the phone. Phone-side features are decorations on top.
+
+**D1. Full workout cycle with phone powered off.**
+- **Steps:** Power off the iPhone entirely → from the watch, pair glasses (if not already) → start a workout → run for 60 s → stop workout → confirm finish screen → start a second workout → stop.
+- **Expected:** Every feature works exactly as with phone present: live HUD, all 3 metric lines (Time+HR, Distance, Avg Pace), finish screen, persistent BLE link, battery indicator updating on the watch. Zero watch-side errors, zero stalls, zero "waiting for phone" indicators.
+- **Failure mode:** Any UI hang, any feature gracefully degrading to "off" when it should work standalone, any error toast mentioning the phone. Most likely culprit: a `session.isReachable` check used as a gate rather than as a transport hint.
+
+**D2. Airplane mode on phone.**
+- **Steps:** Phone in airplane mode (BT off too) → repeat D1.
+- **Expected:** Identical to D1. Phone being merely "not reachable" must be indistinguishable from phone being absent.
+- **Failure mode:** Same as D1.
+
+**D3. Phone reboot mid-workout.**
+- **Steps:** Start a workout with phone reachable → mid-run, hard-reboot the phone → continue running for 60 s → stop workout.
+- **Expected:** Watch keeps ticking without pause; no stall when phone goes unreachable; finish screen renders; BLE link persists. When phone comes back online, it picks up the latest known state (see D5).
+- **Failure mode:** Any UI freeze at the moment of phone disappearance suggests a synchronous WC send. Any retry storm in logs after phone returns suggests we're not throttling reconnect-driven catch-up.
+
+**D4. Battery display: phone returns from offline.**
+- **Steps:** Establish glasses + battery flow with phone reachable (C6) → put phone in airplane mode for 5 min → bring phone back online → foreground phone app.
+- **Expected (define explicitly):** Phone shows the latest battery value within ~3 s of becoming reachable. Source of that value:
+  - **Preferred:** Laughlin uses `updateApplicationContext` for battery (latest-only semantic). Phone reads the context on activation → shows latest known value immediately, then updates on the next 30 s notification.
+  - **Acceptable fallback:** Phone shows "—" briefly, then updates on next notification (max ~30 s wait).
+  - **NOT acceptable:** Phone shows a 5-minute-old value indefinitely (stale `transferUserInfo` queue).
+- **Failure mode:** If phone is permanently stuck showing the value-at-offline-time, `transferUserInfo` is being used for what should be `updateApplicationContext` — switch transport.
+
+**D5. WatchConnectivity send must be non-blocking.**
+- **Steps:** Phone in airplane mode → start a workout on watch → observe tick cadence in Xcode log or via watch UI smoothness.
+- **Expected:** Ticks fire at their normal 1 Hz cadence; the WC send is fire-and-forget (or `await`ed only inside a non-blocking task) and never blocks the timer.
+- **Failure mode:** If watch tick cadence stutters when phone is unreachable, the send is on the timer's critical path. Refactor to `Task.detached` or remove `await` from the timer body.
+
+**D6. Anti-test — phone permanently absent.**
+- **Steps:** Treat the phone as if it doesn't exist. Pair glasses to watch. Run an entire workout end-to-end. Repeat 3 times. Reboot the watch between runs 2 and 3.
+- **Expected:** Zero stalls, zero crashes, zero phone-shaped error states. Bench notes: did the watch ever look like it was "waiting" for the phone? If yes, file as a bug regardless of which feature it surfaces in.
+- **Failure mode:** Any "waiting" indicator. Any code path that throws because the phone isn't paired.
+
+**D7. Queue-bound check — `transferUserInfo` does not grow unbounded.**
+- **Steps:** Phone in airplane mode for an extended period (Joe can't reasonably test "hours" on bench — simulate via a unit test in Laughlin's code: dispatch 1000 `transferUserInfo` calls without a reachable peer; assert queue bound or drop policy).
+- **Expected:** For high-frequency telemetry (battery, ticks), `updateApplicationContext` is used (latest-only — no queue growth). For lifecycle events (workout started/ended), `transferUserInfo` is used and the queue is bounded by the natural lifecycle event rate (a handful per session, not 1 Hz).
+- **Failure mode:** Battery values being queued as `transferUserInfo` would generate hundreds of pending transfers in a 5-minute offline window. WatchOS will eventually evict them, but the system load and battery cost are real.
+
+---
+
+### E. Regression guards
+
+**E1. Core test suite stays green.** 176/176 pass under `swift test` in `ARRunnerCore` after the rc17 merge. Any test additions for §C / §D land in this same number — they don't get to fail-and-skip.
+
+**E2. Live HUD coordinates unchanged from rc16.** Bench check: photograph the live HUD on rc17 and visually compare to a rc16 photo. The 3-line layout (Time+HR icon / Distance+icon / Avg Pace+icon) must be pixel-stable. Any drift means an unintended layout change rode in on the rc17 PR.
+
+**E3. Bundle version bumped per release-mechanics-bundle-bump skill.** rc17 ships as a single PR with `CURRENT_PROJECT_VERSION` bumped (build 32 if continuing from rc16's 31) and `xcodegen generate` rerun in the same commit. Confirm no Info.plist placeholder leakage.
+
+**E4. Splash + 4-icon preload behavior preserved.** Cold-connect should still show splash → preloaded icons render on first live tick. Bench check: connect with rc17 build → confirm splash appears within 1 s of pair → confirm icons (chrono, distance, pace, heart-beat) appear with the first live tick.
+
+**E5. Sequential-workout cleanup state.** After A2, verify that internal counters reset cleanly: `firstTickDate` is nil-ed, `distanceMeters` is 0, `needsHUDPowerOn` is true for the new workout's first tick (rc13 defensive-reset pattern still holds).
+
+---
+
+## Unit-test recommendations (Core / state-machine — no Apple frameworks)
+
+These belong in `ARRunnerCore` and should be written by Weiss (adapter-side) and Laughlin (lifecycle / WC side). Listed by owner.
+
+### For Weiss (BLE adapter / ActiveLook layer)
+
+1. **`teardownTransport` is not called from workout-stop path.** Static-assertion or behavior test: a mock `WorkoutViewModel.confirmSave()` does NOT invoke `transport.disconnect()`. Pin via a counter on the mock transport.
+2. **`pushHUDSummaryIfConnected` runs BEFORE `controller.end()`.** Order-of-operations test: instrumented mocks record call order; assert finish-frame BLE writes complete before the HK end-marker.
+3. **Battery characteristic parser — single uint8, range [0, 100].** Round-trip tests with bytes `0x00`, `0x32` (50), `0x64` (100). Reject `0x65` (101) and beyond with an explicit error rather than wrapping or returning garbage.
+4. **Subscription survives mock disconnect/reconnect.** Adapter mock: drive disconnect → reconnect events; assert CCCD write replays and initial read fires post-reconnect.
+5. **Battery dedup.** Two consecutive identical values should result in one Published event (or both — define which, then pin it). Avoid silent log spam.
+6. **Adapter reentrancy holdouts.** Continue the rc13-pattern test: spawn two concurrent multi-frame writes → assert burst integrity (no interleaving). Battery notifications must not interleave with HUD pushes.
+
+### For Laughlin (watchOS lifecycle / WatchConnectivity)
+
+1. **WC send is non-blocking.** Inject a fake `WCSession` that never returns from `sendMessageData`; assert that the workout tick timer continues to fire on schedule.
+2. **Transport tier selection.** Per `wcsession-three-tier-delivery` skill:
+   - Battery values → `updateApplicationContext` (latest-only).
+   - Workout lifecycle (started/ended) → `transferUserInfo` (queued).
+   - Live ticks while reachable → `sendMessageData` (fast path).
+   Pin each routing decision with a test that calls the send function with a mock session in each reachability state.
+3. **`isReachable == false` is not a gate.** Test: with `isReachable = false`, the watch-side feature (workout, HUD, battery display) is fully functional; only the *send-to-phone* part is gracefully replaced by the offline transport. Assert no `guard isReachable else { return }` early-exits in feature code.
+4. **`firstTickDate` and elapsed-time invariants.** After `start() → stop() → start()`, the new workout's elapsed time begins at 0, not at the previous workout's accumulated time. Pin to catch any state leak across the no-longer-torn-down session.
+5. **`needsHUDPowerOn` reset per workout.** Same as rc13 — keep the regression test alive even though the BLE link no longer drops between workouts (the OS may still tear down central state, so the defensive reset matters).
+6. **Finish-screen anchors under rc16 formula.** Compose a finish frame for `(time="28:42", distance="2.31 mi")` → assert the BLE bytes match the rc16 lens-flip formula `y_fb = 255 − wearer_top` for both lines. This is the test Richards flagged was never written.
+7. **Latest-known-battery on phone activation.** Phone-side: simulate `session(_:didReceiveApplicationContext:)` with a battery payload → assert phone UI shows the value immediately. Pair with a test of activation when no context is present → assert UI shows "—" rather than crashing.
+
+---
+
+## Bench-test execution order (suggested for Joe)
+
+1. **E1, E2, E4 first** — confirm rc17 didn't break the baseline. ~5 min.
+2. **A1, A2** — the core fix. If A1 or A2 fail, stop and triage; nothing else matters.
+3. **B1, B2, B3, B4** — finish screen actually appears and is correct.
+4. **C1–C6** — battery indicator end-to-end with phone present.
+5. **D1** — power off the phone, repeat A1+A2+B1+C1. If anything breaks here, it's a phone-optional violation.
+6. **A7, A8, C7** — out-of-range tests. Save for last; require a 30 m walk.
+7. **B5, B6, A5, A6, C8** — edge cases. Catch what you can; defer unrun ones to rc18 with an explicit note.
+
+Pass criteria for rc17 merge: **A1–A8, B1–B4, C1–C6, D1, D5, E1–E4 all pass.** D6 + C8 + B5 are highly desired but explicitly deferrable with sign-off.
+
+---
+
+**Cross-reference:**
+- Richards's ADR (in flight): *"BLE link is user-managed, not workout-scoped."* — provides the contract behind §A.
+- rc17 decisions entry above (Amber): root-cause + order-of-operations fix.
+- Skill `wcsession-three-tier-delivery`: tier selection rationale for §C6 and §D4.
+- Skill `activelook-ble-adapter-pitfalls`: reentrancy context for Weiss unit test #6.
+- Phone-optional directive (2026-05-19T18:20): contract behind §D.
+
+### 2026-05-19T18:20:00-04:00: User directive — phone is NEVER a requirement
+**By:** Joe (via Copilot)
+**What:** AR-Runner architecture: the phone is OPTIONAL. The Watch app + glasses must function fully without the phone present. Any feature that involves the phone (e.g., phone-side battery display, settings, etc.) must degrade gracefully when phone is offline. The reverse — phone-only without watch — is not a supported configuration.
+**Why:** Reaffirmed during battery-display feature design — Joe wants battery shown on phone if phone is online, but explicitly noted "remember the phone can't be a requirement." This is a foundational design constraint for all watch↔phone features going forward.
+
+### 2026-05-19T18:23:38-04:00: User directive — Auto-release to TestFlight after CI green
+**By:** Joe (via Copilot)
+**What:** When release-candidate work is merged and CI is green, the team should tag and upload to TestFlight automatically — without waiting for explicit user approval or for Joe's bench-test verdict. Joe will use Apple's TestFlight notification (received on his phone) as his cue to start the bench test on real hardware.
+**Why:** Removes a manual coordination step from the release loop. Joe's bench validation now happens AFTER TestFlight upload (in parallel with TestFlight processing on Apple's side), not before. Applies to all future rc releases under the established release-mechanics-bundle-bump pattern.
+**Implication:** Once Laughlin (or whichever agent owns the merging PR) reports "PR merged, CI green," coordinator proceeds straight to tag + TestFlight upload without pausing. Failed bench tests become hotfix rc-bumps, not pre-release blockers.
+
+### 2026-05-19T18:45:00-04:00: rc17 — workout-stop keeps BLE link up, finish screen Y revalidated, glasses battery → phone (optional)
+
+**By:** Laughlin (watchOS Dev)
+**Branch:** `fix/rc17-lifecycle-finish-battery`
+**Targets:** the three rc17 tasks Joe specified, ratifying Richards's "BLE link is user-managed, not workout-scoped" ADR (inbox file `richards-adr-ble-link-lifecycle.md`) in code.
+**Pairs with:** Weiss's BLE-adapter half (already landed in the same uncommitted set — battery service discovery + 0x180F/2A19 notify subscription with initial read), Amber's rc17 QA scenarios (`amber-rc17-qa-scenarios.md`).
+
+**What shipped (this PR):**
+
+1. **Workout-stop no longer disconnects the glasses.**
+   `WorkoutViewModel.confirmSave` and `confirmCancel` had three structural bugs working against the user:
+   (a) `pushHUDSummaryIfConnected()` ran *after* `controller.end()`, racing the OS for foreground runtime that HK had just released — on a real Watch the finish frame got dropped before BLE could ship it;
+   (b) the immediate `teardownTransport()` then severed the link, requiring a manual reconnect for every subsequent run;
+   (c) the same teardown lived on the cancel path, conflating "discard this run" with "unpair my hardware."
+   Fix: (1) stop the per-tick HUD task first so the live HUD can't race-overwrite the summary; (2) push the finish frame while HK is still alive (foreground runtime + radio both guaranteed); (3) end the HK session; (4) **do not** call `teardownTransport()`. The private `teardownTransport()` helper is deleted to make it impossible for a future edit to re-introduce the bug. The user's only explicit disconnect path remains `disconnectGlasses()` (existing affordance on the connect surface), per Richards's ADR rule R5.
+
+2. **Finish-screen Y anchors recomputed under the rc16 lens-flip formula.**
+   The rc12-era `timeY/distanceY/paceY` constants (166/86/6) were derived under the obsolete `y_fb = 206 − T` formula (font height subtracted). Walking the old `paceY=6` through the canonical rc16 `y_fb = 255 − wearer_top` formula puts the distance text at wearer-T 249, wearer-bottom 313 — 57 px off the bottom of the 256-px panel. Bench observers never spotted it because the disconnect-on-stop bug tore the link down before anyone could read the finish screen. rc17 keeps the link up, so the screen needs to be pixel-correct. Recomputed constants:
+   - `finishBannerY   = 239` (wearer-top 16)
+   - `finishTimeY     = 159` (wearer-top 96)
+   - `finishDistanceY = 79`  (wearer-top 176)
+   Even 16-px gaps, 16-px top/bottom margins, 3 lines of font 3 (h=64) — symmetric and entirely on-panel. Old `timeY/distanceY/paceY` retained as `@available(*, deprecated, renamed:)` aliases pointing to the new constants so any in-flight branches that reach for them get a compiler nudge to the surface-scoped names (per Richards's review rec #3 — `paceY` was rendering the *distance* string and the name lied about its use). Pinned in two new tests: `test_finishScreenYCoords_followLensFlipFormula_rc17` asserts the formula AND the on-panel invariant for every line; `test_summaryFrames_yAnchorsUseFinishScreenConstants_rc17` decodes the wire bytes and asserts the per-frame y-anchor matches the named constant — so a swap of banner/time/distance order or an accidental return to the old constants will trip CI.
+
+3. **Glasses battery → iPhone via WatchConnectivity, phone-optional.**
+   `WCMessage` gains a `glassesBattery(level: Int)` case (schema v3, backward-compatible with v2). `WorkoutMirrorPublisher` protocol adds `sendGlassesBattery(_:)`. `WatchConnectivityService.sendGlassesBattery` routes through the existing three-tier `transmit(..., preferQueued: true)` machinery, which selects `transferUserInfo` (queued, survives transient disconnect, latest-only semantics fit the 30 s notify cadence). `WorkoutViewModel.handleGlassesEvent` consumes Weiss's `.batteryLevel(Int)` event and forwards. Phone-optional contract enforced by the existing `transmit` helper: if the session is unactivated or unreachable, the call is a silent no-op — the watch run is never blocked on phone availability. Iphone side: `WorkoutMirrorViewModel` stores `glassesBatteryLevel: Int?` (nil until first notification), `GlassesBatteryIcon` maps to SF Symbol + tint (red ≤15, orange ≤30, green otherwise), `WorkoutMirrorView` renders a row above the metrics grid. No new permissions, no new state machine.
+
+**Transport choice rationale (Task 3 — why `transferUserInfo` over `sendMessage`/`updateApplicationContext`):**
+- Battery is low-frequency (~30 s, per Bluetooth Battery Service spec) and non-critical — fits the "latest known value, eventually" semantics of `transferUserInfo` precisely.
+- `sendMessage` requires `session.isReachable == true`. On a watch-only run (phone in another room / powered off), that's false, and the message is dropped. We'd need our own queue. Worse than nothing.
+- `updateApplicationContext` overwrites — a flurry of pushes during a reconnect storm collapses to the latest, which is what we want, but it doesn't fire wake-up on the receiver. `transferUserInfo` does, and the receiver code is event-driven via `WCSessionDelegate.didReceiveUserInfo`.
+- The existing three-tier helper already implements the "queued, no blocking, no retention beyond the OS queue" semantics — we get the phone-optional contract for free.
+
+**Status:** PR open, CI pending, 178/178 tests green locally (was 176; +2 from finish-screen pinning). Follows the established release-mechanics-bundle-bump pattern: `project.yml` bumped 31→32 + `MARKETING_VERSION` 0.3.0→0.4.0 in the same commit; Info.plist placeholders verified untouched (`$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)` preserved); xcodegen ran with no project.pbxproj delta. Tag will be `v0.4.0-rc1` per the MARKETING_VERSION bump (coordinator/Scribe to tag after merge per Joe's auto-release directive).
+
+**Scope guard.** Untouched: rotation (4 / topLR), leftMargin (284), live HUD coords (240/170/77/83), live icons (chrono/heart/distance/pace), live font split (F2 line 1, F3 lines 2-3), `formatHeartRate`, holdFlush, cfgSet, queryID, BLE write serialization, flow control, power-on encoders, `RunningHUDPushPolicy`, splash banner constants. Defensive resets at `WorkoutViewModel.start()` (`hudPushPolicy.reset()`, `needsHUDPowerOn = true`) verified still correct under the new "link stays up" contract: a re-start now finds the adapter already `.connected` and the policy reset is harmless (issues a fresh state baseline for the new run's HUD push gate).
+
+### 2026-05-19T18:35:00-04:00: ADR — BLE link to ActiveLook glasses is user-managed, not workout-scoped
+
+**By:** Richards (Lead / Architect)
+**Status:** Accepted. Canonical contract for v0.4 and beyond. Supersedes the implicit "workout owns the link" model present pre-rc17. Codifies the rc17 `confirmSave`/`confirmCancel` behavior already in `WorkoutViewModel.swift`.
+
+**What:**
+
+The BLE link to the ActiveLook glasses is a **user-managed peripheral session**, not a workout-scoped resource. Workout state and link state are independent state machines that observe each other; neither commands the other's lifecycle.
+
+**Contract — link lifecycle:**
+
+1. **Bring-up triggers (the only ones):**
+   - User taps "Connect Glasses" in the pre-run sheet, OR
+   - App launch reattaches a previously-paired transport that is in range, OR
+   - Auto-reconnect succeeds after a transient drop (see Reconnect Policy).
+2. **Tear-down triggers (the only ones):**
+   - User taps "Disconnect glasses" (explicit UI affordance), OR
+   - Glasses go physically out of range / are powered off / battery dies, OR
+   - User unpairs at the system level.
+3. **Explicitly NOT a tear-down trigger:** workout `start`, `pause`, `resume`, `stop`, `save`, `cancel`, or `discard`. App backgrounding. Watch wrist-down. HK session end. Phone disconnect.
+
+**Invariants (true at all times):**
+
+- **I1.** If the user has paired glasses AND the glasses are in range AND powered, the link SHOULD be `.connected`. Workout state is irrelevant to this predicate.
+- **I2.** The finish HUD frame, once delivered, MUST remain visible on the glasses until either (a) the user starts a new workout (live HUD takes over), (b) the user disconnects, or (c) the glasses go out of range. No code path in the workout shutdown sequence is allowed to clear it.
+- **I3.** Characteristic subscriptions (HUD writes, flow-control notify, battery 0x2A19 notify, future HR push, …) are properties of **the link**, not of the workout. They are established once at `.connected` and survive every workout boundary.
+- **I4.** The phone is never a precondition for any link invariant above. Watch + glasses is a complete, self-sufficient pair.
+
+**Tear-down rules (negative space, stated explicitly because rc16 and prior violated them):**
+
+- **R1.** `WorkoutViewModel.confirmSave` MUST NOT call `disconnect()` / `teardownTransport()`. The finish frame is pushed while the HK session is still alive (foreground runtime + radio guaranteed), then the HK session ends, then the link is **intentionally left up**.
+- **R2.** `WorkoutViewModel.confirmCancel` MUST NOT call `disconnect()`. Discarding a run is a workout-domain decision and has zero authority over peripheral pairing.
+- **R3.** App-background MAY pause non-essential characteristic *notifications* (e.g., throttle battery from 30s to 5min) but MUST NOT call `centralManager.cancelPeripheralConnection`. The link stays up; only telemetry rate changes.
+- **R4.** Watch wrist-down / screen-off does not affect the link. CoreBluetooth handles radio scheduling; we do nothing.
+- **R5.** Only two code paths are permitted to invoke `transport.disconnect()`: (a) the user-facing `disconnectGlasses()` action on the settings/idle surface, (b) the system-initiated cleanup when CoreBluetooth reports the peripheral as unrecoverable (state = `.failed` or terminal error after the reconnect budget is exhausted).
+
+**Reconnect policy:**
+
+- **P1.** On any non-user-initiated drop (`.disconnected` arrives without a preceding user disconnect action), the adapter immediately schedules an auto-reconnect attempt.
+- **P2.** Backoff: 1s → 2s → 5s → 15s → 30s → 60s, then 60s steady. Capped at 60s; no upper limit on total attempts — we keep trying until the user explicitly disconnects, unpairs, or kills the app. (Rationale: a phone falling out of a runner's pocket should reconnect when retrieved 20 minutes later without UI intervention.)
+- **P3.** Reconnect attempts during an active workout get the short end of the schedule (1s/2s/5s/15s) because the wearer is actively using the HUD. After the workout has been idle for 5 minutes with no successful reconnect, fall to the long end (30s/60s).
+- **P4.** A successful reconnect MUST re-establish all subscriptions from I3 before `.connected` is published. The `.connected` state means "ready to receive writes," not just "ATT layer up." (See `activelook-ble-adapter-pitfalls` skill — flow-control gate is mandatory.)
+- **P5.** Reconnect does NOT push any HUD content. If a workout is in progress, the next live-HUD tick will paint. If not, the glasses show whatever they last showed (typically the finish screen or ALooK home).
+
+**Subscription lifecycle:**
+
+- **S1.** Subscriptions are **per-link**, established once on each transition to `.connected` (initial or reconnect). They survive every workout `start`/`stop` boundary.
+- **S2.** Battery characteristic (0x180F service / 0x2A19 char) subscribes on every `.connected`, default 30s notification cadence. No workout dependency.
+- **S3.** HUD-write characteristic and flow-control notify characteristic subscribe per the existing `GlassesInitializer.isReady()` gate.
+- **S4.** Future characteristics (HR push, cue notify, etc.) follow the same per-link rule. Any PR that subscribes inside `WorkoutController.start` or unsubscribes inside `WorkoutController.end` will be rejected.
+
+**Phone-optional implication:**
+
+- **PO1.** Battery level reaching the phone is a **"nice if present"** projection, not a contract. The path is: glasses → watch (authoritative subscriber) → phone (via `WatchConnectivityService`, opportunistic).
+- **PO2.** If the phone is offline / out of range / app not installed, the watch continues to receive battery notifications, surface them on-watch (settings/status chip), and warn on low battery via haptic. Zero functional degradation on the watch+glasses pair.
+- **PO3.** No phone-side code path may be on the critical path of any link operation: connect, reconnect, subscribe, write HUD, read battery, disconnect. Phone is downstream of the watch for every glasses-related fact.
+
+**Why:**
+
+1. **User mental model.** Paired devices stay paired. Apple's AirPods / Watch / car CarPlay all behave this way; making AR glasses uniquely tear themselves down at "finish run" violates the principle of least surprise. Joe's rc16 bench report ("the connection drops when I finish a run … I have to manually reconnect") is exactly this violation.
+2. **The finish frame requires it.** Live HUD ends with a 2-field summary (`summaryFrames(for:)`) that the wearer reads after stopping. If we disconnect, the frame either never lands or is wiped within the same second. The whole point of the summary surface is post-workout dwell time.
+3. **Battery characteristic requires it.** A subscription that lives only inside a workout would give us battery data exactly when we don't need it (during a run, when the radio is busy with HUD writes) and nothing when we do (idle, deciding whether to charge before tomorrow's run). Per-link subscription means battery telemetry is always current as long as the glasses are nearby.
+4. **Reconnect cost dominates idle radio cost.** A full ActiveLook handshake (scan → connect → service discovery → flow-control gate → subscriptions) is ~2-5s of user-visible lag and burns more energy than an hour of idle GATT-connected link. Tearing down on workout-end optimizes the wrong axis.
+5. **Phone-optional is foundational** (Joe's 2026-05-19T18:20 directive). Any architecture that routes peripheral lifecycle through the phone — even as a convenience — risks accidentally upgrading it to a requirement.
+
+**Trade-offs considered and rejected:**
+
+- **A. Workout-scoped link (the rc16 status quo).** Saves ~all idle radio power. **REJECTED** — reconnect lag is worse UX than always-on radio cost; finish-frame contract becomes impossible; battery subscription has no good home.
+- **B. Link auto-disconnects after N minutes of idle.** Compromise to "save battery when forgotten." **REJECTED** — same UX failure mode (silent disconnect → wearer surprised on next workout start), and the "battery" gain is illusory: idle GATT-connected on Engo 2 measures ~0 mW above baseline per rc16 bench. The right battery savings come from notification-rate throttling (R3), not link teardown.
+- **C. Phone owns the BLE link, watch tunnels through phone.** Would simplify watch power profile. **REJECTED** — violates PO1/PO2/PO3. Phone is OPTIONAL per Joe's directive; routing peripheral I/O through it makes it required.
+- **D. Subscriptions are per-workout (re-subscribe at start, unsubscribe at end).** "Cleaner" lifecycle. **REJECTED** — battery characteristic has no workout context; HUD writes during pre-run pairing sheet would fail; re-subscription cost is identical to reconnect cost we already rejected in (A). Per-link is the only coherent answer.
+- **E. App-background disconnects the link.** "Free up the radio." **REJECTED** — backgrounding is a UI concern, not a peripheral concern; CoreBluetooth already handles radio scheduling fairly; the wearer's expectation when they lower their wrist mid-run is that the HUD stays alive when they raise it again, not that they re-pair.
+
+**Implications:**
+
+- **Weiss (BLE / glasses adapter):** Audit `ActiveLookGlassesAdapter` and `GlassesService` for any `disconnect()` call sites not gated on the two R5 paths; remove or guard. Implement P1–P5 reconnect backoff in the adapter (currently absent — `DisconnectResilienceTests.swift` exercises detection only). Make subscriptions S1–S4 idempotent on every `.connected` transition. Battery 0x2A19 wires into the link's on-connect setup, not into any workout entrypoint.
+- **Laughlin (workout / WorkoutController):** No new work — `WorkoutViewModel.confirmSave` and `confirmCancel` already comply (rc17). Add a regression test that asserts `transport.disconnect()` is NOT called inside either path. `WorkoutController.end()` must not touch `GlassesFrameTransport` beyond the final summary push.
+- **Amber (workout / metrics):** When wiring battery-level into `WorkoutSummary` or live metrics, read from the watch-side battery stream (per-link subscriber), never from a workout-scoped source. Phone-side battery display is purely a `WatchConnectivityService` mirror.
+- **Tests:** `DisconnectResilienceTests` needs new cases covering (a) drop-mid-workout → auto-reconnect → live HUD resumes without UI intervention, (b) `confirmSave` followed by reading the transport state — MUST be `.connected`, (c) reconnect backoff schedule honors P2.
+- **Docs:** The `dead-code-after-connect` and `activelook-ble-adapter-pitfalls` skills remain authoritative on the connect path. This ADR adds the **lifecycle envelope** around them — they say "how to connect"; this says "when, and for how long."
+- **Future battery feature:** Designs must reference this ADR and explicitly call out the per-link subscription pattern + phone-optional projection.
+
+**Related:**
+- `richards-rc13-rc16-review` (recommendation #5, now formalized)
+- `copilot-directive-2026-05-19T18-20-phone-optional` (foundational constraint cited in PO1–PO3)
+- `WorkoutViewModel.swift` lines 229–297 (rc17 implementation already in compliance)
+- `.squad/skills/activelook-ble-adapter-pitfalls/SKILL.md` (connect-path serialization rules)
+- `.squad/skills/paired-hardware-lifecycle-contract/SKILL.md` (generalized pattern — new)
+
+### 2026-05-19T18:30:00-04:00: rc17 — adapter audit + battery filter + reconnect policy aligned to ADR
+
+**Date:** 2026-05-19T18:30:00-04:00
+**Author:** Weiss (AR Integration)
+**Branch:** `fix/rc17-lifecycle-finish-battery` (joint rc17 PR with Amber + Laughlin)
+**Inputs:**
+- Joe's rc16 bench report ("connection drops on workout-stop, finish screen missing").
+- Richards's ADR `richards-adr-ble-link-lifecycle` (canonical BLE-link contract for v0.4+).
+- Amber's QA scenarios `amber-rc17-qa-scenarios` (acceptance criteria, esp. §C battery and §A6 user-disconnect).
+- User directive `2026-05-19T18:20` (phone is NEVER a requirement).
+- Engo 2 Battery Service spec (`0x180F` service, `0x2A19` characteristic, ~30 s notify cadence).
+
+### What changed (adapter / Core, Weiss's slice)
+
+1. **`ExponentialBackoff.adrV04` (new, Core).** Schedule `1s → 2s → 4s → 8s → 16s → 32s → 60s` steady. Adapter default constructor now uses this in place of the old `ExponentialBackoff()` (1→2→4→8 capped at 8 s). Approximates the ADR's prose `1/2/5/15/30/60` target with the existing pure-exponential math.
+
+2. **`maxReconnectAttempts: Int = .max` (was 30).** Per ADR P2: no upper limit on attempts. The 60-second backoff ceiling bounds the cost to one connect attempt per minute, so a powered-off pair of glasses costs at most ~24 connect attempts per day of radio time. Tests may still inject a finite cap.
+
+3. **`BatteryLevelFilter` (new, Core).** Pure-value gatekeeper consumed by `ActiveLookGlassesAdapter.handleBatteryLevel(_:)`:
+   - Drops bytes > 100 (firmware glitches) with a warning, instead of propagating.
+   - Suppresses identical consecutive percents (the ~30 s notify cadence re-publishes the same value most of the time).
+   - `.reset()` is called on every transition out of `.connected`, guaranteeing the first post-reconnect read always lands — the UI was on "—" during the gap and deserves a fresh value.
+
+4. **Adapter cleanup audit.** Confirmed (and documented in code comments) that the only paths invoking `transport.disconnect()` are now (a) user-explicit `disconnectGlasses()` on the pre-run sheet (`WorkoutViewModel.swift:354`), (b) the adapter's own error-recovery teardown when CoreBluetooth state goes unrecoverable. The fused "endSession + disconnect" anti-pattern Joe reported lived in `WorkoutViewModel.confirmSave`/`confirmCancel` — already removed by Amber. No further adapter changes were needed.
+
+### Behaviour contract this RC establishes
+
+- **Workout stop does NOT touch the BLE link.** `confirmSave` and `confirmCancel` push the finish frame while HK extended-runtime is still held, end the HK session, and leave the transport `.connected`. The wearer reads the finish screen at their own pace.
+- **Auto-reconnect is unbounded in attempt count, bounded in rate** (60 s ceiling). A pair of glasses powered off in a drawer for an hour reconnects within ~60 s of being powered back on, without any user action.
+- **Battery characteristic is a per-link subscription** (ADR I3): enabled once on every `.connected` transition (initial + every reconnect), kicked off with an explicit `readValue(for:)` so the first percent lands within ~2 s instead of waiting for the 30 s notify cadence.
+- **Phone is never on the BLE critical path** (PO1–PO3). Battery flows glasses → watch (authoritative) → phone (opportunistic `transferUserInfo`). Phone offline = phone shows "—"; watch keeps running.
+
+### Test results
+
+- Core (`swift test` in `ARRunnerCore`): **186/186 pass** (1 skipped). Baseline was 176/176 at rc16; +10 tests for the new `BatteryLevelFilter` (7), the `adrV04` backoff envelope (1), and Amber's WC schema-v3 / battery-UUID-pin additions (2).
+- `xcodebuild` (`ARRunnerWatch` scheme, generic watchOS device): **BUILD SUCCEEDED**.
+- Adapter behaviour under live BLE is bench-validation territory (Joe owns); Amber's QA scenarios `A1–A8, B1–B6, C1–C7, D1, D5` are the rc17 acceptance criteria.
+
+### Files I touched
+
+```
+ARRunnerCore/Sources/ARRunnerCore/Glasses/ReconnectPolicy.swift          (+adrV04)
+ARRunnerCore/Sources/ARRunnerCore/Glasses/BatteryLevelFilter.swift       (new)
+ARRunnerCore/Tests/ARRunnerCoreTests/Glasses/BatteryLevelFilterTests.swift (new, 7 tests)
+ARRunnerCore/Tests/ARRunnerCoreTests/Glasses/ExponentialBackoffTests.swift (+adrV04 envelope test)
+ARRunnerWatch/Glasses/ActiveLookGlassesAdapter.swift                     (filter wired, defaults updated, reset on drop/disconnect)
+.squad/skills/activelook-ble-adapter-pitfalls/SKILL.md                   (per-link subscription rule, dedup-reset pattern)
+```
+
+Files modified by Laughlin/Amber/Richards in the same working tree (their territory, bundled into the same PR per Joe's rc17 directive) are not enumerated here.
+
+### Trade-offs and explicit non-goals
+
+- **Did not switch to a stair-step backoff schedule** matching the ADR's prose `1/2/5/15/30/60` verbatim. The pure-exponential approximation differs from the named values by ≤4 s per slot; the cost of adding a lookup-table backoff type isn't justified. If a future RC needs the exact schedule (e.g. measured radio-cost driven), introduce `BackoffSchedule.staircase([Double])` then — not now.
+- **Did not add low-battery threshold UX** (Amber QA C8). Out of rc17 scope by joint agreement; deferred to rc18.
+- **Did not change CoreBluetooth `restoreIdentifier` setup** (Amber QA A5). App-kill recovery is its own piece of work; reach for it when bench testing surfaces a real failure case rather than speculatively.
+- **Did not implement the rc16-formula audit of finish-screen Y anchors** (Richards rec #1). That's Laughlin's territory and not blocking rc17.
+
+### Related
+
+- `richards-adr-ble-link-lifecycle` (this RC is the first implementation aligned to the ADR).
+- `amber-rc17-qa-scenarios` (Joe + reviewers can run §C1–C7 against rc17 with this code).
+- `paired-hardware-lifecycle-contract` skill (generalised pattern; AR-Runner is the reference application).
+- `activelook-ble-adapter-pitfalls` skill (updated with the per-link subscription + filter-reset rules).

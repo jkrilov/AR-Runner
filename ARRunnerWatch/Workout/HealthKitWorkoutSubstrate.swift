@@ -247,13 +247,10 @@ extension HealthKitWorkoutSubstrate: HKLiveWorkoutBuilderDelegate {
             guard let quantityType = type as? HKQuantityType,
                   let stats = workoutBuilder.statistics(for: quantityType) else { continue }
 
-            // v0.2.0 device feedback (Joe): distance was jumping per sample
-            // instead of monotonically increasing because we used
-            // `mostRecentQuantity()`, which is a single per-sample reading.
             // Cumulative HK types (distance, active energy) must source
-            // from `sumQuantity()`; instantaneous types (heart rate) still
-            // want the most-recent reading. See
-            // `.squad/skills/healthkit-derived-metrics-watchos`.
+            // from `sumQuantity()` so the value monotonically increases;
+            // instantaneous types (heart rate) want `mostRecentQuantity()`.
+            // See `.squad/skills/healthkit-derived-metrics-watchos`.
             let quantity: HKQuantity?
             switch quantityType {
             case HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning),
@@ -286,12 +283,8 @@ extension HealthKitWorkoutSubstrate: HKLiveWorkoutBuilderDelegate {
         case HKQuantityType.quantityType(forIdentifier: .distanceCycling):
             return WorkoutMetric(kind: .distance, value: quantity.doubleValue(for: .meter()), unit: "m", timestamp: timestamp)
         case HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned):
-            // v0.2 audit P1.3: previously routed to `.duration`, which
-            // downstream consumers default-cased to nothing — live HK
-            // kcal was silently dropped. Now uses the dedicated
-            // `.energy` case (Amber's Core change, commit 9571e23) via
-            // the Core-side mapping helper so the contract is testable
-            // without a watchOS test host.
+            // Route through the Core helper so the mapping contract is
+            // exercisable from `ARRunnerCoreTests` without a watchOS host.
             return HealthKitMetricMapping.activeEnergy(
                 kilocalories: quantity.doubleValue(for: .kilocalorie()),
                 timestamp: timestamp

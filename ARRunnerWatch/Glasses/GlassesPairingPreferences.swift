@@ -55,8 +55,8 @@ public final class GlassesPairingPreferences: @unchecked Sendable {
         }
     }
 
-    /// Test/debug-only path to clear the flag (e.g. for a "Forget Glasses"
-    /// affordance — not yet exposed in v0.2 UI).
+    /// Clear both flags. Used by tests and any future "Forget Glasses"
+    /// affordance.
     public func clear() {
         defaults.removeObject(forKey: Self.pairedKey)
         defaults.removeObject(forKey: Self.lastKnownPeripheralIDKey)

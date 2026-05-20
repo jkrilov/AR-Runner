@@ -66,11 +66,11 @@ actor GlassesService {
         throttle.reset()
     }
 
-    /// Fan-out entry point (P1.2 fix): map a `WorkoutMetric` into the active
-    /// layout's slot index and push it as a `HUDFieldUpdate`. Silently drops
-    /// when no layout is active, when the metric is not in the active layout,
-    /// when the adapter is not connected, or when the throttle says wait.
-    /// Never throws to the workout pipeline — BLE noise stays in BLE.
+    /// Fan-out entry point: map a `WorkoutMetric` into the active layout's
+    /// slot index and push it as a `HUDFieldUpdate`. Silently drops when no
+    /// layout is active, when the metric is not in the active layout, when
+    /// the adapter is not connected, or when the throttle says wait. Never
+    /// throws to the workout pipeline — BLE noise stays in BLE.
     func apply(metric: WorkoutMetric) async {
         guard let activeLayout, let activeLayoutID else { return }
         guard let slot = activeLayout.slots.firstIndex(where: { $0 == metric.kind }) else { return }
@@ -87,13 +87,10 @@ actor GlassesService {
 
     func update(metric: WorkoutMetric, fieldIndex: UInt8, formatter: (WorkoutMetric) -> String) async throws {
         guard let activeLayoutID else { return }
-        // P1.2 (audit 2026-05-16): no-op when the adapter is not connected —
-        // calling `updateField` would throw `.notConnected`, but more
-        // importantly we want the hot path silently absorbed so the workout
-        // pipeline never sees BLE state.
+        // No-op when the adapter is not connected so the workout pipeline
+        // never sees BLE state. Throttle protects the link from per-tick
+        // bursts: last-write-wins per fieldIndex at ~1 Hz.
         guard await transport.connectionState == .connected else { return }
-        // P1.2 throttle: protect the BLE link from the controller's per-tick
-        // burst. Last-write-wins per fieldIndex at 1Hz.
         guard throttle.shouldSend(fieldIndex: fieldIndex, now: now()) else { return }
         let update = HUDFieldUpdate(
             layoutID: activeLayoutID,
