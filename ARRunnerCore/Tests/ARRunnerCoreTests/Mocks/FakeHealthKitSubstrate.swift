@@ -36,6 +36,10 @@ public actor FakeHealthKitSubstrate: WorkoutHealthSubstrate {
         case pause(at: Date)
         case resume(at: Date)
         case end(at: Date)
+        /// rc2 (2026-05-20): cancel-without-save terminal path. Asserting
+        /// the absence of `.end(at:)` plus the presence of `.discard(at:)`
+        /// is the discard-vs-save regression guard for item #4.
+        case discard(at: Date)
     }
 
     public nonisolated let stateEvents: AsyncStream<WorkoutSubstratePhase>
@@ -127,6 +131,18 @@ public actor FakeHealthKitSubstrate: WorkoutHealthSubstrate {
         stateContinuation.finish()
         metricContinuation.finish()
         return result
+    }
+
+    /// rc2 — discard terminal path. Distinct from `end` so the
+    /// `confirmCancel`-→-`discard`-→-no-save assertion can pin the
+    /// data-integrity contract without inspecting the result.
+    public func discard(at date: Date) async throws {
+        recordedCalls.append(.discard(at: date))
+        replayTask?.cancel()
+        replayTask = nil
+        transitionPhase(to: .ended)
+        stateContinuation.finish()
+        metricContinuation.finish()
     }
 
     // MARK: - Test affordances

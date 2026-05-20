@@ -12,6 +12,7 @@ final class WorkoutTickMessageTests: XCTestCase {
             sport: .running,
             phase: .running,
             timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000 - 312),
             elapsedSeconds: 312,
             heartRateBeatsPerMinute: 156,
             distanceMeters: 980,
@@ -26,6 +27,50 @@ final class WorkoutTickMessageTests: XCTestCase {
 
         XCTAssertEqual(decoded, original)
         XCTAssertEqual(decoded.schemaVersion, WCMessage.currentSchemaVersion)
+        if case .workoutSnapshot(let snap) = decoded {
+            XCTAssertEqual(snap.startedAt, snapshot.startedAt)
+        } else {
+            XCTFail("expected .workoutSnapshot, got \(decoded)")
+        }
+    }
+
+    /// rc2 — WC schema bumped 3 → 4 to flag the additive
+    /// `WorkoutTickMessage.startedAt` field for the phone-side "Started"
+    /// row. Pin the literal version so a regression knocking it back to
+    /// 3 trips CI.
+    func testCurrentSchemaVersionIsFour_rc2() {
+        XCTAssertEqual(WCMessage.currentSchemaVersion, 4)
+    }
+
+    /// rc2 — a v3 snapshot from an older watch build (no `startedAt`)
+    /// must still decode on a v4 phone. The phone falls back to
+    /// `timestamp − elapsedSeconds` for display when `startedAt` is nil.
+    func testV3SnapshotWithoutStartedAtStillDecodesOnV4() throws {
+        let v3JSON = """
+        {
+          "schemaVersion": 3,
+          "kind": "workoutSnapshot",
+          "snapshot": {
+            "sessionID": "00000000-0000-0000-0000-0000000000ab",
+            "sport": "running",
+            "phase": "running",
+            "timestamp": 1700000000,
+            "elapsedSeconds": 312,
+            "heartRateBeatsPerMinute": 156,
+            "distanceMeters": 980,
+            "paceSecondsPerKilometer": 320,
+            "estimatedActiveKilocalories": 47.5,
+            "glassesConnected": true
+          }
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(WCMessage.self, from: v3JSON)
+        guard case .workoutSnapshot(let snap) = decoded else {
+            XCTFail("expected workoutSnapshot, got \(decoded)"); return
+        }
+        XCTAssertNil(snap.startedAt, "v3 snapshots have no startedAt — phone must fall back")
+        XCTAssertEqual(snap.elapsedSeconds, 312)
     }
 
     func testV1MessagesStillDecodeAfterSchemaBump() throws {

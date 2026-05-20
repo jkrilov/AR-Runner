@@ -273,21 +273,30 @@ final class WorkoutViewModel {
         // from the ended/idle screen via `disconnectGlasses()` (rc17 fix).
     }
 
-    /// Cancel path: end the underlying HK session (the protocol does not
-    /// support a discard in v0.2) and mark the local UI as cancelled so no
-    /// summary is shown.
+    /// Cancel path: discard the underlying HK workout (no `HKWorkout`
+    /// sample is written) and mark the local UI as cancelled.
     ///
-    /// rc17 fix: matches `confirmSave` — we stop runtime tasks and end the
-    /// HK session but leave the BLE transport connected. Cancel is a UX
-    /// choice ("discard this run"), not a glasses-pairing teardown — the
-    /// wearer may immediately start another run, and forcing them to
-    /// re-pair is the regression Joe reported on rc16.
+    /// **rc2 (2026-05-20) bench-feedback fix — data integrity.** Joe ran a
+    /// 5K and discarded the run; it still appeared in Apple Fitness. Root
+    /// cause: prior to rc2 this method called `controller.end()`, which
+    /// goes through `HealthKitWorkoutSubstrate.end(at:)` → `builder
+    /// .finishWorkout()` and **always persists** an `HKWorkout`. We now
+    /// route through the dedicated `controller.discard()` terminal path
+    /// (rc2 — `WorkoutHealthSubstrate.discard(at:)`) which calls
+    /// `builder.discardWorkout()` so nothing reaches Health. There is
+    /// deliberately NO "save then maybe delete" — a delete-failure on
+    /// save-first would leak partial data, which is exactly the class of
+    /// bug we're closing.
+    ///
+    /// rc17 BLE-link contract still holds: stop runtime tasks, but leave
+    /// the BLE transport connected. The wearer disconnects explicitly via
+    /// `disconnectGlasses()` per ADR-1.
     func confirmCancel() async {
         guard let controller else { return }
         launchState = .ending
         stopRuntimeTasks()
         do {
-            _ = try await controller.end()
+            try await controller.discard()
         } catch {
             launchState = .failed(String(describing: error))
             return
@@ -533,10 +542,11 @@ final class WorkoutViewModel {
     fileprivate func pushHUDSummaryIfConnected() async {
         guard let transport else { return }
         guard await transport.connectionState == .connected else { return }
-        // rc14: finish-screen payload ignores HR/pace (summaryFrames
-        // renders only the Time + Distance "final stats" per Joe). We
-        // still pass HR through for Payload symmetry; the summary
-        // builder discards it.
+        // rc2: finish-screen reshape (3-line / 4-data layout — "Finished!",
+        // distance, time + right-justified pace). The summary builder now
+        // uses time, distance, and pace from the payload (rc14's HR/pace
+        // drop is superseded — see `RunningHUDFrame.summaryFrames`). HR
+        // is still passed through for Payload symmetry but unused.
         let payload = RunningHUDFrame.payload(
             elapsedSeconds: elapsed,
             distanceMeters: distanceMeters ?? 0,
@@ -764,6 +774,11 @@ final class WorkoutViewModel {
             sport: sport,
             phase: phase,
             timestamp: Date(),
+            // rc2 — propagate the workout's wall-clock start time so the
+            // phone mirror can show a "Started at …" row. Carried on
+            // every tick (not a one-shot lifecycle event) so a phone
+            // that wakes mid-run sees it on the first snapshot.
+            startedAt: startedAt,
             elapsedSeconds: elapsed,
             heartRateBeatsPerMinute: heartRate,
             distanceMeters: distanceMeters,

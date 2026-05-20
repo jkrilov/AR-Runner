@@ -286,37 +286,33 @@ final class RunningHUDFrameTests: XCTestCase {
         }
     }
 
-    /// rc14: finish screen drops pace. Joe's directive: "Time + Distance
-    /// ONLY (final stats)". Layout: clear + "Workout Complete" + time +
-    /// distance = 4 frames. Top line is the banner, then time, then
-    /// distance — no pace, no HR.
-    func test_summaryFrames_renderTimeAndDistanceOnlyPerFinishScreenDirective() {
+    /// rc2 (2026-05-20) — finish-screen reshape per Joe's 5K bench
+    /// feedback. Supersedes the rc14 "Time + Distance only" rule. New
+    /// layout has 5 frames: clear + 4 txt (banner / distance / time / pace).
+    /// Pace is right-justified on the same visual line as time (line 3).
+    func test_summaryFrames_renderRc2ThreeLineFourDataLayout() {
         let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.summaryFrames(for: payload)
-        XCTAssertEqual(frames.count, 4, "summary = clear + banner + time + distance (rc14)")
-        // frames[1] = banner, frames[2] = time, frames[3] = distance.
-        // Banner at top (timeY), time at middle (distanceY), distance at bottom (paceY).
-        let bannerStr = stringPayload(from: frames[1])
-        let timeStr   = stringPayload(from: frames[2])
-        let distStr   = stringPayload(from: frames[3])
-        XCTAssertEqual(bannerStr, "Workout Complete")
-        XCTAssertEqual(timeStr,   payload.time)
-        XCTAssertEqual(distStr,   payload.distance)
-        // Pace must NOT appear in any frame's UTF-8 region.
+        XCTAssertEqual(frames.count, 5, "summary = clear + banner + distance + time + pace (rc2)")
+        XCTAssertEqual(stringPayload(from: frames[1]), "Finished!")
+        XCTAssertEqual(stringPayload(from: frames[2]), payload.distance)
+        XCTAssertEqual(stringPayload(from: frames[3]), payload.time)
+        XCTAssertEqual(stringPayload(from: frames[4]), payload.pace)
+        // HR must NOT appear in any frame's UTF-8 region.
         for frame in frames where frame[1] == ActiveLookCommand.ID.textUpdate.rawValue {
-            let str = stringPayload(from: frame)
-            XCTAssertNotEqual(str, payload.pace, "summary must not render pace (rc14 directive)")
-            XCTAssertNotEqual(str, payload.heartRate, "summary must not render HR (rc14 directive)")
+            XCTAssertNotEqual(stringPayload(from: frame), payload.heartRate,
+                              "rc2 finish-screen omits HR")
         }
     }
 
-    func test_summaryFrames_replaceTopLineWithCompleteBanner() {
+    /// rc2 — line 1 banner reads "Finished!" (Joe's directive, replacing
+    /// the rc14 "Workout Complete" string).
+    func test_summaryFrames_topLineReadsFinished_rc2() {
         let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.summaryFrames(for: payload)
-        XCTAssertEqual(frames.count, 4)
-        // First txt frame's string region carries "Workout Complete".
+        XCTAssertGreaterThanOrEqual(frames.count, 2)
         let topLine = frames[1]
-        let banner = Array("Workout Complete".utf8)
+        let banner = Array("Finished!".utf8)
         let needleEnd = topLine.count - 2 // exclusive, before 0x00 + 0xAA
         let needleStart = needleEnd - banner.count
         XCTAssertEqual(Array(topLine[needleStart..<needleEnd]), banner)
@@ -335,10 +331,10 @@ final class RunningHUDFrameTests: XCTestCase {
     func test_layoutCoordinates_fitWithinEngo2Panel() {
         // Sanity guard for any future tuning — keep all baselines inside
         // the 304×256 panel so we never silently push text off-screen.
-        XCTAssertLessThan(RunningHUDFrame.Layout.finishBannerY,   RunningHUDFrame.Layout.screenHeight)
-        XCTAssertLessThan(RunningHUDFrame.Layout.finishTimeY,     RunningHUDFrame.Layout.screenHeight)
-        XCTAssertLessThan(RunningHUDFrame.Layout.finishDistanceY, RunningHUDFrame.Layout.screenHeight)
-        XCTAssertGreaterThanOrEqual(RunningHUDFrame.Layout.finishDistanceY, 0,
+        XCTAssertLessThan(RunningHUDFrame.Layout.finishLine1Y, RunningHUDFrame.Layout.screenHeight)
+        XCTAssertLessThan(RunningHUDFrame.Layout.finishLine2Y, RunningHUDFrame.Layout.screenHeight)
+        XCTAssertLessThan(RunningHUDFrame.Layout.finishLine3Y, RunningHUDFrame.Layout.screenHeight)
+        XCTAssertGreaterThanOrEqual(RunningHUDFrame.Layout.finishLine3Y, 0,
                                     "lowest finish-screen line top must stay in-bounds")
         XCTAssertLessThan(RunningHUDFrame.Layout.leftMargin, RunningHUDFrame.Layout.screenWidth)
         // rc16: 3-line mixed-font live HUD coordinates (text anchors)
@@ -368,41 +364,34 @@ final class RunningHUDFrameTests: XCTestCase {
         XCTAssertLessThanOrEqual(RunningHUDFrame.Layout.paceIconY + 28, sh)
     }
 
-    /// rc17 — finish-screen Y anchors revalidated under the canonical
-    /// `y_fb = 255 − wearer_top` lens-flip formula (Richards's rc16
-    /// review rec #1). The rc12-era values (166/86/6) were derived
-    /// under `y_fb = 206 − T` and only "rendered OK" because the
-    /// disconnect-on-stop bug (rc13-16) tore the BLE link down before
-    /// anyone could inspect the finish screen. Walking the old paceY=6
-    /// through the corrected formula puts the distance line at wearer
-    /// bottom 313 → 57 px off-screen. rc17 keeps the link up past
-    /// workout-stop, so the finish screen has to be pixel-correct.
-    ///
-    /// Locked layout (font 3, h=64): banner T=16, time T=96, distance
-    /// T=176 (16-16-16 margins, even 16-px gaps). Asserting BOTH the
-    /// raw constants AND that they obey the rc16 formula so a future
-    /// edit that touches one without the other trips CI.
-    func test_finishScreenYCoords_followLensFlipFormula_rc17() {
-        XCTAssertEqual(RunningHUDFrame.Layout.finishBannerY,   239)
-        XCTAssertEqual(RunningHUDFrame.Layout.finishTimeY,     159)
-        XCTAssertEqual(RunningHUDFrame.Layout.finishDistanceY, 79)
+    /// rc2 (2026-05-20) — finish-screen Y anchors are stable at the rc17
+    /// values (239 / 159 / 79) because the 3-line / 4-data layout fits at
+    /// the same wearer-tops (16 / 96 / 176) under font-3 height 64. The
+    /// rename surfaces the new semantic (line 1 = "Finished!" banner,
+    /// line 2 = distance, line 3 = time + pace). Asserting both the raw
+    /// constants AND the rc16 lens-flip formula so a future edit that
+    /// touches one without the other trips CI.
+    func test_finishScreenYCoords_followLensFlipFormula_rc2() {
+        XCTAssertEqual(RunningHUDFrame.Layout.finishLine1Y, 239)
+        XCTAssertEqual(RunningHUDFrame.Layout.finishLine2Y, 159)
+        XCTAssertEqual(RunningHUDFrame.Layout.finishLine3Y, 79)
 
-        XCTAssertEqual(RunningHUDFrame.Layout.finishBannerY,   255 - 16,
-                       "finishBannerY must equal 255 − wearer_top (rc16 formula)")
-        XCTAssertEqual(RunningHUDFrame.Layout.finishTimeY,     255 - 96,
-                       "finishTimeY must equal 255 − wearer_top (rc16 formula)")
-        XCTAssertEqual(RunningHUDFrame.Layout.finishDistanceY, 255 - 176,
-                       "finishDistanceY must equal 255 − wearer_top (rc16 formula)")
+        XCTAssertEqual(RunningHUDFrame.Layout.finishLine1Y, 255 - 16,
+                       "finishLine1Y must equal 255 − wearer_top (rc16 formula)")
+        XCTAssertEqual(RunningHUDFrame.Layout.finishLine2Y, 255 - 96,
+                       "finishLine2Y must equal 255 − wearer_top (rc16 formula)")
+        XCTAssertEqual(RunningHUDFrame.Layout.finishLine3Y, 255 - 176,
+                       "finishLine3Y must equal 255 − wearer_top (rc16 formula)")
 
         // Every line's wearer-space bottom (top + font-3 height 64) must
         // stay within the 256-px panel. If a future edit nudges any of
         // the three constants past 191 (= 255 - 64), the corresponding
         // line will clip off the bottom of the wearer's view.
-        let fontHeight: Int16 = 64
+        let fontHeight: Int16 = Int16(ALookFontMetrics.height(RunningHUDFrame.Layout.fontSize))
         for (name, yFB) in [
-            ("finishBannerY",   RunningHUDFrame.Layout.finishBannerY),
-            ("finishTimeY",     RunningHUDFrame.Layout.finishTimeY),
-            ("finishDistanceY", RunningHUDFrame.Layout.finishDistanceY)
+            ("finishLine1Y", RunningHUDFrame.Layout.finishLine1Y),
+            ("finishLine2Y", RunningHUDFrame.Layout.finishLine2Y),
+            ("finishLine3Y", RunningHUDFrame.Layout.finishLine3Y)
         ] {
             let wearerTop = 255 - yFB
             XCTAssertLessThanOrEqual(wearerTop + fontHeight, RunningHUDFrame.Layout.screenHeight,
@@ -412,31 +401,75 @@ final class RunningHUDFrameTests: XCTestCase {
         }
     }
 
-    /// rc17 — `summaryFrames` MUST consume the new `finishBannerY /
-    /// finishTimeY / finishDistanceY` constants and MUST do so in the
-    /// banner / time / distance order. Pin both the y-anchor field of
-    /// each `txt` frame and the string payload so a future edit that
-    /// swaps the order (e.g. renders distance at the top) trips CI.
-    func test_summaryFrames_yAnchorsUseFinishScreenConstants_rc17() {
+    /// rc2 — `summaryFrames` MUST consume the new `finishLine1Y /
+    /// finishLine2Y / finishLine3Y` constants and MUST do so in the
+    /// banner / distance / time / pace order. Pin both the y-anchor field
+    /// of each `txt` frame and the string payload so a future edit that
+    /// swaps the order trips CI. Line 3 has TWO txt frames (time + pace)
+    /// at the same y but different x — the time txt uses `Layout.leftMargin`,
+    /// the pace txt uses the width-derived `summaryPaceXFB(for:)` anchor.
+    func test_summaryFrames_yAnchorsUseFinishScreenConstants_rc2() {
         let payload = RunningHUDFrame.Payload(time: "12:34", heartRate: "165", distance: "2.34 mi", pace: "8:30/mi")
         let frames = RunningHUDFrame.summaryFrames(for: payload)
-        XCTAssertEqual(frames.count, 4, "summary = clear + banner + time + distance (rc14)")
+        XCTAssertEqual(frames.count, 5, "summary = clear + banner + distance + time + pace (rc2)")
 
-        struct ExpectedTxt { let frameIndex: Int; let y: Int16; let string: String }
+        struct ExpectedTxt {
+            let frameIndex: Int
+            let y: Int16
+            let x: Int16
+            let string: String
+        }
         let expectations: [ExpectedTxt] = [
-            ExpectedTxt(frameIndex: 1, y: RunningHUDFrame.Layout.finishBannerY,   string: "Workout Complete"),
-            ExpectedTxt(frameIndex: 2, y: RunningHUDFrame.Layout.finishTimeY,     string: payload.time),
-            ExpectedTxt(frameIndex: 3, y: RunningHUDFrame.Layout.finishDistanceY, string: payload.distance)
+            ExpectedTxt(frameIndex: 1, y: RunningHUDFrame.Layout.finishLine1Y,
+                        x: RunningHUDFrame.Layout.leftMargin, string: "Finished!"),
+            ExpectedTxt(frameIndex: 2, y: RunningHUDFrame.Layout.finishLine2Y,
+                        x: RunningHUDFrame.Layout.leftMargin, string: payload.distance),
+            ExpectedTxt(frameIndex: 3, y: RunningHUDFrame.Layout.finishLine3Y,
+                        x: RunningHUDFrame.Layout.leftMargin, string: payload.time),
+            ExpectedTxt(frameIndex: 4, y: RunningHUDFrame.Layout.finishLine3Y,
+                        x: RunningHUDFrame.summaryPaceXFB(for: payload.pace),
+                        string: payload.pace)
         ]
 
         for exp in expectations {
             let frame = frames[exp.frameIndex]
             // Layout: 0xFF | cmd | fmt | len | queryID | x(2) | y(2) | rot | font | color | bytes | 0x00 | 0xAA
-            // y is bytes 7..8 big-endian.
+            // x is bytes 5..6, y is bytes 7..8 (big-endian).
+            let xEncoded = Int16(bitPattern: (UInt16(frame[5]) << 8) | UInt16(frame[6]))
             let yEncoded = Int16(bitPattern: (UInt16(frame[7]) << 8) | UInt16(frame[8]))
             XCTAssertEqual(yEncoded, exp.y,
                            "frame \(exp.frameIndex) y anchor must equal Layout finish constant")
+            XCTAssertEqual(xEncoded, exp.x,
+                           "frame \(exp.frameIndex) x anchor must match expected (left-margin or right-justified pace)")
             XCTAssertEqual(stringPayload(from: frame), exp.string)
+        }
+    }
+
+    /// rc2 — the right-justified pace anchor (`summaryPaceXFB(for:)`)
+    /// must position the pace text inside the panel and to the RIGHT of
+    /// the time text on line 3. Pin the wearer-space invariants.
+    func test_summaryPaceXFB_rightJustifiesWithinPanel() {
+        for pace in ["8:30/mi", "10:42/mi", "12:34/mi"] {
+            let xFB = RunningHUDFrame.summaryPaceXFB(for: pace)
+            let wearerLeft = 303 - Int(xFB)
+            let width = ALookFontMetrics.width(of: pace, fontSize: RunningHUDFrame.Layout.finishLine3Font)
+            let wearerRight = wearerLeft + width
+
+            // Must stay on the wearer-visible panel.
+            XCTAssertGreaterThanOrEqual(wearerLeft, 0,
+                                        "pace \"\(pace)\" must not extend left of panel (wearer_left=\(wearerLeft))")
+            XCTAssertLessThanOrEqual(wearerRight, Int(RunningHUDFrame.Layout.screenWidth),
+                                     "pace \"\(pace)\" must not extend right of panel (wearer_right=\(wearerRight))")
+
+            // The whole pace string must sit to the RIGHT of the time
+            // column. Both share line 3 at font 2 — time text at
+            // `leftMargin` (wearer_left ≈ 19) plus a canonical 5-char
+            // time ("27:43" at font 2 ≈ 90 px) ends at wearer_x ≈ 109.
+            // The pace's wearer_left must clear that.
+            let timeColumnRightEdge = (303 - Int(RunningHUDFrame.Layout.leftMargin))
+                                        + ALookFontMetrics.width(of: "27:43", fontSize: RunningHUDFrame.Layout.finishLine3Font)
+            XCTAssertGreaterThan(wearerLeft, timeColumnRightEdge,
+                                 "pace \"\(pace)\" must sit right of time column (got wearer_left=\(wearerLeft), time-right=\(timeColumnRightEdge))")
         }
     }
 

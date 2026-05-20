@@ -23,6 +23,19 @@ public struct WorkoutTickMessage: Sendable, Codable, Equatable {
     public let phase: WorkoutPhase
     public let timestamp: Date
 
+    /// Wall-clock start time of the workout — the `HKWorkoutSession`
+    /// `startDate` mirrored from the watch. rc2 (2026-05-20) addition for
+    /// the phone-side "Started at …" row in the live mirror. Carried on
+    /// every tick (not a one-shot lifecycle event) so a phone that joins
+    /// the mirror mid-run still sees the start time on the very first
+    /// snapshot it receives — no "wait for the next lifecycle event" race.
+    ///
+    /// **Optional** for backwards compatibility with v3 peers (a watch
+    /// running rc17 / TestFlight build 32 doesn't populate this field;
+    /// the phone falls back to `timestamp − elapsedSeconds` for display).
+    /// WC schema bumped 3 → 4 to flag the additive change.
+    public let startedAt: Date?
+
     /// Seconds since `WorkoutState.startedAt`. Wall-clock derived; not the
     /// HealthKit "active duration" (that one is final-only).
     public let elapsedSeconds: TimeInterval
@@ -42,6 +55,7 @@ public struct WorkoutTickMessage: Sendable, Codable, Equatable {
         sport: SportType,
         phase: WorkoutPhase,
         timestamp: Date,
+        startedAt: Date? = nil,
         elapsedSeconds: TimeInterval,
         heartRateBeatsPerMinute: Double?,
         distanceMeters: Double?,
@@ -53,6 +67,7 @@ public struct WorkoutTickMessage: Sendable, Codable, Equatable {
         self.sport = sport
         self.phase = phase
         self.timestamp = timestamp
+        self.startedAt = startedAt
         self.elapsedSeconds = elapsedSeconds
         self.heartRateBeatsPerMinute = heartRateBeatsPerMinute
         self.distanceMeters = distanceMeters

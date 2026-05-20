@@ -45,62 +45,77 @@ public enum RunningHUDFrame {
         /// negative x and was silently clipped per spec §5.5.6.
         public static let leftMargin: Int16 = 284
 
-        /// Framebuffer y-anchors for the SUMMARY (finish) screen
-        /// (3 lines of font 3: "Workout Complete" banner / time /
-        /// distance — rc14 dropped pace from the finish card per Joe's
-        /// "final stats = Time + Distance only" directive).
+        /// Framebuffer y-anchors for the SUMMARY (finish) screen — **rc2
+        /// (2026-05-20) 3-line / 4-data layout** per Joe's 5K bench
+        /// feedback:
         ///
-        /// **rc17 — revalidated under the canonical lens-flip formula.**
-        /// rc12 derived the old `timeY/distanceY/paceY` constants
-        /// (166 / 86 / 6) under the obsolete `y_fb = 206 − T` formula
-        /// (which subtracted font height). Richards's rc13→rc16 review
-        /// flagged that those values "render OK on bench by coincidence
-        /// + frame brevity" but were never reasoned about under the
-        /// rc16-canonical `y_fb = 255 − wearer_top` (NO font-height
-        /// subtraction). Walking the old paceY=6 through the corrected
-        /// formula puts the distance text at wearer-T 249, bottom 313
-        /// → 57 px off-screen. Bench observers never noticed because
-        /// the rc13→rc16 disconnect-on-stop bug tore the BLE link down
-        /// before the finish screen could be inspected. rc17 fixes the
-        /// disconnect (see `WorkoutViewModel.confirmSave`); the finish
-        /// screen is now persistently visible to the wearer and these
-        /// coordinates have to be right.
+        /// ```
+        /// Line 1: "Finished!"
+        /// Line 2: <distance>                e.g. "3.11 mi"
+        /// Line 3: <time>      <avg pace>    e.g. "27:43    8:56/mi"
+        /// ```
         ///
-        /// Recomputed wearer-space layout (3 lines of font 3, h=64):
-        ///   Top margin     : 16
-        ///   Banner (F3 h=64, "Workout Complete")  : T=16..80
-        ///   Gap            : 16
-        ///   Time   (F3 h=64, payload.time)        : T=96..160
-        ///   Gap            : 16
-        ///   Dist.  (F3 h=64, payload.distance)    : T=176..240
-        ///   Bottom margin  : 16
-        ///   ──────────────────────────────────────────── total: 256
+        /// **Two-field rule supersession.** rc14→rc17 enforced "finish
+        /// screen = Time + Distance only" (Richards's rc13→rc16 review:
+        /// "discard HR/pace at the encoder"). Joe's rc2 directive
+        /// overrides that — the finish screen now hosts 4 data items
+        /// (banner, distance, time, pace) across 3 visual lines, with
+        /// time on the left of line 3 and avg-pace right-justified on
+        /// the same line. Documented as a deliberate evolution in
+        /// `.squad/decisions/inbox/laughlin-rc2-bench-feedback.md`;
+        /// the live HUD's 4-fields/3-lines shape is unchanged.
         ///
-        /// Framebuffer anchors (`y_fb = 255 − wearer_top`):
-        ///   finishBannerY   = 255 − 16  = 239
-        ///   finishTimeY     = 255 − 96  = 159
-        ///   finishDistanceY = 255 − 176 = 79
-        ///
-        /// Richards's review rec #3 also flagged that the old
-        /// `paceY` constant rendering DISTANCE text was a tripwire — the
-        /// name lied about its use. Renamed surface-scoped:
-        /// `finishBannerY` / `finishTimeY` / `finishDistanceY`. The old
-        /// names are retained as deprecated aliases so anyone outside
-        /// `summaryFrames` who reached for them (no current callers, but
-        /// hold-harmless for in-flight branches) gets a compiler nudge.
-        public static let finishBannerY:   Int16 = 239   // 255 − 16
-        public static let finishTimeY:     Int16 = 159   // 255 − 96
-        public static let finishDistanceY: Int16 = 79    // 255 − 176
+        /// **rc17 lens-flip formula still canonical.** All three line
+        /// tops use `y_fb = 255 − wearer_top` with NO font-height
+        /// subtraction. The Y constants are unchanged from rc17 — the
+        /// 3-line layout happens to land at the same wearer-tops
+        /// (16 / 96 / 176) under the recomputed font-3 height of 64. The
+        /// rename surfaces the new responsibility: line 1 is no longer
+        /// "banner" semantically (it's still a banner string), line 2
+        /// no longer "time" (it's distance), line 3 no longer "distance"
+        /// (it's a two-field row).
+        public static let finishLine1Y: Int16 = 239   // 255 − 16  — "Finished!"
+        public static let finishLine2Y: Int16 = 159   // 255 − 96  — distance
+        public static let finishLine3Y: Int16 = 79    // 255 − 176 — time + pace
 
-        @available(*, deprecated, renamed: "finishBannerY",
-                   message: "Renamed per Richards rc16 review rec #3; Y also recomputed under the rc16 lens-flip formula (rc17).")
-        public static let timeY:     Int16 = finishBannerY
-        @available(*, deprecated, renamed: "finishTimeY",
-                   message: "Renamed per Richards rc16 review rec #3; Y also recomputed under the rc16 lens-flip formula (rc17).")
-        public static let distanceY: Int16 = finishTimeY
-        @available(*, deprecated, renamed: "finishDistanceY",
-                   message: "Renamed per Richards rc16 review rec #3; Y also recomputed under the rc16 lens-flip formula (rc17).")
-        public static let paceY:     Int16 = finishDistanceY
+        @available(*, deprecated, renamed: "finishLine1Y",
+                   message: "rc2 finish-screen reshape: line 1 is now \"Finished!\" (was \"Workout Complete\" banner). Same Y, new semantic.")
+        public static let finishBannerY:   Int16 = finishLine1Y
+        @available(*, deprecated, renamed: "finishLine2Y",
+                   message: "rc2 finish-screen reshape: line 2 is now distance (was time). Same Y, new semantic.")
+        public static let finishTimeY:     Int16 = finishLine2Y
+        @available(*, deprecated, renamed: "finishLine3Y",
+                   message: "rc2 finish-screen reshape: line 3 is now time+pace shared (was distance). Same Y, new semantic.")
+        public static let finishDistanceY: Int16 = finishLine3Y
+
+        @available(*, deprecated, renamed: "finishLine1Y",
+                   message: "Renamed per Richards rc16 review rec #3; reshaped to 3-line/4-data layout in rc2.")
+        public static let timeY:     Int16 = finishLine1Y
+        @available(*, deprecated, renamed: "finishLine2Y",
+                   message: "Renamed per Richards rc16 review rec #3; reshaped to 3-line/4-data layout in rc2.")
+        public static let distanceY: Int16 = finishLine2Y
+        @available(*, deprecated, renamed: "finishLine3Y",
+                   message: "Renamed per Richards rc16 review rec #3; reshaped to 3-line/4-data layout in rc2.")
+        public static let paceY:     Int16 = finishLine3Y
+
+        /// rc2 — wearer-x of the RIGHT edge for the right-justified pace
+        /// text on finish line 3. Symmetric to the left margin (~19 px
+        /// from edge: leftMargin=284 ⇒ wearer-left ≈ 19; we use wearer-
+        /// right = 303 − 19 = 284). The framebuffer-anchor x for the
+        /// pace text is computed at render time via
+        /// `summaryPaceXFB(for:)` because topLR (rotation=4) text in
+        /// wearer space anchors at the LEFT edge and grows RIGHT, so a
+        /// right-justified column needs to subtract the measured width.
+        public static let finishLine3PaceWearerRight: Int16 = 284
+
+        /// rc2 — font for the shared time+pace line 3 (font 2, ~18 px
+        /// per glyph). Two metrics share the line; at font 3 (~28 px)
+        /// they collide for any reasonably long pace string ("8:30/mi"
+        /// ≈ 196 px vs. only ~144 px of free space after a 5-char time).
+        /// Font 2 mirrors the live HUD's line-1 two-metric trick (rc16
+        /// `liveLine1Font`) and leaves ~49 px of breathing room for the
+        /// canonical 5-char time + 7-char pace pair.
+        public static let finishLine3Font: UInt8 = 2
 
         // MARK: - Live HUD (3-line mixed-font + preloaded icons, rc16)
         //
@@ -514,33 +529,75 @@ public enum RunningHUDFrame {
         [ActiveLookCommand.power(on: true)] + summaryFrames(for: payload)
     }
 
-    /// Convenience for the end-of-workout finish screen: a "Workout
-    /// Complete" banner above the two final stats — **Time and
-    /// Distance only** (no pace, no HR). rc14 dropped pace from the
-    /// summary per Joe's bench directive: "Those [time + distance] are
-    /// supposed to be the final stats. During the run we should see
-    /// Time, HR, Distance, Avg Pace." Live = 4 fields, finish = 2
-    /// fields. Same `txt` primitive as the run HUD, no new protocol
-    /// surface.
+    /// Convenience for the end-of-workout finish screen — **rc2 (3-line
+    /// 4-data layout)**:
+    ///
+    /// ```
+    /// Line 1: "Finished!"
+    /// Line 2: <distance>                e.g. "3.11 mi"
+    /// Line 3: <time>      <avg pace>    e.g. "27:43    8:56/mi"
+    /// ```
+    ///
+    /// Pace on line 3 is **right-justified**: ALooK's `txt` (0x37) under
+    /// rotation=4 anchors text in wearer space at the LEFT edge and grows
+    /// RIGHT, so a right-justified column needs the x anchor computed from
+    /// the measured string width
+    /// (`ALookFontMetrics.width(of:fontSize:)`). The framebuffer x for
+    /// pace is therefore `303 − (finishLine3PaceWearerRight − width)`.
+    ///
+    /// **rc14 "Time + Distance only" rule superseded.** rc14→rc17 enforced
+    /// a two-field finish screen at the encoder level. Joe's rc2 directive
+    /// reshapes it to four data items (banner, distance, time, pace) on
+    /// three visual lines. The supersession is documented in
+    /// `.squad/decisions/inbox/laughlin-rc2-bench-feedback.md`; the live
+    /// HUD's 4-fields/3-lines shape (rc16) is unchanged.
     public static func summaryFrames(for payload: Payload) -> [[UInt8]] {
         [
             ActiveLookCommand.clear(),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.finishBannerY,
+                x: Layout.leftMargin, y: Layout.finishLine1Y,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
-                string: "Workout Complete"
+                string: "Finished!"
             ),
             ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.finishTimeY,
-                rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
-                string: payload.time
-            ),
-            ActiveLookCommand.text(
-                x: Layout.leftMargin, y: Layout.finishDistanceY,
+                x: Layout.leftMargin, y: Layout.finishLine2Y,
                 rotation: Layout.rotation, fontSize: Layout.fontSize, color: Layout.color,
                 string: payload.distance
+            ),
+            // Line 3 left: time, anchored to the same left margin as the
+            // other lines so the wearer-left edges visually align. Font 2
+            // (shared two-metric line — see `Layout.finishLine3Font`).
+            ActiveLookCommand.text(
+                x: Layout.leftMargin, y: Layout.finishLine3Y,
+                rotation: Layout.rotation, fontSize: Layout.finishLine3Font, color: Layout.color,
+                string: payload.time
+            ),
+            // Line 3 right: avg pace, right-justified against
+            // `finishLine3PaceWearerRight` (wearer-x 284 ≈ symmetric to
+            // the wearer-left margin of 19). Width-based anchor — see
+            // `summaryPaceXFB(for:)`.
+            ActiveLookCommand.text(
+                x: summaryPaceXFB(for: payload.pace),
+                y: Layout.finishLine3Y,
+                rotation: Layout.rotation, fontSize: Layout.finishLine3Font, color: Layout.color,
+                string: payload.pace
             )
         ]
+    }
+
+    /// rc2 — compute the framebuffer x anchor for a right-justified pace
+    /// string on finish line 3. The string's right edge in wearer space
+    /// must equal `Layout.finishLine3PaceWearerRight`; we subtract the
+    /// measured width to get the wearer-left, then map to framebuffer
+    /// via the lens-flip identity `x_fb = 303 − wearer_left`.
+    ///
+    /// Width comes from `ALookFontMetrics` — a small font-metric table
+    /// extracted (per Richards's rc13 nudge) so widths/heights live in
+    /// one place instead of being scattered as inline magic numbers.
+    public static func summaryPaceXFB(for paceString: String) -> Int16 {
+        let width = ALookFontMetrics.width(of: paceString, fontSize: Layout.finishLine3Font)
+        let wearerLeft = max(0, Int(Layout.finishLine3PaceWearerRight) - width)
+        return Int16(clamping: 303 - wearerLeft)
     }
 
     // MARK: - Elapsed formatter

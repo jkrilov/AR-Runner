@@ -19,6 +19,7 @@ struct WorkoutMirrorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
+            startedRow
             glassesBatteryRow
             metricsGrid
             footer
@@ -29,6 +30,48 @@ struct WorkoutMirrorView: View {
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
     }
+
+    /// rc2 — "Started at HH:MM" row above the live metrics. Sourced from
+    /// the snapshot's new optional `startedAt` field (WC schema v4). v3
+    /// snapshots from older watch builds don't carry it; we fall back to
+    /// `timestamp − elapsedSeconds` so the row still shows a sensible time
+    /// without forcing a watch upgrade.
+    @ViewBuilder
+    private var startedRow: some View {
+        if let snapshot = currentSnapshot, let started = effectiveStartedAt(of: snapshot) {
+            HStack(spacing: 8) {
+                Image(systemName: "flag.checkered")
+                    .foregroundStyle(.secondary)
+                    .imageScale(.large)
+                Text("Started")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(Self.startedAtFormatter.string(from: started))
+                    .font(.title3.monospacedDigit())
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Started at \(Self.startedAtFormatter.string(from: started))")
+        }
+    }
+
+    private func effectiveStartedAt(of snapshot: WorkoutTickMessage) -> Date? {
+        if let started = snapshot.startedAt { return started }
+        // v3 fallback: derive from elapsed for older watch builds. Returns
+        // nil only if elapsedSeconds is non-finite, which would already
+        // have flagged earlier.
+        guard snapshot.elapsedSeconds.isFinite, snapshot.elapsedSeconds >= 0 else { return nil }
+        return snapshot.timestamp.addingTimeInterval(-snapshot.elapsedSeconds)
+    }
+
+    /// Absolute clock time for "Started" — short style ("3:14 PM"). Locale
+    /// aware. Pinned in `WorkoutMirrorStartedRowTests` so a future format
+    /// flip is caught.
+    private static let startedAtFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .short
+        return f
+    }()
 
     @ViewBuilder
     private var glassesBatteryRow: some View {
