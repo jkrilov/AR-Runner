@@ -26,6 +26,9 @@ If YES to a config gap → fix is a one-line user instruction + a README FAQ ent
 
 ### 2. Audit what shape we actually write vs. what the receiver's filter expects.
 
+**⚠️ Step 2 is necessary but not always sufficient.** Even with a clean payload, the receiver may apply a **source-app filter** that drops everything from non-allow-listed sources regardless of payload. Test this independently with a controlled bench: same device, same auth state, our app's workout vs. the receiver's preferred first-party app's workout. If the first-party app's workout flows and ours doesn't with identical payload shape, the gate is source-filter, not payload (see step 4 — direct API is the only fix). For HealthKit specifically: `HKObject.sourceRevision` is system-assigned from the writing bundle ID and **cannot be overridden** by any public or private API.
+
+
 Read our HealthKit (or equivalent) write path end-to-end. Build a table:
 
 | Field the receiver filters on | Our value | Receiver expectation |
@@ -53,6 +56,8 @@ Before recommending integration work, scan the open-bugs list for any report tha
 These collapse to one fix. If you scope them separately, you either (a) double-count effort, or (b) ship the integration work first and discover the platform now imports a workout with broken/missing route data. Always check.
 
 **Heuristic:** if two user-reported symptoms share a missing subsystem, name the coupling **loudly** in the diagnostic. It changes prioritization (one fix unblocks two complaints) and protects future agents from picking up the second bug as a separate workstream.
+
+**⚠️ Coupling hypotheses need an explicit falsifying experiment named up front.** A 2-for-1 framing can be confidence-inflating — you commit to the cheap interpretation before you've earned it. Always write: "the bench result that would falsify this coupling is X." Then run that bench. AR-Runner 2026-05-20 example: the original diagnostic collapsed GPS-recording and Strava-ingestion into one fix; rc3 shipped the GPS fix cleanly (Apple Fitness shows the polyline) but Strava still dropped the workout — falsifying the coupling. The corrective lesson: a coupling is a hypothesis until a single experiment confirms both symptoms move together.
 
 ### 4. Only if 1–3 don't yield a fix: scope a direct API integration as the heavy fallback.
 
@@ -94,4 +99,12 @@ Always deliver as a `decisions/inbox/{agent}-{slug}.md` diagnostic, NOT an ADR. 
 
 ## Citations / evidence
 
-- AR-Runner 2026-05-20 Strava ingestion gap: `.squad/decisions/inbox/richards-strava-integration-diagnosis.md`. The triage pattern was extracted from that diagnostic and generalized.
+- AR-Runner 2026-05-20 Strava ingestion gap (initial diagnostic, route-shape hypothesis): `.squad/decisions/inbox/richards-strava-integration-diagnosis.md`. The triage pattern was extracted from that diagnostic and generalized.
+- AR-Runner 2026-05-20 Strava ingestion follow-up (rc3 falsified the route-shape hypothesis; source-app filter confirmed): `.squad/decisions/inbox/richards-strava-source-filter-confirmed.md`. The "step 2 necessary-but-not-sufficient" and "coupling needs a falsifier" lessons were extracted from this follow-up.
+
+## Receiver-side gates known to exist (non-exhaustive)
+
+- **Strava (Apple Health bridge):** filters by source app — only Apple's first-party Workout app auto-imports. Third-party HK writers are dropped regardless of payload. Bridge apps (HealthFit, RunGap) work around this by uploading directly to Strava's API on the user's behalf.
+- **Garmin Connect (Apple Health bridge):** generally accepts third-party sources but has been observed to drop workouts with `locationType = .unknown` or zero-distance.
+- **TrainingPeaks:** typically requires direct upload (no native HK auto-import).
+- (Add platforms as the team encounters them.)

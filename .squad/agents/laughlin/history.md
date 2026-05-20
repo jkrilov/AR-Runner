@@ -154,3 +154,42 @@ Most additions were pattern tests (pinning formulas, invariants, wire-byte contr
 
 **Tests:** Core 195/195 pass. `xcodebuild -scheme ARRunnerWatch` SUCCEEDED (signing skipped for local validation).
 
+
+### 2026-05-20T13:19:07-04:00 — rc4: confirmationDialog binding race strands discard on running screen
+
+**Context:** Joe's rc3 (v0.4.0-rc3) bench test: discard still doesn't return to start screen. The rc3 fix (separate `controller.discard()` terminal path, glasses observers preserved, transition to `.idle`) was correct on paper — `xcodebuild` succeeded, 195/195 Core tests passed, code inspection of `confirmCancel()` showed all the right writes. But on-device the wearer lands back on the live running screen post-discard.
+
+**Root cause — SwiftUI `confirmationDialog` ordering race.** When the user taps "Discard" in the dialog, SwiftUI synchronously (same runloop tick) does TWO things:
+
+1. Invokes the Button action → `Task { await viewModel.confirmCancel() }` (enqueued, not yet executing).
+2. Dismisses the dialog → invokes the `isPresented` binding's `set(false)` synchronously next.
+
+At step 2, the `confirmCancel` Task hasn't started, so `launchState` is still `.pendingFinish`. The setter's guard (`if !isPresented, viewModel.launchState == .pendingFinish`) — added in rc1 to recover from "stray tap-out" auto-dismissals — fires and spawns `Task { await viewModel.resumeFromFinish() }`. Now two terminal actions race on the same `controller`:
+
+- `confirmCancel` writes `.ending`, suspends on `controller.discard()`.
+- During that suspension, `resumeFromFinish` → `resume()` enters; its `guard let controller` captures the still-non-nil property and calls `controller.resume()`.
+- `confirmCancel` resumes, sets `controller = nil`, lands `launchState = .idle`.
+- `resume()` then resumes from `controller.resume()` (which succeeded — the workout was merely paused), writes `launchState = .running`.
+
+Final state: `.running`. UI shows Pause/Finish. Discard appears "to have done nothing" — the user is stranded on the live screen. Same race latently afflicted Save, but Save's symptoms were masked because the running screen renders briefly before the user dismisses the app or starts another action.
+
+**Fix:** Add a synchronous `acknowledgeFinishChoice()` method on the view-model that transitions `.pendingFinish` → `.ending` (idempotent guard). Call it from the Save / Discard / Resume button actions BEFORE the `Task { … }` is scheduled. Now when SwiftUI synchronously invokes the binding's `set(false)` next, `launchState` is `.ending` — the setter's `launchState == .pendingFinish` guard fails and `resumeFromFinish()` is NOT auto-spawned.
+
+For Resume, the synchronous pre-transition prevents a benign-but-wasteful double-resume() call (one from the Button action, one from the binding setter). The brief `.ending` flash shows a ProgressView for one frame before `.running` lands — acceptable for a tap.
+
+**Key learnings:**
+
+1. **SwiftUI's `confirmationDialog` invokes BOTH the Button action AND the `isPresented` binding's `set(false)` in the same synchronous tick.** This is well-known but easy to forget. If your dismissal binding has side effects gated on view-model state (like the "stray tap-out → resume" recovery here), those side effects WILL fire even on explicit-choice taps unless your state mutation happens BEFORE the binding setter runs. That means **the state mutation must be synchronous from the Button action's closure** — `Task { await … }` is too late because the Task body runs on the next runloop tick at the earliest, after the binding setter has already executed.
+
+2. **`@Observable` view-model state changes inside async functions are not "racing" via @MainActor isolation alone.** Both `confirmCancel` and `resumeFromFinish` run on @MainActor, so they don't *interleave* at instruction level — but they do *interleave at suspension points* (every `await`). The state transitions `.pendingFinish → .ending → … → .idle` and `.pendingFinish → … → .running` both go through suspension points (`controller.discard()`, `controller.resume()`), and which one wins the final assignment depends on which substrate call resolves last. Lesson: in any async terminal flow, assume any other async caller can interleave at every `await`. The synchronous pre-transition is the load-bearing primitive that makes the dialog's "two simultaneous tasks" actually mutually-exclusive — by collapsing the pre-condition check (`launchState == .pendingFinish`) into a single MainActor tick, only one of the two enqueued tasks ever satisfies it.
+
+3. **The "guard on state" pattern in SwiftUI binding setters needs synchronous corroboration from the button action.** The rc1-era `if !isPresented, viewModel.launchState == .pendingFinish { Task { resumeFromFinish() } }` setter is the right pattern for catching stray dismissals, but it ONLY works correctly when the button actions synchronously move out of the gated state. The view-model needs both an async terminal method (for `confirmCancel`) AND a sync acknowledger (for the button action) — two halves of one contract.
+
+4. **A six-RC-old comment can encode a stale assumption.** The rc1 setter comment ("a stray tap-out can't strand the workout in pendingFinish") was correct then because the buttons synchronously mutated state via the legacy non-async API. When the buttons were converted to `Task { await … }` (rc16 or so), the synchronous-pre-condition guarantee was lost silently — no warning, no test break, just a latent race that didn't surface until rc3's discard finally produced an observably-broken UI (rc1/rc2's discard didn't return to start anyway because of the data-leak bug, masking this race). Lesson: when refactoring a sync→async boundary, audit every state-gated callback within two hops for the previously-held synchrony assumption.
+
+**Files changed (2):**
+- `ARRunnerWatch/Workout/WorkoutViewModel.swift` — add `acknowledgeFinishChoice()` (sync MainActor method, idempotent guard `.pendingFinish → .ending`).
+- `ARRunnerWatch/Views/WorkoutView.swift` — call `viewModel.acknowledgeFinishChoice()` synchronously from Save / Discard / Resume button actions before scheduling the Task.
+
+**Tests:** Core 195/195 pass. `xcodebuild -scheme ARRunnerWatch` SUCCEEDED.
+

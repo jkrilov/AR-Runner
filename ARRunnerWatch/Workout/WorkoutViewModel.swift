@@ -333,6 +333,38 @@ final class WorkoutViewModel {
         await resume()
     }
 
+    /// Synchronously leave `.pendingFinish` so SwiftUI's
+    /// `confirmationDialog` dismissal binding cannot observe the
+    /// pre-finish state when the user makes an explicit Save/Discard
+    /// choice. Must be called from the Save/Discard button actions
+    /// *before* scheduling the async terminal `Task`.
+    ///
+    /// **rc4 (2026-05-20) bench-feedback fix — discard returns to running
+    /// screen instead of start screen.** Joe reported (v0.4.0-rc3 bench):
+    /// discarding still doesn't go back to the start screen. Root cause was
+    /// a SwiftUI ordering race in `WorkoutView.finishMenuBinding`:
+    /// tapping "Discard" enqueued `Task { confirmCancel() }`, and in the
+    /// same tick SwiftUI also dismissed the dialog and invoked the
+    /// binding's `set(false)`. At that synchronous moment `launchState ==
+    /// .pendingFinish` was still true (the Task hadn't started), so the
+    /// binding setter spawned a second `Task { resumeFromFinish() }`. The
+    /// two terminal actions raced on the same controller; `resume()`
+    /// would resolve after `confirmCancel`'s final `.idle` write and
+    /// overwrite it with `.running`, stranding the wearer on the live
+    /// workout screen post-discard. Same race latently afflicted Save.
+    ///
+    /// Fix: synchronously transition `.pendingFinish` → `.ending` from the
+    /// button action. By the time the binding setter fires synchronously
+    /// next, the auto-resume guard (`launchState == .pendingFinish`) is
+    /// false and `resumeFromFinish()` is not spawned. `confirmCancel` /
+    /// `confirmSave` re-assert `.ending` (idempotent) so their own
+    /// preconditions still hold when invoked directly from tests.
+    func acknowledgeFinishChoice() {
+        if launchState == .pendingFinish {
+            launchState = .ending
+        }
+    }
+
     /// Legacy entry point preserved for any callers that still issue an
     /// immediate end. v0.2 default flow is `requestFinish` → `confirmSave`.
     func end() async {
