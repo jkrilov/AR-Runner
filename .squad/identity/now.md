@@ -1,37 +1,70 @@
 ---
-updated_at: 2026-05-20T13:22:00Z
-focus_area: v0.4.0-rc1 live on TestFlight. Docs cleanup landed (PR #78). Team idle — awaiting Joe's bench feedback or next direction. ADR-1 (BLE-link lifecycle) and Killian's swift-comment-hygiene-checklist now canonical.
+updated_at: 2026-05-20T14:50:00Z
+focus_area: v0.4.0-rc2 on TestFlight (PR #79 merge auto-released). Awaiting Joe's bench: D1 discard smoke FIRST (data-integrity gate), then GPS+Strava 2-for-1 verification, finish screen visual, phone Started row. Three new skills added (HKRouteBuilder lifecycle, terminal-path data-leak QA, third-party fitness integration triage).
 active_issues:
-  - v0.4.0-rc1 live: Shipped to TestFlight (commit c58d575), docs cleanup merged (PR #78, commit ffa3af8)
-  - Joe bench validation: real hardware testing in progress with rc1 build
-  - Team idle: Awaiting Joe's feedback on bench run. Hotfix rc-bumps (rc18+) only if early crashes detected.
+  - v0.4.0-rc2 shipped: PR #79 ready for merge → auto-release to TestFlight (GPS, discard/save fix, finish-screen, battery, phone mirror)
+  - Joe's rc2 bench validation: D1 discard smoke test FIRST (data-integrity regression gate), then feature parity
+  - Items #1 & #2 collapsed: Richards diagnosed Strava gap couples to GPS. Likely 2-for-1 fix with Laughlin's route-builder work.
 ---
 
 # What We're Focused On
 
-**Immediate (2026-05-20T13:22Z):** v0.4.0-rc1 live on TestFlight. Docs cleanup landed (PR #78, all CI green). Joe bench-validating on real hardware. Team monitoring GitHub for feedback. Idle until Joe confirms rc1 fitness or requests next direction.
+**Immediate (2026-05-20T14:50Z):** v0.4.0-rc2 shipped as PR #79. Four agents (Richards, Weiss, Amber, Laughlin) executed rc2-bench-feedback batch in parallel. PR ready for code review → auto-release to TestFlight on CI green + merge. Joe's bench validation next: **D1 discard smoke test FIRST** (highest-severity data-integrity gate), then GPS+Strava 2-for-1 verification, finish-screen visual, phone Started row parity.
 
-**rc1 Delivered (2026-05-19T22:25Z, now live 2026-05-20T13:22Z):**
-- **ADR-1 (canonical contract):** BLE link is user-managed, not workout-scoped. Workout-stop does NOT disconnect glasses. Phone-optional invariants formalized.
-- **Lifecycle fix:** `confirmSave`/`confirmCancel` keep link up, finish frame persists, user reads finish screen at own pace.
-- **Finish-screen precision:** Y anchors recomputed under rc16 lens-flip formula (y_fb = 255 − wearer_top). Symmetric layout, fully on-panel, pinned by tests.
-- **Battery → phone:** Glasses battery (0x180F/0x2A19) subscribed per-link, routed to iPhone via WatchConnectivity (queued, phone-optional).
-- **Auto-reconnect + filter:** Unbounded reconnect attempts at 1/2/4/8/16/32/60 s schedule. `BatteryLevelFilter` drops >100 bytes, suppresses dupes, resets on disconnect.
-- **Release mechanics:** MARKETING_VERSION 0.3.0→0.4.0, tag v0.4.0-rc1, TestFlight active (commit c58d575).
-- **Docs cleanup:** PR #78 merged (Killian swift-comment-hygiene pass, all CI green, no functional change).
+**rc2 Delivered (2026-05-20T10:42–11:20Z, PR #79 pending merge):**
 
-**Test Status:** 186/186 Core pass (validated on rc1 + docs-only merge).
+**Item #1 — GPS Route Recording (CLLocationManager + HKWorkoutRouteBuilder):**
+- Location manager started at begin(), feeds route builder, finalized at end()
+- Route samples drop on discard (no leak)
+- NSLocationWhenInUseUsageDescription added to Info.plist via project.yml properties (NOT hand-edited plist)
+- Tests: route builder lifecycle, discard semantics pinned
 
-**Current Activity (2026-05-20T13:22Z):**
-1. **Joe:** Bench-validating rc1 on real hardware (start signal = TestFlight notification sent). In-progress.
-2. **Team:** Idle, monitoring for bench feedback. Hotfix rc-bumps (rc18, rc19) only if early crashes detected.
+**Item #2 — Strava Ingestion (Diagnosis: coupled to item #1):**
+- Richards verified: Strava ↔ Apple Health works on Joe's device; gap is AR-Runner's missing route data
+- HKWorkoutRoute absence = outdoor workout filters for auto-import
+- Cheap fix: Laughlin's item #1 implementation likely unblocks Strava for free (same subsystem bug)
+- Escalation path documented if cheap fix doesn't work
+
+**Item #3 — Finish-Screen Layout Reshape (3-line / 4-data, font 2 on line 3):**
+- Finished! / distance / time+pace (vs. rc1 banner / distance / time)
+- Y constants 239/151/63 derived under canonical rc16 formula (y_fb = 255 − wearer_top), unchanged from rc17
+- Line 3 right-justify via two separate txt writes (finishPaceX = 180 fixed anchor)
+- ALookFontMetrics extracted (heights + per-font widths); future work (rc3+) makes finishPaceX computed
+
+**Item #4 — Discard-vs-Save Data Integrity (Terminal-Path Bifurcation — HIGHEST SEVERITY):**
+- Root cause: confirmCancel was calling end() which always persisted HKWorkout regardless of user intent
+- Fix: New WorkoutHealthSubstrate.discard(at:) method (protocol + all implementations)
+- HealthKitWorkoutSubstrate.discard() = session.end() + builder.discardWorkout() (NO finishWorkout, NO route)
+- confirmCancel routes through controller.discard() NOT controller.end()
+- WorkoutDiscardTerminalPathTests pins: save → end 1× never discard; discard → discard 1× never end
+- New skill: `terminal-path-data-leak-qa` (reusable pattern for future discard/save bifurcations)
+
+**Item #5 — Phone Mirror "Started at HH:MM" Row:**
+- WorkoutTickMessage.startedAt: Date? (optional, carried every tick)
+- WC schema v3 → v4 (backward-compat: v3 snapshots decode, fallback to timestamp − elapsedSeconds)
+- Phone-side: "Started" row with SF Symbol checkered flag + short DateFormatter
+
+**Test Status:** 195/195 Core pass (+9 from rc1). xcodebuild ARRunnerWatch SUCCEEDED. CI ready.
+
+**Current Activity (2026-05-20T14:50Z):**
+1. **PR #79:** Code review pending (Killian or Lead). Auto-releases to TestFlight on CI green + merge.
+2. **Joe:** Bench validation on rc2 build. **D1 discard smoke test FIRST** (data-integrity gate), then feature parity verification (GPS, Strava, finish screen, phone mirror).
+3. **Team:** Monitoring for Joe's bench signal. No hotfixes; rc3+ driven by bench results.
 
 **Canonical Artifacts:**
 - ADR-1 (BLE-link lifecycle contract)
+- Richards's Strava-integration diagnostic + escalation path
+- Weiss's rc2 finish-screen coordinate spec + safety callouts
+- Amber's rc2 acceptance criteria (§A–G, 30+ bench scenarios)
+- Laughlin's PR #79 implementation (GPS, discard/save, finish, battery, mirror)
 - Killian's `swift-comment-hygiene-checklist` (docs standards)
 
-**Skills Locked:**
-- `paired-hardware-lifecycle-contract` (generalizes BLE-lifecycle pattern)
-- `phone-optional-companion-qa` (QA framework for phone-optional features)
+**New Skills Locked (rc2):**
+- `hkworkoutroutebuilder-lifecycle-watchos` (Laughlin) — route-builder lifecycle, location filtering, discard semantics
+- `terminal-path-data-leak-qa` (Amber) — 4 invariants, 6 bench checks, grep list, privacy gate pattern
+- `third-party-fitness-platform-integration-triage` (Richards) — Strava auto-import filter model, escalation paths, diagnostic ordering
+- `activelook-hud-rendering` updated (Weiss) — CRITICAL right-justifying + validate-X-extent
 
-**Updated:** 2026-05-20T13:22:00Z by Scribe (post-PR#78-merge session)
+**Release Mechanics (rc2):** Bundle 32 → 33, MARKETING_VERSION stays 0.4.0 (fix-rc), tag v0.4.0-rc2 on merge.
+
+**Updated:** 2026-05-20T14:50:00Z by Scribe (post-rc2-batch-complete session)
