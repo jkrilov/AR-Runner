@@ -37,6 +37,8 @@ cat > "$XCCONFIG" <<EOF
 // Find your team ID at https://developer.apple.com/account (top right) or in
 // Xcode → Settings → Accounts → your team → Team ID.
 
+#include? "Strava.xcconfig"
+
 DEVELOPMENT_TEAM = ${TEAM_ID}
 CODE_SIGN_STYLE = Automatic
 EOF
