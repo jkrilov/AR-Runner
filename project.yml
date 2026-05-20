@@ -173,13 +173,20 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
         # v0.5 PR 2 — Strava OAuth (D-Strava-1, D-Strava-3). The custom URL
-        # scheme `arrunner` is the redirect target ASWebAuthenticationSession
-        # listens on. Must match StravaConfig.redirectURI and the redirect URI
-        # registered on the Strava API console.
+        # scheme `arrunner` is the redirect target both ASWebAuthenticationSession
+        # and the native Strava app's mobile-authorize hand-off listen on. Must
+        # match StravaConfig.redirectURI and the redirect URI registered on the
+        # Strava API console (Authorization Callback Domain = ar-runner.app).
         CFBundleURLTypes:
           - CFBundleURLName: com.arrunner.phone.strava
             CFBundleURLSchemes:
               - arrunner
+        # Required on iOS 9+ for `UIApplication.canOpenURL(strava://)` to
+        # return `true` when the user has the Strava app installed. Without
+        # this entry the native-app OAuth path silently falls through to
+        # ASWebAuthenticationSession.
+        LSApplicationQueriesSchemes:
+          - strava
         # Strava public client_id. Read by StravaConfig.clientID at runtime.
         # xcodebuild substitutes $(STRAVA_CLIENT_ID) from build settings or
         # the env. Safe to ship — the secret half lives on the Cloudflare
