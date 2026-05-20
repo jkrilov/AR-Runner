@@ -111,6 +111,8 @@ targets:
     sources:
       - path: ARRunnerPhone
         optional: true
+        excludes:
+          - "Tests/**"
     dependencies:
       - target: ARRunnerWidgetsPhone
         embed: true
@@ -170,6 +172,20 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
+        # v0.5 PR 2 — Strava OAuth (D-Strava-1, D-Strava-3). The custom URL
+        # scheme `arrunner` is the redirect target ASWebAuthenticationSession
+        # listens on. Must match StravaConfig.redirectURI and the redirect URI
+        # registered on the Strava API console.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.arrunner.phone.strava
+            CFBundleURLSchemes:
+              - arrunner
+        # Strava public client_id. Read by StravaConfig.clientID at runtime.
+        # xcodebuild substitutes $(STRAVA_CLIENT_ID) from build settings or
+        # the env. Safe to ship — the secret half lives on the Cloudflare
+        # Worker (D-Strava-3). If unset, the Settings UI surfaces a config
+        # warning instead of dead-ending in Safari.
+        StravaClientID: $(STRAVA_CLIENT_ID)
     entitlements:
       path: Config/ARRunnerPhone.entitlements
       properties:
@@ -244,3 +260,21 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.arrunner.shared
+
+  ARRunnerPhoneTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: '18.0'
+    sources:
+      - path: ARRunnerPhone/Tests
+        optional: true
+    dependencies:
+      - target: ARRunnerPhone
+      - package: ARRunnerCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.arrunner.phone.tests
+        PRODUCT_NAME: ARRunnerPhoneTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/ARRunnerPhone.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ARRunnerPhone
+        BUNDLE_LOADER: $(TEST_HOST)
