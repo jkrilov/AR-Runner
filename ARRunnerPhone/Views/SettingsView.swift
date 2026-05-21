@@ -71,12 +71,12 @@ struct SettingsView: View {
                         .controlSize(.small)
                         .tint(.white)
                 }
-                Text(viewModel.isAuthenticating ? "Opening Strava…" : "Connect to Strava")
+                Text(viewModel.isAuthenticating ? "Opening Strava…" : "Connect with Strava")
                     .fontWeight(.semibold)
                     .foregroundStyle(.white)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .frame(height: 48)
             .background(Color.stravaOrange)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
@@ -130,8 +130,9 @@ struct SettingsView: View {
 }
 
 extension Color {
-    /// Strava brand orange (#FC4C02). Used only on the "Connect to Strava"
-    /// CTA per Strava's brand guidelines.
+    /// Strava brand orange (#FC4C02). Used only on the "Connect with Strava"
+    /// CTA per Strava's brand guidelines (exact button wording + 48pt height
+    /// per https://developers.strava.com/guidelines/).
     static let stravaOrange = Color(red: 252.0 / 255.0, green: 76.0 / 255.0, blue: 2.0 / 255.0)
 }
 

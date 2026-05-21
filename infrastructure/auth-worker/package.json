@@ -1,0 +1,15 @@
+{
+  "name": "strava-connect-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker proxy for Strava OAuth token exchange, refresh, and deauthorization.",
+  "main": "src/index.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3"
+  }
+}

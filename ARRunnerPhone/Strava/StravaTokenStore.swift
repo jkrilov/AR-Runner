@@ -90,6 +90,14 @@ final class StravaTokenStore: @unchecked Sendable {
         try? backing.load()?.athleteID
     }
 
+    /// Cached access token without triggering a refresh. Used by the
+    /// disconnect flow to call Strava's `/oauth/deauthorize` on a
+    /// best-effort basis — a stale token still identifies the grant, and
+    /// failure to revoke must not block local token deletion.
+    var currentAccessToken: String? {
+        try? backing.load()?.accessToken
+    }
+
     /// Returns an access token valid for at least ~60 seconds. Refreshes
     /// transparently if the current one is expired. Throws `.notConnected`
     /// if there are no tokens at all (caller should prompt the user to
