@@ -67,6 +67,17 @@ final class SettingsViewModel {
     }
 
     func disconnectStrava() {
+        // Strava API agreement requires we revoke the grant server-side,
+        // not just drop local tokens. Fire-and-forget: the local
+        // disconnect MUST succeed even if the network call fails or the
+        // token is already invalid — otherwise the user is stranded in a
+        // "connected" UI with no way out.
+        if let token = tokenStore.currentAccessToken {
+            // Plain Task inherits the current MainActor isolation, avoiding
+            // a Sendable capture of the @MainActor oauth service. Not awaited
+            // — the local clear below must run regardless.
+            Task { await self.oauth.deauthorize(accessToken: token) }
+        }
         tokenStore.disconnect()
         isConnected = false
         athleteName = nil

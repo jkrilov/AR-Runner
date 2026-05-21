@@ -276,7 +276,13 @@ final class StravaOAuthService: NSObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(["code": code])
+        // The worker requires `client_id` in the body to disambiguate the
+        // Strava app this code belongs to — it holds the matching
+        // `client_secret` server-side (D-Strava-3).
+        request.httpBody = try JSONEncoder().encode([
+            "code": code,
+            "client_id": StravaConfig.clientID
+        ])
 
         let data: Data
         let response: URLResponse
@@ -296,6 +302,40 @@ final class StravaOAuthService: NSObject {
             return try JSONDecoder().decode(StravaTokenExchangeResponse.self, from: data)
         } catch {
             throw StravaOAuthError.invalidServerResponse
+        }
+    }
+
+    // MARK: - Deauthorize (worker → Strava)
+
+    /// Best-effort revocation of `accessToken` via the worker's
+    /// `/deauthorize` endpoint (worker proxies to
+    /// `POST https://www.strava.com/oauth/deauthorize`). Required by
+    /// Strava's API agreement when a user disconnects — clearing local
+    /// tokens alone is insufficient.
+    ///
+    /// Errors are logged and swallowed: the caller must still drop local
+    /// tokens even if the network call fails, otherwise the user can be
+    /// stuck "connected" in our UI while Strava has been told otherwise.
+    func deauthorize(accessToken: String) async {
+        let url = workerBaseURL.appendingPathComponent("deauthorize")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        do {
+            request.httpBody = try JSONEncoder().encode(["access_token": accessToken])
+        } catch {
+            logger.error("Failed to encode deauthorize body: \(String(describing: error), privacy: .public)")
+            return
+        }
+        do {
+            let (_, response) = try await urlSession.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                logger.error("Strava deauthorize returned HTTP \(http.statusCode, privacy: .public).")
+            } else {
+                logger.log("Strava deauthorize succeeded.")
+            }
+        } catch {
+            logger.error("Strava deauthorize network error: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

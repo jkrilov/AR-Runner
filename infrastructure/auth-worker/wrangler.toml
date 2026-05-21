@@ -1,0 +1,15 @@
+# Cloudflare Worker config for strava-connect.ar-runner.app
+#
+# Secrets (NOT defined here — set via `wrangler secret put`):
+#   STRAVA_CLIENT_SECRET  — Strava API app client secret
+#
+# Deploy: `wrangler deploy`
+# Set secret: `wrangler secret put STRAVA_CLIENT_SECRET`
+
+name = "strava-connect"
+main = "src/index.js"
+compatibility_date = "2025-05-01"
+
+routes = [
+  { pattern = "strava-connect.ar-runner.app/*", zone_name = "ar-runner.app" }
+]
