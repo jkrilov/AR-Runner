@@ -9,6 +9,7 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
+    @AppStorage(AppearanceMode.storageKey) private var appearanceRaw: String = AppearanceMode.system.rawValue
 
     init(viewModel: SettingsViewModel? = nil) {
         _viewModel = State(initialValue: viewModel ?? SettingsViewModel())
@@ -17,9 +18,26 @@ struct SettingsView: View {
     var body: some View {
         Form {
             stravaSection
+            appearanceSection
             aboutSection
         }
         .navigationTitle("Settings")
+    }
+
+    // MARK: - Appearance
+
+    private var appearanceSection: some View {
+        Section("Appearance") {
+            Picker("Theme", selection: Binding(
+                get: { AppearanceMode(rawValue: appearanceRaw) ?? .system },
+                set: { appearanceRaw = $0.rawValue }
+            )) {
+                ForEach(AppearanceMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
     }
 
     // MARK: - Strava

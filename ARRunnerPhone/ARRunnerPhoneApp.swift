@@ -6,9 +6,16 @@ import SwiftUI
 @main
 @MainActor
 struct ARRunnerPhoneApp: App {
+    @AppStorage(AppearanceMode.storageKey) private var appearanceRaw: String = AppearanceMode.system.rawValue
+
+    private var appearance: AppearanceMode {
+        AppearanceMode(rawValue: appearanceRaw) ?? .system
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
+                .preferredColorScheme(appearance.colorScheme)
                 .onOpenURL { url in
                     // Forward `arrunner://...` redirects from the native
                     // Strava app's `/oauth/mobile/authorize` flow into the
