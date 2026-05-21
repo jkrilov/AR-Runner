@@ -85,3 +85,37 @@ The "phone-optional invariant has scope qualifiers" pattern from learning #1 is 
 ### Status
 
 Awaiting Joe's review of the architecture plan and answers to the five open questions. No agent dispatch until Joe signs off the plan. After sign-off: Scribe merges to decisions.md as ADR-Strava, milestone v0.5 opens, three-PR sequence begins.
+
+---
+
+## 2026-05-21T11:46:12-04:00: Cloudflare Worker source landed in git
+
+**Trigger:** The Strava OAuth proxy at `strava-connect.ar-runner.app` was already deployed and serving `POST /token`, but only `.wrangler/` and `node_modules/` were on disk — the source was never tracked. Joe asked me to reconstruct the source and add `/deauthorize`.
+
+**What I created under `infrastructure/auth-worker/`:**
+- `wrangler.toml` — `name=strava-connect`, `main=src/index.js`, custom domain route `strava-connect.ar-runner.app/*` (zone `ar-runner.app`), compatibility_date `2025-05-01`. `STRAVA_CLIENT_SECRET` is **not** declared as a `[vars]` entry — it's set via `wrangler secret put` so it never lands in git.
+- `src/index.js` — ES-module Worker (`export default { fetch }`) with a route table dispatcher. Three POST endpoints (`/token`, `/refresh`, `/deauthorize`) plus OPTIONS preflight, JSON-body validation, 400/404/405/500 error envelopes (`{error, message}` shape), CORS `*` headers, upstream response pass-through preserving Strava's HTTP status. Strava is called with `application/x-www-form-urlencoded` (token endpoint requires it); `/deauthorize` passes the token via `Authorization: Bearer` header, which is the form Strava's docs prefer.
+- `package.json`, `.gitignore` (ignores `node_modules/`, `.wrangler/`, `.dev.vars`), `README.md` with deploy + endpoint reference.
+
+**Architecture notes worth keeping:**
+
+1. **Worker hostname correction.** History had the old hostname (`strava-auth-worker.jkrilov.workers.dev`) from the v0.5 ship notes. The live worker is now `strava-connect.ar-runner.app` — custom domain on the `ar-runner.app` zone, same zone we use for the Strava OAuth callback (`arrunner://ar-runner.app/callback` redirect handler). Update the Strava ADR if the iOS client still references the workers.dev hostname.
+
+2. **Source-of-truth gap was a real risk.** A deployed-but-untracked Worker means a single Cloudflare dashboard accident or account loss vaporizes the service. Going forward: any new Worker we deploy must land its source under `infrastructure/` in the **same PR** that creates the deployment. Treat this as a standing rule — the auth-worker omission was an oversight, not a pattern.
+
+3. **`/refresh` was the load-bearing addition I almost missed.** Joe called it out — Strava access tokens expire every 6h, and without a refresh endpoint the iOS client would have to ship `client_secret` itself the moment a token expired. Adding `/refresh` here keeps the "secret lives only in the Worker" invariant intact for the full token lifecycle, not just the initial code exchange.
+
+4. **`/deauthorize` shape: Bearer header vs form field.** Strava's deauth endpoint accepts the token either as `access_token=...` form field or `Authorization: Bearer ...` header. I picked the header form because it (a) matches what the iOS client would do if calling Strava directly someday, and (b) keeps the request body empty so we don't accidentally log secrets if request-body logging gets enabled at the Worker edge.
+
+5. **Route dispatcher over if/else chain.** Three endpoints is the inflection point where a `ROUTES[path][method]` table beats a switch — adds 405 handling for free (path matches, method doesn't) and makes the 404 path obvious. Worth reusing the pattern if we add a v2 worker for App Attest or webhook ingestion.
+
+**Files touched:**
+- `infrastructure/auth-worker/wrangler.toml` (new)
+- `infrastructure/auth-worker/package.json` (new)
+- `infrastructure/auth-worker/.gitignore` (new)
+- `infrastructure/auth-worker/src/index.js` (new)
+- `infrastructure/auth-worker/README.md` (new)
+- `.squad/agents/richards/history.md` (this entry)
+- `.squad/decisions/inbox/richards-worker-source.md` (new)
+
+**Status:** Files created and `node --check` clean. Not committed — per task, another agent handles the iOS side and the eventual PR. When that PR lands, the iOS Strava ADR should be updated to reference `strava-connect.ar-runner.app` as the canonical worker host (and add `/refresh` + `/deauthorize` to its API surface).
