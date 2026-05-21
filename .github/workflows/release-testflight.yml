@@ -27,8 +27,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Marketing version (e.g. 0.2.0-rc1). Required when triggering manually.'
-        required: true
+        description: 'Marketing version (e.g. 0.2.0-rc1). Optional — defaults to the contents of the VERSION file at the repo root. Bump VERSION in a commit before triggering.'
+        required: false
         type: string
 
 concurrency:
@@ -63,21 +63,43 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Need full history + tags so the version-monotonicity guard
+          # can compare the resolved release version against every
+          # existing release tag, not just the tip commit.
+          fetch-depth: 0
 
-      - name: Resolve version from tag or dispatch input
+      - name: Resolve version from tag, dispatch input, or VERSION file
         id: version
         run: |
           set -euo pipefail
+          # Resolution order:
+          #   1. Tag push  → strip leading 'v' from the tag (authoritative).
+          #   2. workflow_dispatch with explicit input → use the input.
+          #   3. workflow_dispatch with no input → read VERSION file at repo root.
+          # The VERSION file is the single source of truth for the *next*
+          # release; bump it in a commit before dispatching this workflow.
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             RAW_VERSION="${{ inputs.version }}"
+            VERSION_SOURCE="dispatch input"
+            if [[ -z "$RAW_VERSION" ]]; then
+              if [[ ! -f VERSION ]]; then
+                echo "::error::No version input provided and VERSION file is missing at repo root."
+                exit 1
+              fi
+              RAW_VERSION="$(tr -d '[:space:]' < VERSION)"
+              VERSION_SOURCE="VERSION file"
+            fi
           else
             TAG="${GITHUB_REF#refs/tags/}"
             RAW_VERSION="${TAG#v}"
+            VERSION_SOURCE="git tag $TAG"
           fi
           if [[ -z "$RAW_VERSION" ]]; then
-            echo "::error::Could not resolve version (ref=$GITHUB_REF, event=${{ github.event_name }})"
+            echo "::error::Could not resolve version (ref=$GITHUB_REF, event=${{ github.event_name }}, source=$VERSION_SOURCE)"
             exit 1
           fi
+          echo "Version source: $VERSION_SOURCE"
           # CFBundleShortVersionString must be numeric (N, N.N, or N.N.N) —
           # App Store Connect hard-rejects prerelease suffixes like "-rc2".
           # Strip everything from the first '-' onward so v0.3.0-rc3 → 0.3.0.
@@ -90,6 +112,36 @@ jobs:
           echo "marketing_version=$MARKETING_VERSION" >> "$GITHUB_OUTPUT"
           echo "build_number=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Resolved RAW=$RAW_VERSION  MARKETING_VERSION=$MARKETING_VERSION  CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER"
+
+      - name: Guard against backward version steps
+        env:
+          RAW_VERSION: ${{ steps.version.outputs.raw_version }}
+        run: |
+          set -euo pipefail
+          # Reject any release whose version is not strictly greater than the
+          # highest existing v* tag. This is the safety net that prevents the
+          # 0.5.0-rc2-after-0.5.1 class of mistake. We use `sort -V` (version
+          # sort) which orders 0.5.0-rc2 < 0.5.0 < 0.5.1 < 0.5.2 as expected
+          # for our tag scheme. Pure-release tags (vX.Y.Z) and pre-release
+          # tags (vX.Y.Z-rcN) are both considered.
+          git fetch --tags --force --quiet || true
+          LATEST_TAG="$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -n 1 || true)"
+          if [[ -z "$LATEST_TAG" ]]; then
+            echo "No existing v* tags found — skipping monotonicity check."
+            exit 0
+          fi
+          echo "Latest released version: $LATEST_TAG"
+          echo "Proposed release version: $RAW_VERSION"
+          if [[ "$RAW_VERSION" == "$LATEST_TAG" ]]; then
+            echo "::error::Version $RAW_VERSION matches an existing tag (v$LATEST_TAG). Bump the VERSION file before releasing."
+            exit 1
+          fi
+          HIGHEST="$(printf '%s\n%s\n' "$LATEST_TAG" "$RAW_VERSION" | sort -V | tail -n 1)"
+          if [[ "$HIGHEST" != "$RAW_VERSION" ]]; then
+            echo "::error::Refusing to release $RAW_VERSION: it is lower than the latest existing tag v$LATEST_TAG. Bump the VERSION file (and update project.yml MARKETING_VERSION) before retriggering."
+            exit 1
+          fi
+          echo "OK — $RAW_VERSION is strictly greater than v$LATEST_TAG."
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1

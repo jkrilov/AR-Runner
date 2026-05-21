@@ -65,20 +65,21 @@ struct SettingsView: View {
         Button {
             viewModel.connectStrava()
         } label: {
-            HStack {
+            ZStack {
+                Image("ConnectWithStrava")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(height: 48)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .opacity(viewModel.isAuthenticating ? 0.6 : 1)
+                    .accessibilityLabel("Connect with Strava")
+
                 if viewModel.isAuthenticating {
                     ProgressView()
                         .controlSize(.small)
                         .tint(.white)
                 }
-                Text(viewModel.isAuthenticating ? "Opening Strava…" : "Connect with Strava")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 48)
-            .background(Color.stravaOrange)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(viewModel.isAuthenticating || !viewModel.isConfigured)
