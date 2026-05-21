@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 import XCTest
 @testable import ARRunnerCore
 
@@ -32,10 +35,18 @@ final class TCXEncoderTests: XCTestCase {
     // MARK: - Well-formed XML
 
     /// Parses output to assert the document is syntactically valid XML.
+    ///
+    /// `XMLParser` ships with Apple's Foundation and with swift-corelibs-foundation's
+    /// `FoundationXML` overlay on Linux. When neither is available (older Linux
+    /// toolchains) we degrade to a no-op so the rest of the suite still runs.
     private func assertWellFormedXML(_ data: Data, file: StaticString = #filePath, line: UInt = #line) {
+        #if canImport(Darwin) || canImport(FoundationXML)
         let parser = XMLParser(data: data)
         let ok = parser.parse()
         XCTAssertTrue(ok, "XMLParser failed: \(parser.parserError?.localizedDescription ?? "unknown")", file: file, line: line)
+        #else
+        _ = data
+        #endif
     }
 
     // MARK: - Structure tests
