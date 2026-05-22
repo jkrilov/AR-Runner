@@ -116,14 +116,22 @@ struct ARRunnerStartWorkoutIntent: StartWorkoutIntent {
         AppGroupPendingWorkoutStartStore().markPending(at: timestamp)
         AppGroupPendingActionButtonPressStore().markPending(at: timestamp)
 
-        // Fast path: if (rarely) the intent happens to be running
-        // in-host, dispatch immediately so the user feels sub-100ms
-        // feedback without waiting for the scene-phase round-trip. The
-        // coordinator silently parks the request when no view-model is
-        // attached, so this is a harmless best-effort call when out of
-        // process.
+        // Fast path: when `openAppWhenRun=true` the system runs
+        // `perform()` in-host once the app is foregrounded, so this is
+        // typically the *primary* path that actually starts the workout
+        // (the App Group flag is a belt-and-braces fallback that the
+        // simulator can't honor — the Intents extension and host don't
+        // share a container in Simulator builds).
+        //
+        // v0.5.11 — call the dedicated `handleWorkoutStart()` path
+        // rather than the generic `handleActionButtonPress()`. The
+        // generic dispatcher routes by the persisted `ActionButtonMode`
+        // (default `.splits`), which is the right behavior *mid*-workout
+        // but the wrong behavior when the user is cold-launching the
+        // app to begin a run. The coordinator parks the request if no
+        // view-model has attached yet and replays it from `attach`.
         await MainActor.run {
-            ActionButtonCoordinator.shared.handleActionButtonPress()
+            ActionButtonCoordinator.shared.handleWorkoutStart()
         }
 
         return .result()
