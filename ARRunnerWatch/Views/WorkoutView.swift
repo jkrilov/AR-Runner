@@ -309,27 +309,6 @@ struct WorkoutView: View {
                 Button("Finish") { Task { await viewModel.requestFinish() } }
                     .tint(.red)
             }
-            #if DEBUG
-            // Simulator-only stand-in for the Action Button.
-            //
-            // The watchOS simulator does not deliver hardware Action
-            // Button events to a foreground app — only the cold-start
-            // `StartWorkoutIntent` path is exercised. That means the
-            // mid-workout "next action" donation (`ARRunnerNextActionIntent`)
-            // cannot be tested in the simulator, and any split-flash /
-            // haptic / `HKWorkoutEvent.segment` regressions would only
-            // surface on real Apple Watch Ultra hardware.
-            //
-            // This DEBUG-only button drives the exact same code path the
-            // dispatcher uses (`ActionButtonCoordinator.handleActionButtonPress`)
-            // so we can validate splits + haptics + the on-screen flash
-            // without hardware. It is compiled out of Release builds.
-            Button("Test Split (DEBUG)") {
-                ActionButtonCoordinator.shared.handleActionButtonPress()
-            }
-            .font(.caption2)
-            .tint(.purple)
-            #endif
         case .paused:
             HStack {
                 Button("Resume") { Task { await viewModel.resume() } }
