@@ -45,6 +45,15 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         /// `HKWorkout` carries a polyline visible in Apple Health (and
         /// usable by Strava's auto-import).
         var routeBuilder: HKWorkoutRouteBuilder?
+        /// v0.5.11 — End of the previous `.segment` event (or nil before
+        /// the first split of a workout). Used by `markSegment(at:title:)`
+        /// to synthesize a *positive-duration* `DateInterval` for each
+        /// `HKWorkoutEvent`, because HealthKit raises an
+        /// `NSInvalidArgumentException` ("Invalid date interval duration
+        /// for type HKWorkoutEventTypeSegment") when the interval has
+        /// zero duration. Reset to nil in `begin(...)` so a new workout
+        /// starts measuring its first split from `startedAt`.
+        var lastSegmentDate: Date?
     }
 
     private let healthStore: HKHealthStore
@@ -194,6 +203,7 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
             mutable.builder = builder
             mutable.routeBuilder = routeBuilder
             mutable.startedAt = startedAt
+            mutable.lastSegmentDate = nil
         }
 
         // Ask for "when in use" authorization the first time we ever
@@ -250,30 +260,68 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
 
     /// v0.5.10 — Action Button split / lap marker. `HKWorkoutBuilder
     /// .addWorkoutEvents` with `HKWorkoutEventType.segment` is the Apple-
-    /// native equivalent of the stock Workout app's lap press. We use a
-    /// zero-duration `DateInterval` at the tap timestamp so the marker
-    /// surfaces as a point-in-time event on the resulting `HKWorkout`
-    /// (Health app, Strava import, and our own side-store can render the
-    /// per-split table from these). The `title`, when supplied, is
-    /// preserved in the event metadata under our app-namespaced key so we
-    /// can round-trip "Split 3 · 1:23" labels through HealthKit without
-    /// colliding with system-reserved metadata keys.
+    /// native equivalent of the stock Workout app's lap press. The marker
+    /// surfaces as a segment event on the resulting `HKWorkout` (Health
+    /// app, Strava import, and our own side-store can render the per-split
+    /// table from these). The `title`, when supplied, is preserved in the
+    /// event metadata under our app-namespaced key so we can round-trip
+    /// "Split 3 · 1:23" labels through HealthKit without colliding with
+    /// system-reserved metadata keys.
+    ///
+    /// v0.5.11 — `HKWorkoutEvent(type: .segment, ...)` requires a
+    /// `DateInterval` with *positive* duration. The original implementation
+    /// used `duration: 0` which crashes with
+    /// `NSInvalidArgumentException: Invalid date interval duration for
+    /// type HKWorkoutEventTypeSegment`. The interval is now the span from
+    /// the previous segment's end (or the workout's `startedAt` if this
+    /// is the first split) to the current tap timestamp, which is also
+    /// how the stock Workout app models laps. A guard at the bottom
+    /// snaps any pathological (non-positive) duration to a 1-second
+    /// window ending at `date` so we never call into HealthKit with an
+    /// interval that would trip the NSException — it bypasses Swift
+    /// `do/catch` and would crash the watch app.
     public func markSegment(at date: Date, title: String?) async throws {
         #if os(watchOS)
-        let builder = state.withLock { $0.builder }
+        let snapshot = state.withLock { current -> (HKLiveWorkoutBuilder?, Date?, Date?) in
+            (current.builder, current.startedAt, current.lastSegmentDate)
+        }
+        let (builder, startedAt, lastSegmentDate) = snapshot
         guard let builder else {
             throw WorkoutHealthSubstrateError.notRunning
         }
+
+        var segmentStart = lastSegmentDate ?? startedAt ?? date.addingTimeInterval(-1)
+        if segmentStart >= date {
+            // Safety net: clock skew, duplicate presses inside the same
+            // millisecond, or a corrupt prior state would otherwise yield
+            // a zero/negative-duration interval and crash HealthKit.
+            segmentStart = date.addingTimeInterval(-1)
+        }
+        let interval = DateInterval(start: segmentStart, end: date)
+
         var metadata: [String: Any]? = nil
         if let title, !title.isEmpty {
             metadata = ["com.arrunner.actionButtonSplitTitle": title]
         }
+
+        guard interval.duration > 0 else {
+            // Should be unreachable given the snap above, but keep an
+            // explicit guard so a future refactor can't reintroduce the
+            // zero-duration crash. NSException from HKWorkoutEvent is not
+            // a Swift error and bypasses `do/catch` at the callsite.
+            throw WorkoutHealthSubstrateError.sessionFailed(
+                reason: "segment interval has non-positive duration"
+            )
+        }
+
         let event = HKWorkoutEvent(
             type: .segment,
-            dateInterval: DateInterval(start: date, duration: 0),
+            dateInterval: interval,
             metadata: metadata
         )
         try await builder.addWorkoutEvents([event])
+
+        state.withLock { $0.lastSegmentDate = date }
         #else
         _ = date; _ = title
         throw WorkoutHealthSubstrateError.sessionFailed(reason: "watchOS-only")

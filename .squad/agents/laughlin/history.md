@@ -190,3 +190,14 @@ When in doubt, ask the user: "which Settings → Action Button sub-screen are yo
   1. Install v0.5.11, start a run in the simulator, tap "Test Split (DEBUG)" → should see the green "Split N · M:SS" flash + the "Splits: N" counter persist after fade. This validates split logic end-to-end.
   2. Open Console.app, filter `subsystem == com.arrunner.watch`, then press the simulator's hardware Action Button mid-workout. If we see "NextActionIntent.perform fired" → the intent IS routing and the bug is downstream; if we see nothing → confirmed the simulator suppresses the event and the only path to fully validate is on real Apple Watch Ultra.
 - **Durable lesson:** The watchOS simulator's Action Button does NOT fire mid-workout. Always ship a `#if DEBUG` UI affordance for any hardware-input-driven code path so we can validate logic without hardware. Same lesson applies to the side button (Pause/Resume simultaneous press) — should add a similar debug toggle if/when we need to test that path.
+
+## Learnings
+
+### 2026-05-22 — v0.5.11 split-marker crash fix
+- `HKWorkoutEvent(type: .segment, dateInterval:, metadata:)` requires a **positive-duration** `DateInterval`. Passing `duration: 0` (or any non-positive interval) raises `NSInvalidArgumentException` ("Invalid date interval duration for type HKWorkoutEventTypeSegment").
+- That NSException is an Objective-C exception, **not** a Swift `Error` — it bypasses `do/catch` at the callsite (`WorkoutController.markSegment`) and crashes the watch app outright. Always validate inputs *before* calling HK exception-prone APIs.
+- Modeling laps the way the stock Workout app does: each segment spans `[previousSegmentEnd ?? workoutStart, now]`. Stored `lastSegmentDate: Date?` in `MutableState` and reset it to nil inside `begin(...)` for each new workout.
+- `OSAllocatedUnfairLock<MutableState>` pattern in `HealthKitWorkoutSubstrate` requires snapshotting all needed fields in one `state.withLock { ... }` call when computing across them; then a second `state.withLock` to write back. Don't hold the lock across `await`.
+- Build/typecheck for watch code: `xcodebuild -project AR-Runner.xcodeproj -scheme ARRunnerWatch -destination 'generic/platform=watchOS Simulator' -configuration Debug build CODE_SIGNING_ALLOWED=NO`. Swiftc standalone fails on `import ARRunnerCore` because the package graph isn't resolved.
+- Key files: `ARRunnerWatch/Workout/HealthKitWorkoutSubstrate.swift` (HK substrate, owns session/builder/routeBuilder/lastSegmentDate); `ARRunnerCore/Sources/ARRunnerCore/Workout/WorkoutController.swift` (`markSegment` callsite, gates on `phase == .running || .paused`).
+- Branch `laughlin/v0.5.11-action-button-debug` (PR #105) is the active ship vehicle for both the debug logging and this crash fix — pushed onto the same branch rather than spinning a new PR.
