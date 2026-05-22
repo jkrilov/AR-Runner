@@ -62,7 +62,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Need full history + tags so the version-monotonicity guard
           # can compare the resolved release version against every
@@ -157,7 +157,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Cache SwiftPM (Xcode-resolved)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/Library/Caches/org.swift.swiftpm
@@ -473,7 +473,7 @@ jobs:
 
       - name: Upload .ipa as workflow artifact
         if: always() && env.IPA_PATH != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ARRunnerPhone-${{ steps.version.outputs.raw_version }}-${{ steps.version.outputs.build_number }}.ipa
           path: ${{ env.IPA_PATH }}
@@ -481,7 +481,7 @@ jobs:
 
       - name: Upload xcarchive on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ARRunnerPhone-${{ steps.version.outputs.raw_version }}.xcarchive
           path: ${{ env.ARCHIVE_PATH }}
