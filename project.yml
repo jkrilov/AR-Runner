@@ -13,8 +13,8 @@ settings:
   base:
     SWIFT_VERSION: '6.0'
     # SWIFT_STRICT_CONCURRENCY=complete is implicit under Swift 6 language mode — D8 still in effect.
-    CURRENT_PROJECT_VERSION: 37
-    MARKETING_VERSION: 0.5.8
+    CURRENT_PROJECT_VERSION: 38
+    MARKETING_VERSION: 0.5.9
     # CODE_SIGN_STYLE is intentionally NOT pinned here. xcodegen would otherwise
     # bake Automatic into the project-level pbxproj, which has higher precedence
     # than xcconfig and prevents CI from switching to Manual signing for the
@@ -98,8 +98,17 @@ targets:
         # wiring restores the route polyline and, by extension, the
         # Strava auto-import path that depends on it.
         NSLocationWhenInUseUsageDescription: AR-Runner records your route during a workout so you can see the map in Apple Health and share runs to services like Strava.
+        # rc-v0.5.9 (2026-05-22) — Apple validator rejected v0.5.8 upload
+        # (run 26302573865) with: "Invalid value 'workout-processing' for
+        # Info.plist key UIBackgroundModes in watchOS app bundle". On
+        # watchOS the workout-processing background mode lives under
+        # `WKBackgroundModes`, NOT `UIBackgroundModes` — the latter is
+        # iOS-only for this value. `bluetooth-central` remains valid in
+        # `UIBackgroundModes` on watchOS and is what keeps the BLE link
+        # to ActiveLook alive across the workout/idle boundary.
         UIBackgroundModes:
           - bluetooth-central
+        WKBackgroundModes:
           - workout-processing
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.arrunner.phone
