@@ -5,6 +5,9 @@ import ARRunnerCore
 import Foundation
 import os
 import SwiftUI
+#if canImport(CoreLocation)
+import CoreLocation
+#endif
 #if canImport(WatchKit)
 import WatchKit
 #endif
@@ -75,6 +78,17 @@ final class WorkoutViewModel {
     private(set) var estimatedActiveKilocalories: Double?
     private var hasLiveHKEnergy: Bool = false
 
+    #if canImport(CoreLocation)
+    /// v0.5.15 — live route polyline fed to the on-watch map. Populated
+    /// from the `HealthKitWorkoutSubstrate.routeCoordinateEvents` stream,
+    /// which yields the same filtered fixes the HKWorkoutRouteBuilder
+    /// persists. Cleared on every `resetLiveCounters()`.
+    private(set) var routeCoordinates: [CLLocationCoordinate2D] = []
+    /// Most recent GPS fix — used by the map to pin the runner marker and
+    /// drive the follow-camera. `nil` until the first accepted fix lands.
+    private(set) var currentLocation: CLLocationCoordinate2D?
+    #endif
+
     // MARK: - Action Button state (v0.5.x)
 
     /// Splits recorded via the Apple Watch Ultra Action Button (mode
@@ -135,6 +149,7 @@ final class WorkoutViewModel {
     private var glasses: GlassesService?
     private var stateTask: Task<Void, Never>?
     private var metricTask: Task<Void, Never>?
+    private var routeTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
     private var tickTask: Task<Void, Never>?
     private var glassesStateTask: Task<Void, Never>?
@@ -186,9 +201,13 @@ final class WorkoutViewModel {
         sport = activity
         resetLiveCounters()
 
-        let controller = WorkoutController(substrate: substrateFactory())
+        let substrate = substrateFactory()
+        let controller = WorkoutController(substrate: substrate)
         self.controller = controller
         attachStreams(to: controller)
+        #if canImport(CoreLocation)
+        attachRouteStream(from: substrate)
+        #endif
 
         // v0.2 #1: bring up the glasses link alongside the workout. Per D4
         // the connect attempt is opportunistic — we never block the workout
@@ -838,12 +857,40 @@ final class WorkoutViewModel {
         actionButtonSplits = []
         lastSplitFlash = nil
         hudVisible = true
+        #if canImport(CoreLocation)
+        routeCoordinates = []
+        currentLocation = nil
+        routeTask?.cancel()
+        routeTask = nil
+        #endif
         if let bodyProfile {
             energy = EnergyAccumulator(estimator: EnergyEstimator(profile: bodyProfile))
         } else {
             energy = nil
         }
     }
+
+    #if canImport(CoreLocation)
+    /// v0.5.15 — subscribe to the substrate's filtered GPS-fix stream and
+    /// mirror coordinates into the view-model state that drives the
+    /// on-watch live map. Only `HealthKitWorkoutSubstrate` exposes the
+    /// stream (mocks and Linux substrates have no CoreLocation), so the
+    /// downcast is intentional and safely no-ops for other substrates.
+    private func attachRouteStream(from substrate: any WorkoutHealthSubstrate) {
+        routeTask?.cancel()
+        guard let hkSubstrate = substrate as? HealthKitWorkoutSubstrate else { return }
+        let stream = hkSubstrate.routeCoordinateEvents
+        routeTask = Task { [weak self] in
+            for await coord in stream {
+                guard let self else { return }
+                await MainActor.run {
+                    self.routeCoordinates.append(coord)
+                    self.currentLocation = coord
+                }
+            }
+        }
+    }
+    #endif
 
     private func attachStreams(to controller: WorkoutController) {
         stateTask?.cancel()

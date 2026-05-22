@@ -3,6 +3,12 @@
 
 import ARRunnerCore
 import SwiftUI
+#if canImport(CoreLocation)
+import CoreLocation
+#endif
+#if canImport(MapKit)
+import MapKit
+#endif
 
 @MainActor
 struct WorkoutView: View {
@@ -37,6 +43,15 @@ struct WorkoutView: View {
                     }
                 }
                 .animation(.easeInOut(duration: 0.2), value: isPaused)
+                #if canImport(CoreLocation) && canImport(MapKit)
+                if isInWorkout {
+                    LiveRouteMapView(
+                        coordinates: viewModel.routeCoordinates,
+                        current: viewModel.currentLocation
+                    )
+                    .transition(.opacity)
+                }
+                #endif
                 Divider()
                 controlsSection
                 if isPreRun {
@@ -264,6 +279,19 @@ struct WorkoutView: View {
     private var isPreRun: Bool {
         switch viewModel.launchState {
         case .idle, .ended, .cancelled, .failed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// v0.5.15 — true while a workout is actively being recorded (running,
+    /// paused, or sitting in the Finish-menu confirmation). The live route
+    /// map is gated on this so it never appears on the pre-run or post-run
+    /// surfaces, where there are no fresh GPS fixes to plot.
+    private var isInWorkout: Bool {
+        switch viewModel.launchState {
+        case .running, .paused, .pendingFinish:
             return true
         default:
             return false
