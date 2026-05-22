@@ -74,6 +74,40 @@ final class WorkoutViewModel {
     private(set) var estimatedActiveKilocalories: Double?
     private var hasLiveHKEnergy: Bool = false
 
+    // MARK: - Action Button state (v0.5.x)
+
+    /// Splits recorded via the Apple Watch Ultra Action Button (mode
+    /// `.splits`). Each entry captures the elapsed-time *delta* since the
+    /// previous split (or workout start for the first) and the wall-clock
+    /// instant of the press, so they can be projected into a TCX-friendly
+    /// `WorkoutSplit` at save time without holding the controller hostage.
+    ///
+    /// Cleared on every `resetLiveCounters()` so a fresh workout starts at
+    /// split 1. Read-only from outside the view-model.
+    private(set) var actionButtonSplits: [ActionButtonSplit] = []
+
+    /// Tracks the user's intent for the glasses display when toggled via
+    /// the Action Button (mode `.toggleHUD`). The actual ActiveLook
+    /// `power(on:)` BLE command is queued on the transport from
+    /// `toggleHUDFromActionButton()`; this flag lets the UI mirror the
+    /// requested state immediately even before the BLE write completes.
+    ///
+    /// Defaults to `true` (HUD on) so the very first toggle hides the HUD
+    /// — matching the user's mental model of "press to turn it off".
+    private(set) var hudVisible: Bool = true
+
+    /// Lightweight in-memory record of a split press. `delta` is the
+    /// elapsed seconds since the previous split (or workout start), which
+    /// is what Strava/TCX consumers actually want; `elapsedAtPress` is the
+    /// raw workout clock value for debugging / analytics.
+    struct ActionButtonSplit: Equatable, Sendable {
+        let index: Int
+        let elapsedAtPress: TimeInterval
+        let delta: TimeInterval
+        let distanceMetersAtPress: Double?
+        let wallClock: Date
+    }
+
     private var controller: WorkoutController?
     private var transport: (any GlassesFrameTransport)?
     private var glasses: GlassesService?
@@ -331,6 +365,72 @@ final class WorkoutViewModel {
 
     func resumeFromFinish() async {
         await resume()
+    }
+
+    // MARK: - Action Button entry points (v0.5.x)
+
+    /// Called by `ActionButtonCoordinator` when the user presses the Apple
+    /// Watch Ultra Action Button and `ActionButtonMode == .splits`.
+    /// Records a split marker against the live workout clock. Returns
+    /// `true` if a split was actually recorded so the coordinator knows to
+    /// play the confirmation haptic (no-op presses outside a running
+    /// workout return `false` and play nothing).
+    @discardableResult
+    func markSplitFromActionButton() -> Bool {
+        guard launchState == .running else { return false }
+        let prev = actionButtonSplits.last?.elapsedAtPress ?? 0
+        let delta = max(0, elapsed - prev)
+        let split = ActionButtonSplit(
+            index: actionButtonSplits.count + 1,
+            elapsedAtPress: elapsed,
+            delta: delta,
+            distanceMetersAtPress: distanceMeters,
+            wallClock: now()
+        )
+        actionButtonSplits.append(split)
+        return true
+    }
+
+    /// Called by `ActionButtonCoordinator` for `ActionButtonMode
+    /// .pauseResume`. Pauses if the workout is running, resumes if paused.
+    /// Returns `true` when a toggle actually occurred so the coordinator
+    /// can play the haptic; ignored during terminal / pending-finish
+    /// states so a stray press can't strand the workout.
+    @discardableResult
+    func togglePauseResumeFromActionButton() -> Bool {
+        switch launchState {
+        case .running:
+            Task { await pause() }
+            return true
+        case .paused:
+            Task { await resume() }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Called by `ActionButtonCoordinator` for `ActionButtonMode
+    /// .toggleHUD`. Flips the in-app `hudVisible` flag and fires the
+    /// corresponding ActiveLook `power(on:)` command if a transport is
+    /// wired and connected. Safe to call when the transport is offline —
+    /// the flag still toggles so the next HUD push picks up the user's
+    /// intent (Weiss's BLE layer can additionally gate frame pushes on
+    /// `hudVisible` when it lands the richer enable/disable semantics).
+    func toggleHUDFromActionButton() {
+        hudVisible.toggle()
+        let desired = hudVisible
+        guard let transport else { return }
+        Task { [weak self] in
+            guard await transport.connectionState == .connected else { return }
+            let frame = ActiveLookCommand.power(on: desired)
+            try? await transport.sendCommands([frame])
+            if desired {
+                // Repaint the live HUD immediately on power-up so the
+                // wearer doesn't sit on a blank panel until the next 1Hz tick.
+                await self?.pushHUDFrameIfConnected(transport: transport)
+            }
+        }
     }
 
     /// Synchronously leave `.pendingFinish` so SwiftUI's
@@ -688,6 +788,8 @@ final class WorkoutViewModel {
         hasLiveHKEnergy = false
         hudOffline = false
         lastHapticAt = nil
+        actionButtonSplits = []
+        hudVisible = true
         if let bodyProfile {
             energy = EnergyAccumulator(estimator: EnergyEstimator(profile: bodyProfile))
         } else {
