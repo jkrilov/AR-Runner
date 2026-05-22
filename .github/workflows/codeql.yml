@@ -38,7 +38,7 @@ jobs:
       XCODE_VERSION: '26.4'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Pin Xcode 26.4 — mirrors ci-build.yml + release-testflight.yml (rc12,
       # PR #31). The macos-26 runner ships Xcode 26.2 as default with the iOS
@@ -65,7 +65,7 @@ jobs:
         run: xcodegen generate
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: swift
           # Use security-extended to surface a broader set of queries than
@@ -87,6 +87,6 @@ jobs:
             build
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: /language:swift
