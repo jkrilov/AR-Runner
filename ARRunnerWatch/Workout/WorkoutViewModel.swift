@@ -86,6 +86,27 @@ final class WorkoutViewModel {
     /// split 1. Read-only from outside the view-model.
     private(set) var actionButtonSplits: [ActionButtonSplit] = []
 
+    /// v0.5.10 — transient on-screen confirmation that the Action Button
+    /// just recorded a split. Set in `markSplitFromActionButton` and
+    /// cleared by the view after a short auto-dismiss timer. Separate
+    /// from `actionButtonSplits` (the durable record) so toggling the
+    /// banner can't lose the underlying split data.
+    private(set) var lastSplitFlash: SplitFlash?
+
+    struct SplitFlash: Equatable, Sendable {
+        let index: Int
+        let delta: TimeInterval
+        let shownAt: Date
+    }
+
+    /// Called by the view once the on-screen flash has finished its
+    /// auto-dismiss timer. Idempotent — clearing a `nil` flash is a
+    /// no-op so a re-entrant timer can't fight a fresh split.
+    func clearSplitFlash(matching shownAt: Date) {
+        guard lastSplitFlash?.shownAt == shownAt else { return }
+        lastSplitFlash = nil
+    }
+
     /// Tracks the user's intent for the glasses display when toggled via
     /// the Action Button (mode `.toggleHUD`). The actual ActiveLook
     /// `power(on:)` BLE command is queued on the transport from
@@ -394,6 +415,19 @@ final class WorkoutViewModel {
             wallClock: now()
         )
         actionButtonSplits.append(split)
+        // v0.5.10 — drive the transient on-screen confirmation. The view
+        // observes this and auto-clears it after ~1.6s via a dispatched
+        // task so the user gets a Workout-app-style "Lap 3" flash without
+        // a persistent UI element competing with live metrics.
+        lastSplitFlash = SplitFlash(index: split.index, delta: split.delta, shownAt: split.wallClock)
+        // Best-effort HKWorkoutEvent.segment append so the split surfaces
+        // on the saved HKWorkout (Health app, Strava import, side-store).
+        // Failures are logged in-controller and never strand the workout.
+        if let controller {
+            let title = "Split \(split.index)"
+            let when = split.wallClock
+            Task { try? await controller.markSegment(at: when, title: title) }
+        }
         return true
     }
 
@@ -795,6 +829,7 @@ final class WorkoutViewModel {
         hudOffline = false
         lastHapticAt = nil
         actionButtonSplits = []
+        lastSplitFlash = nil
         hudVisible = true
         if let bodyProfile {
             energy = EnergyAccumulator(estimator: EnergyEstimator(profile: bodyProfile))

@@ -54,6 +54,30 @@ public protocol WorkoutHealthSubstrate: Sendable {
     /// partial data into Health. Implementations MUST guarantee no
     /// `HKWorkout` is created when this method is called.
     func discard(at date: Date) async throws
+
+    /// Append a zero-duration segment marker (the Apple-native equivalent
+    /// of a "lap" press in the stock Workout app) to the live workout.
+    /// Backed by `HKWorkoutBuilder.addWorkoutEvents` with
+    /// `HKWorkoutEventType.segment` on watchOS — surfaces as a marker on
+    /// the resulting `HKWorkout` so downstream consumers (Health app,
+    /// Strava import, AR-Runner side-store) can render per-split tables.
+    ///
+    /// Default implementation is a no-op so non-HealthKit substrates
+    /// (Linux tests, `InMemoryWorkoutHealthSubstrate`, Amber's integration
+    /// mocks) don't need to grow a new requirement just to keep the
+    /// "split marker → HKWorkoutEvent" path live on real hardware.
+    /// Implementations MAY throw if the workout isn't running; the
+    /// controller treats failures as best-effort.
+    func markSegment(at date: Date, title: String?) async throws
+}
+
+extension WorkoutHealthSubstrate {
+    /// Default no-op implementation. Real HealthKit-backed substrates
+    /// override this; mocks inherit the no-op so existing tests don't
+    /// break.
+    public func markSegment(at date: Date, title: String?) async throws {
+        // No-op by default — see protocol doc.
+    }
 }
 
 /// Substrate-level lifecycle phase. Maps onto `HKWorkoutSessionState` but is

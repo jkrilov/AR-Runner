@@ -209,8 +209,26 @@ public actor WorkoutController {
         metricContinuation.finish()
     }
 
-    // MARK: - Glasses signal (D4 — never pauses the workout)
+    // MARK: - Split / lap marker (v0.5.10 — Action Button feedback)
 
+    /// Append a segment marker (Apple Watch Action Button "lap" press) to
+    /// the live workout. Best-effort by design: a press while the workout
+    /// is not running is a silent no-op (matches the user's mental model
+    /// that pressing Action with no workout active does nothing), and
+    /// substrate failures are surfaced via the controller error type but
+    /// do not transition the workout into `.failed` — losing a single
+    /// marker shouldn't strand the entire run.
+    public func markSegment(at date: Date? = nil, title: String? = nil) async throws {
+        guard phase == .running || phase == .paused else { return }
+        let stamp = date ?? clock()
+        do {
+            try await substrate.markSegment(at: stamp, title: title)
+        } catch {
+            throw Error.substrateFailure(reason: String(describing: error))
+        }
+    }
+
+    // MARK: - Glasses signal (D4 — never pauses the workout)
     /// Record a glasses connectivity event. Per D4 the workout runs whether or
     /// not the HUD is online; this method only updates the state snapshot
     /// (`glassesConnected`) and bumps the disconnect counter for the summary.

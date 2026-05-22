@@ -248,6 +248,38 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         #endif
     }
 
+    /// v0.5.10 — Action Button split / lap marker. `HKWorkoutBuilder
+    /// .addWorkoutEvents` with `HKWorkoutEventType.segment` is the Apple-
+    /// native equivalent of the stock Workout app's lap press. We use a
+    /// zero-duration `DateInterval` at the tap timestamp so the marker
+    /// surfaces as a point-in-time event on the resulting `HKWorkout`
+    /// (Health app, Strava import, and our own side-store can render the
+    /// per-split table from these). The `title`, when supplied, is
+    /// preserved in the event metadata under our app-namespaced key so we
+    /// can round-trip "Split 3 · 1:23" labels through HealthKit without
+    /// colliding with system-reserved metadata keys.
+    public func markSegment(at date: Date, title: String?) async throws {
+        #if os(watchOS)
+        let builder = state.withLock { $0.builder }
+        guard let builder else {
+            throw WorkoutHealthSubstrateError.notRunning
+        }
+        var metadata: [String: Any]? = nil
+        if let title, !title.isEmpty {
+            metadata = ["com.arrunner.actionButtonSplitTitle": title]
+        }
+        let event = HKWorkoutEvent(
+            type: .segment,
+            dateInterval: DateInterval(start: date, duration: 0),
+            metadata: metadata
+        )
+        try await builder.addWorkoutEvents([event])
+        #else
+        _ = date; _ = title
+        throw WorkoutHealthSubstrateError.sessionFailed(reason: "watchOS-only")
+        #endif
+    }
+
     public func end(at date: Date) async throws -> WorkoutHealthResult {
         #if os(watchOS)
         let snapshot = state.withLock { current -> (HKWorkoutSession?, HKLiveWorkoutBuilder?, HKWorkoutRouteBuilder?, Date?) in
