@@ -50,6 +50,18 @@ public struct WorkoutTickMessage: Sendable, Codable, Equatable {
 
     public let glassesConnected: Bool
 
+    /// v0.5.16 — most recent GPS fix (decimal degrees), piggybacked on the
+    /// existing ~1 Hz tick so the iPhone live mirror can plot the route
+    /// without a second stream. Both values are present together or both
+    /// are nil — the watch only emits them once `CoreLocation` has handed
+    /// it a fix that passed the same horizontal-accuracy filter that
+    /// feeds `HKWorkoutRouteBuilder`, so the polyline the phone draws is
+    /// identical to what Apple Health stores. Optional for backwards
+    /// compatibility with v4 / older watch builds (the phone treats
+    /// "no lat/lon" as "no map yet" — never as an error).
+    public let latitude: Double?
+    public let longitude: Double?
+
     public init(
         sessionID: UUID,
         sport: SportType,
@@ -61,7 +73,9 @@ public struct WorkoutTickMessage: Sendable, Codable, Equatable {
         distanceMeters: Double?,
         paceSecondsPerKilometer: Double?,
         estimatedActiveKilocalories: Double?,
-        glassesConnected: Bool
+        glassesConnected: Bool,
+        latitude: Double? = nil,
+        longitude: Double? = nil
     ) {
         self.sessionID = sessionID
         self.sport = sport
@@ -74,5 +88,7 @@ public struct WorkoutTickMessage: Sendable, Codable, Equatable {
         self.paceSecondsPerKilometer = paceSecondsPerKilometer
         self.estimatedActiveKilocalories = estimatedActiveKilocalories
         self.glassesConnected = glassesConnected
+        self.latitude = latitude
+        self.longitude = longitude
     }
 }

@@ -4,6 +4,9 @@
 import ARRunnerCore
 import Foundation
 import SwiftUI
+#if canImport(CoreLocation)
+import CoreLocation
+#endif
 
 /// iPhone Live tab — single-screen read-only mirror of the active watch
 /// workout (v0.2 #3). No controls, no settings (#3 + #6 keep the phone
@@ -17,18 +20,38 @@ struct WorkoutMirrorView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
-            startedRow
-            glassesBatteryRow
-            metricsGrid
-            footer
-            Spacer()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                startedRow
+                glassesBatteryRow
+                metricsGrid
+                liveMapSection
+                footer
+            }
+            .padding()
         }
-        .padding()
         .navigationTitle("Live")
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+    }
+
+    /// v0.5.16 — phone-PRIMARY live route map. Sits below the metrics grid
+    /// and above the footer. Only renders once the watch has streamed at
+    /// least one GPS fix (older watch builds on schema ≤ v4 never will,
+    /// so the section simply stays hidden — graceful degradation).
+    @ViewBuilder
+    private var liveMapSection: some View {
+        #if canImport(CoreLocation) && canImport(MapKit)
+        if !viewModel.routeCoordinates.isEmpty || viewModel.currentLocation != nil {
+            LiveRouteMapView(
+                coordinates: viewModel.routeCoordinates,
+                current: viewModel.currentLocation,
+                height: 280
+            )
+            .transition(.opacity)
+        }
+        #endif
     }
 
     /// rc2 — "Started at HH:MM" row above the live metrics. Sourced from

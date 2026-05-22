@@ -240,3 +240,26 @@ When in doubt, ask the user: "which Settings → Action Button sub-screen are yo
 - **Reset:** `resetLiveCounters` clears `routeCoordinates` + `currentLocation` and cancels the route task. Every workout starts with a blank polyline.
 - **Build:** `xcodebuild build -scheme ARRunnerWatch -destination 'platform=watchOS Simulator,name=Apple Watch Ultra 3 (49mm)'` → BUILD SUCCEEDED with only pre-existing warnings.
 - **Versioning:** `VERSION` → 0.5.15, `project.yml` `MARKETING_VERSION` 0.5.15 / `CURRENT_PROJECT_VERSION` 45.
+
+### v0.5.16 — live route map placement fix (phone primary, watch secondary)
+
+**Decision (D-LAUGHLIN-v0.5.16-LIVE-MAP-PLACEMENT):** The live route map is phone-PRIMARY (inline below metrics in `WorkoutMirrorView`, ~280pt tall) and watch-SECONDARY (separate vertically-paginated `TabView` page using `.tabViewStyle(.verticalPage)`, only while `isInWorkout`). v0.5.15's inline watch placement compressed the metrics — metrics must win at a glance on the tiny screen. The watch TabView is gated on `isInWorkout` so the swipe affordance never appears pre-/post-run when there's nothing to plot.
+
+**Wire protocol — additive optional pattern (4th use):** Added `latitude: Double?` + `longitude: Double?` to `WorkoutTickMessage`, piggybacked on the existing ~1 Hz tick. WC schema bumped 4 → 5. v5 ↔ v4 peers keep working in both directions because both fields default to `nil` and the phone treats "no lat/lon" as "no map yet". This is now the established pattern: additive optional fields + schema bump + a back-compat test that synthesises the previous version's JSON literal (see `testV4SnapshotWithoutLatLonStillDecodesOnV5`). Update both the version-pin test AND add a fresh back-compat test on every bump.
+
+**Code org — `Shared/Views/` is now a thing:** Moved `LiveRouteMapView.swift` from `ARRunnerWatch/Views/` to `Shared/Views/` because both targets needed it (and `Shared/` is already in both target source paths per `project.yml`). Previously `Shared/` held only settings-types (e.g. `ActionButtonMode`). The view gained a `height: CGFloat?` param — explicit pt sizes the rounded-rect tile, `nil` makes it fill the parent for full-page contexts (watch's verticalPage map page). Pattern to repeat: any SwiftUI view that the phone and watch both render goes in `Shared/Views/` before being target-duplicated.
+
+**Watch view structure — TabView only while needed:** `WorkoutView.body` now branches on `isInWorkout`: wraps in `TabView { metricsPage; mapPage }.tabViewStyle(.verticalPage)` during a workout, renders `metricsPage` standalone otherwise. The map page uses `LiveRouteMapView(height: nil).ignoresSafeArea(edges: .bottom)` for a full-screen feel. All modifiers (`.toolbar`, `.task`, `.sheet`, `.confirmationDialog`, `.onChange(scenePhase)`) hang off the outer `Group`, not the inner pages, so they don't fire twice when the user swipes between pages.
+
+**Phone view-model — dedup contiguous coords:** `WorkoutMirrorViewModel.ingestLocation(from:)` skips appending if the new fix equals the previous one (stationary runner). Uses `CLLocationCoordinate2DIsValid` to drop bogus 0/0 fixes that test mocks emit. Cleared on lifecycle `.started`, retained through `.ended` so the post-run header still shows the completed polyline.
+
+**Files touched (v0.5.16):**
+- `ARRunnerCore/Sources/ARRunnerCore/Messaging/WorkoutTickMessage.swift` (+latitude/longitude)
+- `ARRunnerCore/Sources/ARRunnerCore/Messaging/WCMessage.swift` (schema 4→5)
+- `ARRunnerCore/Tests/ARRunnerCoreTests/WorkoutTickMessageTests.swift` (v5 pin + v4 back-compat test)
+- `Shared/Views/LiveRouteMapView.swift` (moved from `ARRunnerWatch/Views/`, gained `height` param)
+- `ARRunnerWatch/Workout/WorkoutViewModel.swift` (snapshot ctor now passes lat/lon from `currentLocation`, gated on `canImport(CoreLocation)`)
+- `ARRunnerWatch/Views/WorkoutView.swift` (TabView with verticalPage, gated on `isInWorkout`)
+- `ARRunnerPhone/Views/WorkoutMirrorViewModel.swift` (accumulates `routeCoordinates` + `currentLocation`)
+- `ARRunnerPhone/Views/WorkoutMirrorView.swift` (wrapped in `ScrollView`, embeds `LiveRouteMapView` at 280pt)
+- `VERSION` → `0.5.16`, `project.yml` MARKETING 0.5.16 / CURRENT_PROJECT_VERSION 46

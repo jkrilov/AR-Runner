@@ -28,39 +28,25 @@ struct WorkoutView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                hudOfflineBanner
-                splitFlashBanner
-                VStack(alignment: .leading, spacing: 8) {
-                    metricsSection
+        // v0.5.16 — when a workout is live, the screen becomes a 2-page
+        // vertical TabView: page 1 = metrics & controls (the long-running
+        // primary surface), page 2 = full-screen live route map. The user
+        // swipes down (crown / finger) to peek at the map without the
+        // metrics shrinking to fit. Outside of a workout we render the
+        // metrics page directly so the swipe affordance doesn't appear
+        // before there's anything to plot. Decision: keep the metrics
+        // page as the *first* page so the watch wakes onto the metrics
+        // every time — the map is opt-in.
+        Group {
+            if isInWorkout {
+                TabView {
+                    metricsPage
+                    mapPage
                 }
-                .opacity(isPaused ? 0.55 : 1.0)
-                .overlay(alignment: .center) {
-                    if isPaused {
-                        pausedOverlay
-                            .transition(.opacity.combined(with: .scale))
-                    }
-                }
-                .animation(.easeInOut(duration: 0.2), value: isPaused)
-                #if canImport(CoreLocation) && canImport(MapKit)
-                if isInWorkout {
-                    LiveRouteMapView(
-                        coordinates: viewModel.routeCoordinates,
-                        current: viewModel.currentLocation
-                    )
-                    .transition(.opacity)
-                }
-                #endif
-                Divider()
-                controlsSection
-                if isPreRun {
-                    preRunGlassesRow
-                }
-                statusFooter
+                .tabViewStyle(.verticalPage)
+            } else {
+                metricsPage
             }
-            .padding(.horizontal)
-            .padding(.bottom)
         }
         .navigationTitle("Run")
         .toolbar {
@@ -132,6 +118,57 @@ struct WorkoutView: View {
         } message: {
             Text("Saving writes the workout to Health. Discard removes it from this view (it remains in Health and can be deleted there).")
         }
+    }
+
+    /// Page 1 of the in-workout TabView — the existing metrics + controls
+    /// surface (unchanged from v0.5.15 minus the inline map). Outside of a
+    /// workout this view is rendered standalone (no TabView wrapper) so
+    /// the pre-run / post-run experience is unchanged.
+    @ViewBuilder
+    private var metricsPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                hudOfflineBanner
+                splitFlashBanner
+                VStack(alignment: .leading, spacing: 8) {
+                    metricsSection
+                }
+                .opacity(isPaused ? 0.55 : 1.0)
+                .overlay(alignment: .center) {
+                    if isPaused {
+                        pausedOverlay
+                            .transition(.opacity.combined(with: .scale))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: isPaused)
+                Divider()
+                controlsSection
+                if isPreRun {
+                    preRunGlassesRow
+                }
+                statusFooter
+            }
+            .padding(.horizontal)
+            .padding(.bottom)
+        }
+    }
+
+    /// Page 2 of the in-workout TabView — full-screen live route map. Only
+    /// shown while a workout is active (the parent gates the TabView on
+    /// `isInWorkout`), so we don't need to re-check here. `height: nil`
+    /// makes the map fill the swipe page.
+    @ViewBuilder
+    private var mapPage: some View {
+        #if canImport(CoreLocation) && canImport(MapKit)
+        LiveRouteMapView(
+            coordinates: viewModel.routeCoordinates,
+            current: viewModel.currentLocation,
+            height: nil
+        )
+        .ignoresSafeArea(edges: .bottom)
+        #else
+        EmptyView()
+        #endif
     }
 
     /// Consume any pending-start flag dropped by the widget AppIntent

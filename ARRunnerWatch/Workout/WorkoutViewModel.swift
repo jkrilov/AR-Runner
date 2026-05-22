@@ -1037,7 +1037,26 @@ final class WorkoutViewModel {
             distanceMeters: distanceMeters,
             paceSecondsPerKilometer: pace,
             estimatedActiveKilocalories: estimatedActiveKilocalories,
-            glassesConnected: glassesConnected
+            glassesConnected: glassesConnected,
+            // v0.5.16 — piggyback the most recent accepted GPS fix on the
+            // tick so the phone live-mirror can plot the route polyline
+            // without a second WC stream. `currentLocation` is the same
+            // coordinate the watch map renders. Gated on CoreLocation for
+            // parity with the field declaration above.
+            latitude: {
+                #if canImport(CoreLocation)
+                return currentLocation?.latitude
+                #else
+                return nil
+                #endif
+            }(),
+            longitude: {
+                #if canImport(CoreLocation)
+                return currentLocation?.longitude
+                #else
+                return nil
+                #endif
+            }()
         )
         await mirror.send(snapshot: snapshot)
     }

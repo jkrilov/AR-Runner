@@ -20,7 +20,12 @@ public enum WCMessage: Sendable, Codable, Equatable {
     ///      the new field. Watch forwards 0–100 percent from the Battery
     ///      Service (0x180F / 0x2A19) via transferUserInfo. Phone-optional:
     ///      missing the iPhone never blocks the watch.
-    public static let currentSchemaVersion = 4
+    /// v5 — `WorkoutTickMessage.latitude` / `.longitude` (both optional)
+    ///      for the v0.5.16 phone-side live route map. Additive + optional
+    ///      so v5 ↔ v4/v3 peers keep working in both directions — older
+    ///      watch builds simply don't populate them and the phone treats
+    ///      that as "no map yet".
+    public static let currentSchemaVersion = 5
 
     case layoutConfig(HUDLayout)
     case workoutTick(WorkoutMetric)
