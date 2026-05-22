@@ -26,15 +26,17 @@ struct WorkoutView: View {
             VStack(alignment: .leading, spacing: 8) {
                 hudOfflineBanner
                 splitFlashBanner
-                metricsSection
-                    .opacity(isPaused ? 0.55 : 1.0)
-                    .overlay(alignment: .center) {
-                        if isPaused {
-                            pausedOverlay
-                                .transition(.opacity.combined(with: .scale))
-                        }
+                VStack(alignment: .leading, spacing: 8) {
+                    metricsSection
+                }
+                .opacity(isPaused ? 0.55 : 1.0)
+                .overlay(alignment: .center) {
+                    if isPaused {
+                        pausedOverlay
+                            .transition(.opacity.combined(with: .scale))
                     }
-                    .animation(.easeInOut(duration: 0.2), value: isPaused)
+                }
+                .animation(.easeInOut(duration: 0.2), value: isPaused)
                 Divider()
                 controlsSection
                 if isPreRun {
