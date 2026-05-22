@@ -134,6 +134,16 @@ struct ARRunnerStartWorkoutIntent: StartWorkoutIntent {
             ActionButtonCoordinator.shared.handleWorkoutStart()
         }
 
-        return .result()
+        // v0.5.11 (build 41) — Per Apple's Action Button docs, returning
+        // `.result(actionButtonIntent:)` is the PRIMARY mechanism to tell
+        // the system what the *next* Action Button press should fire.
+        // We return it on every path (including the "already running"
+        // no-op handled inside `handleWorkoutStart`), so that even a
+        // redundant first press wires `ARRunnerNextActionIntent` as the
+        // follow-up. The separate `WorkoutControlDonation.donateNextAction()`
+        // call from `WorkoutViewModel.start()` is now a belt-and-braces
+        // fallback for the case where the workout was started from the
+        // in-app UI rather than via the Action Button.
+        return .result(actionButtonIntent: ARRunnerNextActionIntent())
     }
 }

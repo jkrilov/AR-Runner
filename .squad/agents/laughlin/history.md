@@ -210,3 +210,17 @@ When in doubt, ask the user: "which Settings → Action Button sub-screen are yo
 - **Logging convention:** the `actionButtonLog` `Logger` (subsystem `com.arrunner.watch`, category `ActionButton`) defined at file scope in `ActionButtonIntent.swift` is reachable from any file in the `ARRunnerWatch` target. Reused it from `WorkoutViewModel.markSplitFromActionButton` and from the `splitFlashBanner` `.task` so the full press → mutation → render lifecycle shows up in one Console filter.
 - **Key files:** `ARRunnerWatch/ActionButton/ActionButtonIntent.swift`, `ARRunnerWatch/Settings/ActionButtonCoordinator.swift`, `ARRunnerWatch/Workout/WorkoutViewModel.swift` (lines ~406-432 for the split path), `ARRunnerWatch/Views/WorkoutView.swift` (`splitFlashBanner` computed property).
 - **Build:** `xcodebuild -project AR-Runner.xcodeproj -scheme ARRunnerWatch -configuration Debug -destination 'generic/platform=watchOS Simulator' build` — green.
+
+## Learnings
+
+### v0.5.11 (build 41) — Action Button cold-start + mid-workout split fixes
+
+**Bug 1 (first press doesn't start workout).** Apple's Action Button docs: "If your app has never requested authorization for any HealthKit data types, the system just launches your app when someone presses the Action button. It doesn't call your intent's `perform()` method." Previously HK auth was requested only from `.task` on the root view, which still runs on first launch — but moving it into `App.init()` (fire-and-forget Task) gets the auth prompt up as early as possible, so the *very next* press correctly calls `perform()`. Kept the `.task` defensive re-request (HK treats re-requests as no-ops once answered).
+
+**Bug 2 (Action Button mid-workout doesn't mark splits).** Two-layer fix:
+1. **Primary mechanism (per Apple docs):** `ARRunnerStartWorkoutIntent.perform()` now returns `.result(actionButtonIntent: ARRunnerNextActionIntent())` on every path. This is the *reliable* way to wire the next press — donation is a hint, return-value is authoritative.
+2. **Donation hardening:** `WorkoutControlDonation.donateNextAction()` now adds a 250ms settling delay before the first attempt and retries once after 500ms on failure. The `NSCocoaErrorDomain Code=4099 com.apple.linkd.transcript invalidated` failure observed in the wild appears to be a transient timing issue immediately after `HKLiveWorkoutBuilder` begins collecting data.
+
+**Key constraint preserved:** Did NOT redeclare `openAppWhenRun` on `StartWorkoutIntent` per Apple's "don't change the property's value" guidance. Only `ARRunnerNextActionIntent` (a plain `AppIntent`) sets `openAppWhenRun = true` explicitly because plain AppIntents default to `false`.
+
+**Files:** `ActionButtonIntent.swift`, `WorkoutControlIntents.swift`, `ARRunnerWatchApp.swift`, `project.yml` (build 40→41).

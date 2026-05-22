@@ -164,16 +164,39 @@ struct ARRunnerNextActionIntent: AppIntent {
 /// requirement.
 enum WorkoutControlDonation {
     static func donateNextAction() async {
-        do {
+        // v0.5.11 (build 41) — the donation occasionally fails with
+        // NSCocoaErrorDomain 4099 ("connection to com.apple.linkd.transcript
+        // was invalidated") when called immediately after the workout
+        // session starts collecting data. Give the system a moment to
+        // settle, then retry once on failure. Donation is best-effort, so
+        // a final failure is still non-fatal — `ARRunnerStartWorkoutIntent`
+        // now also returns `.result(actionButtonIntent:)` directly from
+        // `perform()`, which is the primary "next action" wiring path.
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        let attempt: () async throws -> Void = {
             try await ARRunnerStartWorkoutIntent().donate(
                 result: .result(actionButtonIntent: ARRunnerNextActionIntent())
             )
+        }
+
+        do {
+            try await attempt()
             actionButtonLog.notice("Donated NextActionIntent as Action Button next-action")
+            return
+        } catch {
+            actionButtonLog.error("NextActionIntent donation failed (attempt 1): \(String(describing: error), privacy: .public)")
+        }
+
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        do {
+            try await attempt()
+            actionButtonLog.notice("Donated NextActionIntent on retry")
         } catch {
             // Donation is best-effort; the user can still press the
-            // Action Button — it just won't have a "next action" hint
-            // bound to it for this session.
-            actionButtonLog.error("NextActionIntent donation failed: \(String(describing: error), privacy: .public)")
+            // Action Button — `perform()`'s returned `actionButtonIntent`
+            // remains the authoritative wiring for the next press.
+            actionButtonLog.error("NextActionIntent donation failed (attempt 2): \(String(describing: error), privacy: .public)")
         }
     }
 }
