@@ -126,6 +126,18 @@ struct ARRunnerNextActionIntent: AppIntent {
     static let title: LocalizedStringResource = "AR-Runner Action"
     static let description = IntentDescription("Mid-workout Action Button press for AR-Runner.")
 
+    /// v0.5.10 — force the host to foreground on every press so the
+    /// scene-phase consumer (`ActionButtonCoordinator.consumePendingPress`)
+    /// always runs, even if the user pressed Action while the watch face
+    /// or another app was visible. Without this override the intent
+    /// dropped its App Group flag in the system Intents process and the
+    /// host — if it happened to be backgrounded — never woke to consume
+    /// it, which is exactly the "no haptic, no marker" symptom Joe
+    /// reported. The `StartWorkoutIntent` "do not override" guidance
+    /// applies only to that protocol; plain `AppIntent` defaults to
+    /// `false`, so we must opt in explicitly here.
+    static let openAppWhenRun: Bool = true
+
     init() {}
 
     func perform() async throws -> some IntentResult {

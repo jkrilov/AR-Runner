@@ -25,6 +25,7 @@ struct WorkoutView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 hudOfflineBanner
+                splitFlashBanner
                 metricsSection
                 Divider()
                 controlsSection
@@ -122,6 +123,44 @@ struct WorkoutView: View {
             await viewModel.start()
         default:
             break
+        }
+    }
+
+    /// v0.5.10 — Action Button split confirmation. Appears for ~1.6s when
+    /// the user records a split via the Apple Watch Ultra Action Button
+    /// (mode `.splits`), giving the user the same "Lap 3 · 1:23" flash the
+    /// stock Workout app shows. Auto-dismisses via a `.task(id:)` timer
+    /// keyed on the flash timestamp so a rapid second press cancels the
+    /// in-flight timer and restarts it for the new value. Also shows a
+    /// compact "Splits: N" line under the metrics while any splits exist
+    /// so the user has a persistent confirmation that the press worked
+    /// even after the flash fades.
+    @ViewBuilder
+    private var splitFlashBanner: some View {
+        if let flash = viewModel.lastSplitFlash {
+            HStack(spacing: 6) {
+                Image(systemName: "flag.checkered")
+                Text("Split \(flash.index) · \(formatElapsed(flash.delta))")
+                    .font(.caption.monospacedDigit())
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.green.opacity(0.25))
+            )
+            .foregroundStyle(.green)
+            .transition(.opacity.combined(with: .scale))
+            .accessibilityLabel("Split \(flash.index) recorded at \(formatElapsed(flash.delta))")
+            .task(id: flash.shownAt) {
+                try? await Task.sleep(nanoseconds: 1_600_000_000)
+                viewModel.clearSplitFlash(matching: flash.shownAt)
+            }
+        } else if !viewModel.actionButtonSplits.isEmpty {
+            Label("Splits: \(viewModel.actionButtonSplits.count)", systemImage: "flag.checkered")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("\(viewModel.actionButtonSplits.count) splits recorded")
         }
     }
 
