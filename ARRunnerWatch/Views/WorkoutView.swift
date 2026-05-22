@@ -27,6 +27,14 @@ struct WorkoutView: View {
                 hudOfflineBanner
                 splitFlashBanner
                 metricsSection
+                    .opacity(isPaused ? 0.55 : 1.0)
+                    .overlay(alignment: .center) {
+                        if isPaused {
+                            pausedOverlay
+                                .transition(.opacity.combined(with: .scale))
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.2), value: isPaused)
                 Divider()
                 controlsSection
                 if isPreRun {
@@ -195,6 +203,56 @@ struct WorkoutView: View {
                 .accessibilityLabel("Glasses HUD offline. Workout still recording.")
                 .transition(.opacity)
         }
+    }
+
+    /// True while the workout is not running — i.e. the user is on the
+    /// "pre-run" surface (idle or post-run terminal states). The Connect
+    /// Glasses row only appears here so it doesn't compete for screen
+    /// real estate with live metrics during a run.
+    /// True while the workout is paused or awaiting the finish-confirmation
+    /// dialog. Both states are non-recording from the user's perspective, so
+    /// the PAUSED overlay covers both to remove any ambiguity about whether
+    /// metrics are still updating.
+    private var isPaused: Bool {
+        switch viewModel.launchState {
+        case .paused, .pendingFinish:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Large, breathing PAUSED indicator drawn on top of the metrics block
+    /// while the workout is not actively recording. Semi-transparent so the
+    /// last-known numbers remain glanceable underneath.
+    @ViewBuilder
+    private var pausedOverlay: some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            // ~1.4s breathing cycle, gentle 0.7 ↔ 1.0 alpha sweep.
+            let phase = (sin(t * 2.0 * .pi / 1.4) + 1) / 2  // 0…1
+            let alpha = 0.7 + 0.3 * phase
+            let scale = 0.97 + 0.03 * phase
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.black.opacity(0.55))
+                HStack(spacing: 6) {
+                    Image(systemName: "pause.circle.fill")
+                        .font(.title2)
+                    Text("PAUSED")
+                        .font(.title3.weight(.heavy))
+                        .kerning(2)
+                }
+                .foregroundStyle(Color.green)
+                .opacity(alpha)
+                .scaleEffect(scale)
+                .shadow(color: Color.green.opacity(0.4), radius: 4)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 60)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Workout paused")
     }
 
     /// True while the workout is not running — i.e. the user is on the

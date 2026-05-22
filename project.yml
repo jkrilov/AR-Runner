@@ -13,8 +13,8 @@ settings:
   base:
     SWIFT_VERSION: '6.0'
     # SWIFT_STRICT_CONCURRENCY=complete is implicit under Swift 6 language mode — D8 still in effect.
-    CURRENT_PROJECT_VERSION: 41
-    MARKETING_VERSION: 0.5.11
+    CURRENT_PROJECT_VERSION: 42
+    MARKETING_VERSION: 0.5.12
     # CODE_SIGN_STYLE is intentionally NOT pinned here. xcodegen would otherwise
     # bake Automatic into the project-level pbxproj, which has higher precedence
     # than xcconfig and prevents CI from switching to Manual signing for the
