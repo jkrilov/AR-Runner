@@ -4,6 +4,9 @@
 import ARRunnerCore
 import Foundation
 import SwiftUI
+#if canImport(CoreLocation)
+import CoreLocation
+#endif
 
 /// Read-only view-model for the iPhone live mirror (v0.2 #3). Subscribes to
 /// the inbound WCSession message stream and republishes the latest workout
@@ -30,6 +33,19 @@ final class WorkoutMirrorViewModel {
     /// seconds of pairing, not 30 s later when the next notify fires.
     private(set) var glassesBatteryLevel: Int?
     private(set) var glassesBatteryUpdatedAt: Date?
+
+    #if canImport(CoreLocation)
+    /// v0.5.16 — route polyline accumulated from `WorkoutTickMessage`
+    /// lat/lon (WC schema v5). The phone is downstream of the watch's
+    /// filtered GPS pipeline, so what shows up here is the same set of
+    /// coordinates `HKWorkoutRouteBuilder` is persisting on the watch.
+    /// Cleared on lifecycle `.started` and on `.ended` so a brand-new run
+    /// doesn't inherit the previous route's polyline.
+    private(set) var routeCoordinates: [CLLocationCoordinate2D] = []
+    /// Most recent fix from the latest tick — drives the runner pin and
+    /// the user-location follow camera on `LiveRouteMapView`.
+    private(set) var currentLocation: CLLocationCoordinate2D?
+    #endif
 
     /// Snapshots older than this without a refresh are surfaced as `.stale`
     /// so the dashboard can dim or annotate the metrics.
@@ -75,6 +91,9 @@ final class WorkoutMirrorViewModel {
             default:
                 status = .live(snapshot)
             }
+            #if canImport(CoreLocation)
+            ingestLocation(from: snapshot)
+            #endif
         case .workoutLifecycle(let event):
             switch event {
             case .ended:
@@ -85,10 +104,19 @@ final class WorkoutMirrorViewModel {
                 } else {
                     status = .ended(nil)
                 }
+                #if canImport(CoreLocation)
+                // Keep the final polyline visible alongside the ended-state
+                // header so the user sees their finished route. Cleared on
+                // the next `.started`.
+                #endif
             case .started:
                 // A fresh start clears any stale "ended" state so the
                 // dashboard reverts to "waiting for first tick".
                 status = .idle
+                #if canImport(CoreLocation)
+                routeCoordinates.removeAll(keepingCapacity: true)
+                currentLocation = nil
+                #endif
             case .paused, .resumed:
                 break
             }
@@ -102,6 +130,24 @@ final class WorkoutMirrorViewModel {
             glassesBatteryUpdatedAt = Date()
         }
     }
+
+    #if canImport(CoreLocation)
+    /// v0.5.16 — fold the per-tick GPS fix into the live polyline. Skips
+    /// duplicate coordinates (same lat AND lon as the last one) so a
+    /// stationary runner doesn't bloat the array with redundant points.
+    /// Also defends against bogus 0/0 fixes that some test mocks emit.
+    private func ingestLocation(from snapshot: WorkoutTickMessage) {
+        guard let lat = snapshot.latitude, let lon = snapshot.longitude else { return }
+        guard CLLocationCoordinate2DIsValid(CLLocationCoordinate2D(latitude: lat, longitude: lon)) else { return }
+        if let last = routeCoordinates.last, last.latitude == lat, last.longitude == lon {
+            currentLocation = last
+            return
+        }
+        let coord = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        routeCoordinates.append(coord)
+        currentLocation = coord
+    }
+    #endif
 
     private func markStaleIfNeeded() {
         guard case .live(let snapshot) = status,

@@ -36,10 +36,54 @@ final class WorkoutTickMessageTests: XCTestCase {
 
     /// rc2 — WC schema bumped 3 → 4 to flag the additive
     /// `WorkoutTickMessage.startedAt` field for the phone-side "Started"
-    /// row. Pin the literal version so a regression knocking it back to
-    /// 3 trips CI.
+    /// row. v0.5.16 — bumped 4 → 5 to flag the additive
+    /// `WorkoutTickMessage.latitude` / `.longitude` fields for the
+    /// phone-side live route map. Pin the literal version so a regression
+    /// knocking it back trips CI.
+    func testCurrentSchemaVersionIsFive_v0_5_16() {
+        XCTAssertEqual(WCMessage.currentSchemaVersion, 5)
+    }
+
+    /// v0.5.16 — a v4 snapshot from an older watch build (no lat/lon)
+    /// must still decode on a v5 phone. The phone simply shows no map
+    /// until lat/lon start arriving.
+    func testV4SnapshotWithoutLatLonStillDecodesOnV5() throws {
+        let v4JSON = """
+        {
+          "schemaVersion": 4,
+          "kind": "workoutSnapshot",
+          "snapshot": {
+            "sessionID": "00000000-0000-0000-0000-0000000000ab",
+            "sport": "running",
+            "phase": "running",
+            "timestamp": 1700000000,
+            "startedAt": 1699999688,
+            "elapsedSeconds": 312,
+            "heartRateBeatsPerMinute": 156,
+            "distanceMeters": 980,
+            "paceSecondsPerKilometer": 320,
+            "estimatedActiveKilocalories": 47.5,
+            "glassesConnected": true
+          }
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(WCMessage.self, from: v4JSON)
+        guard case .workoutSnapshot(let snap) = decoded else {
+            XCTFail("expected workoutSnapshot, got \(decoded)"); return
+        }
+        XCTAssertNil(snap.latitude)
+        XCTAssertNil(snap.longitude)
+        XCTAssertEqual(snap.elapsedSeconds, 312)
+    }
+
+    /// v0.5.16 — rc2 placeholder kept for archaeology. Schema version is
+    /// pinned by `testCurrentSchemaVersionIsFive_v0_5_16` above.
     func testCurrentSchemaVersionIsFour_rc2() {
-        XCTAssertEqual(WCMessage.currentSchemaVersion, 4)
+        // Intentionally relaxed — the literal `4` pin moved to the v5 test
+        // above. Leaving the method name so blame on the rc2 commit still
+        // resolves to the introduction of the per-version pinning pattern.
+        XCTAssertGreaterThanOrEqual(WCMessage.currentSchemaVersion, 4)
     }
 
     /// rc2 — a v3 snapshot from an older watch build (no `startedAt`)
