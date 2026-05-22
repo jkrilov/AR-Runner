@@ -59,21 +59,28 @@ enum ARRunnerWorkoutStyleEnum: String, AppEnum {
 /// `maybeAutoStartFromIntent()` (which is guarded to only fire from idle /
 /// terminal states), so an "Action Button while idle" press still results
 /// in a clean workout start without any spurious split-marker side effect.
-struct ARRunnerStartWorkoutIntent: AppIntents.StartWorkoutIntent {
+struct ARRunnerStartWorkoutIntent: StartWorkoutIntent {
     static let title: LocalizedStringResource = "Start AR Run"
 
     // `StartWorkoutIntent` requires `suggestedWorkouts` to be a settable
     // static array (the system may rewrite it during registration). Swift
     // 6 strict concurrency flags shared mutable state — we mark it
-    // `nonisolated(unsafe)` because it's effectively immutable after
-    // process launch and reads/writes happen only through the protocol's
-    // own serialized registration flow (same reasoning as
-    // `ActionButtonMode.sharedDefaults`).
+    // `nonisolated(unsafe)` because (a) the protocol mandates `static var
+    // { get set }`, (b) the property is effectively immutable after
+    // process launch, and (c) reads/writes happen only through the
+    // protocol's own serialized registration flow (same reasoning as
+    // `ActionButtonMode.sharedDefaults`). Apple's own sample code uses
+    // the same pattern under Swift 6 strict concurrency.
     nonisolated(unsafe) static var suggestedWorkouts: [ARRunnerStartWorkoutIntent] = [
         ARRunnerStartWorkoutIntent()
     ]
 
-    static let openAppWhenRun: Bool = true
+    // Note: `openAppWhenRun` is intentionally NOT redeclared. Per Apple's
+    // `StartWorkoutIntent` documentation: "By default, these intents set
+    // their openAppWhenRun property to true. To ensure these intents run
+    // as expected, don't change the property's value." We rely on the
+    // protocol-provided default of `true` so a future SDK update can't
+    // be silently overridden by a stale stored value here.
 
     @Parameter(title: "Workout Style")
     var workoutStyle: ARRunnerWorkoutStyleEnum

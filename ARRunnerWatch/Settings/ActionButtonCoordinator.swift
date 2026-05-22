@@ -38,6 +38,13 @@ final class ActionButtonCoordinator {
     /// Exposed for test injection; production uses the App Group store.
     var pendingPressStore: any PendingActionButtonPressStore = AppGroupPendingActionButtonPressStore()
 
+    /// Cross-process explicit pause/resume flag written by
+    /// `ARRunnerPauseWorkoutIntent` / `ARRunnerResumeWorkoutIntent`
+    /// (Apple's Action + Side simultaneous-press shortcut). Separate
+    /// from `pendingPressStore` because these are explicit user actions
+    /// that must bypass `ActionButtonMode`.
+    var pendingWorkoutControlStore = AppGroupPendingWorkoutControlStore()
+
     private init() {}
 
     /// Called by `WorkoutView` once its view-model exists. Replays any
@@ -74,6 +81,49 @@ final class ActionButtonCoordinator {
     ) {
         guard pendingPressStore.consumePending(now: now, freshness: freshness) else { return }
         handleActionButtonPress()
+    }
+
+    /// Drain any cross-process explicit pause/resume flag dropped by
+    /// `ARRunnerPauseWorkoutIntent` / `ARRunnerResumeWorkoutIntent`
+    /// (Apple's Action + Side simultaneous-press hardware shortcut) and
+    /// apply it directly to the live view-model, bypassing
+    /// `ActionButtonMode`. Stale flags are silently cleared by the
+    /// store; this returns the consumed control (if any) for logging /
+    /// test purposes.
+    @discardableResult
+    func consumePendingWorkoutControl(
+        now: Date = Date(),
+        freshness: TimeInterval = pendingActionButtonPressDefaultFreshnessSeconds
+    ) -> ExplicitWorkoutControl? {
+        guard let control = pendingWorkoutControlStore.consumePending(now: now, freshness: freshness) else {
+            return nil
+        }
+        _ = applyExplicitWorkoutControl(control)
+        return control
+    }
+
+    /// In-process apply path used by both the cross-process consumer
+    /// above and the rare in-host `perform()` fast path. Returns `true`
+    /// if the view-model actually transitioned (mirrors the pattern of
+    /// `markSplitFromActionButton` / `togglePauseResumeFromActionButton`).
+    @discardableResult
+    func applyExplicitWorkoutControl(_ control: ExplicitWorkoutControl) -> Bool {
+        guard let viewModel else { return false }
+        switch control {
+        case .pause:
+            // Only pause when actually running — `togglePauseResume`
+            // would otherwise resume a paused workout on a redundant
+            // press, which is the opposite of user intent.
+            guard viewModel.launchState == .running else { return false }
+            let didToggle = viewModel.togglePauseResumeFromActionButton()
+            if didToggle { playHaptic(forSplit: false) }
+            return didToggle
+        case .resume:
+            guard viewModel.launchState == .paused else { return false }
+            let didToggle = viewModel.togglePauseResumeFromActionButton()
+            if didToggle { playHaptic(forSplit: false) }
+            return didToggle
+        }
     }
 
     func dispatch(mode: ActionButtonMode) {
