@@ -47,6 +47,12 @@ targets:
     sources:
       - path: ARRunnerWatch
         optional: true
+      # Shared code consumed by both watch and phone targets. Used for
+      # cross-target setting types (e.g. ActionButtonMode) that need
+      # identical definitions on both sides so UserDefaults/WCSession
+      # payloads stay binary-compatible.
+      - path: Shared
+        optional: true
     dependencies:
       - target: ARRunnerWidgetsWatch
         embed: true
@@ -113,6 +119,10 @@ targets:
         optional: true
         excludes:
           - "Tests/**"
+      # Shared code consumed by both watch and phone targets. See the
+      # ARRunnerWatch sources comment for rationale.
+      - path: Shared
+        optional: true
     dependencies:
       - target: ARRunnerWidgetsPhone
         embed: true

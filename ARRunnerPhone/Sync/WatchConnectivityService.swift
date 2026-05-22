@@ -72,6 +72,36 @@ final class WatchConnectivityService: NSObject, @unchecked Sendable {
         #endif
     }
 
+    /// Pushes the user-selected `ActionButtonMode` to the paired watch via
+    /// `updateApplicationContext` (latest-only — replaces any prior value).
+    /// Phone-optional contract still holds: if WCSession is unsupported or
+    /// the watch is uninstalled, the call is a silent no-op and the phone's
+    /// local `@AppStorage` value still drives the picker.
+    ///
+    /// Uses a dedicated `"actionButtonMode"` key rather than wrapping in
+    /// `WCMessage` so adding a config field doesn't require a Core schema
+    /// bump (additive on the wire — peers that don't know the key ignore
+    /// it). The watch reads it in `didReceiveApplicationContext` and writes
+    /// to `UserDefaults.standard`, which is the same store backing
+    /// `@AppStorage(ActionButtonMode.storageKey)` on both sides.
+    func sendActionButtonMode(_ rawValue: String) {
+        #if canImport(WatchConnectivity)
+        guard let session else { return }
+        guard session.activationState == .activated else { return }
+        do {
+            try session.updateApplicationContext([
+                Self.actionButtonModeContextKey: rawValue
+            ])
+        } catch {
+            logger.debug("actionButtonMode context push failed: \(String(describing: error), privacy: .public)")
+        }
+        #else
+        _ = rawValue
+        #endif
+    }
+
+    static let actionButtonModeContextKey = "actionButtonMode"
+
     fileprivate func ingest(payload: Data) {
         do {
             let message = try JSONDecoder().decode(WCMessage.self, from: payload)
@@ -101,6 +131,16 @@ extension WatchConnectivityService: WCSessionDelegate {
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         if let payload = applicationContext["wcMessage"] as? Data {
             ingest(payload: payload)
+        }
+        if let raw = applicationContext[Self.actionButtonModeContextKey] as? String,
+           ActionButtonMode(rawValue: raw) != nil {
+            // Mirror the watch-side picker into local UserDefaults so the
+            // phone's Settings picker reflects what the wearer chose. Only
+            // write when the value differs to avoid an idle write tick.
+            let store = UserDefaults.standard
+            if store.string(forKey: ActionButtonMode.storageKey) != raw {
+                store.set(raw, forKey: ActionButtonMode.storageKey)
+            }
         }
     }
 

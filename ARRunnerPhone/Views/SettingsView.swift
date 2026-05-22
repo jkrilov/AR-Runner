@@ -10,6 +10,7 @@ import SwiftUI
 struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw: String = AppearanceMode.system.rawValue
+    @AppStorage(ActionButtonMode.storageKey) private var actionButtonRaw: String = ActionButtonMode.defaultMode.rawValue
 
     init(viewModel: SettingsViewModel? = nil) {
         _viewModel = State(initialValue: viewModel ?? SettingsViewModel())
@@ -19,6 +20,7 @@ struct SettingsView: View {
         Form {
             stravaSection
             appearanceSection
+            actionButtonSection
             aboutSection
         }
         .navigationTitle("Settings")
@@ -37,6 +39,40 @@ struct SettingsView: View {
                 }
             }
             .pickerStyle(.segmented)
+        }
+    }
+
+    // MARK: - Action Button
+
+    private var actionButtonMode: ActionButtonMode {
+        ActionButtonMode(rawValue: actionButtonRaw) ?? ActionButtonMode.defaultMode
+    }
+
+    private var actionButtonSection: some View {
+        Section {
+            Picker("Behavior", selection: Binding(
+                get: { actionButtonMode },
+                set: { newValue in
+                    actionButtonRaw = newValue.rawValue
+                    // Mirror to the paired watch so the wearer doesn't need
+                    // to open the watch Settings to change it. Best-effort
+                    // (no-op if no watch is paired / WCSession inactive).
+                    ARRunnerPhoneEnvironment.shared.mirror
+                        .sendActionButtonMode(newValue.rawValue)
+                }
+            )) {
+                ForEach(ActionButtonMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            Text(actionButtonMode.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Action Button")
+        } footer: {
+            Text("Configures the Action Button on Apple Watch Ultra. On other Apple Watch models this setting has no effect.")
+                .font(.caption2)
         }
     }
 

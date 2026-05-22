@@ -29,7 +29,14 @@ struct WatchSettingsView: View {
         Section {
             Picker("Action Button", selection: Binding(
                 get: { actionButtonMode },
-                set: { actionButtonRaw = $0.rawValue }
+                set: { newValue in
+                    actionButtonRaw = newValue.rawValue
+                    // Mirror to the iPhone so its Settings picker reflects
+                    // what the wearer chose. Best-effort — silent no-op if
+                    // WCSession isn't active or the phone is uninstalled.
+                    ARRunnerWatchEnvironment.shared.mirror
+                        .sendActionButtonMode(newValue.rawValue)
+                }
             )) {
                 ForEach(ActionButtonMode.allCases) { mode in
                     Text(mode.title).tag(mode)

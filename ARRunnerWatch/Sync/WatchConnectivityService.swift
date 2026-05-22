@@ -67,6 +67,28 @@ final class WatchConnectivityService: NSObject, WorkoutMirrorPublisher, @uncheck
         await transmit(.glassesBattery(level: level), preferQueued: true)
     }
 
+    /// Pushes the watch-side `ActionButtonMode` selection to the iPhone via
+    /// `updateApplicationContext` so the phone's Settings picker mirrors the
+    /// current value. Latest-only, additive-key wire format — see the phone
+    /// service for the full rationale on why this lives outside `WCMessage`.
+    func sendActionButtonMode(_ rawValue: String) {
+        #if canImport(WatchConnectivity)
+        guard let session else { return }
+        guard session.activationState == .activated else { return }
+        do {
+            try session.updateApplicationContext([
+                Self.actionButtonModeContextKey: rawValue
+            ])
+        } catch {
+            logger.debug("actionButtonMode context push failed: \(String(describing: error), privacy: .public)")
+        }
+        #else
+        _ = rawValue
+        #endif
+    }
+
+    static let actionButtonModeContextKey = "actionButtonMode"
+
     // MARK: - Internals
 
     private func transmit(
@@ -130,5 +152,18 @@ extension WatchConnectivityService: WCSessionDelegate {
     func sessionDidBecomeInactive(_ session: WCSession) {}
     func sessionDidDeactivate(_ session: WCSession) { session.activate() }
     #endif
+
+    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        if let raw = applicationContext[Self.actionButtonModeContextKey] as? String,
+           ActionButtonMode(rawValue: raw) != nil {
+            // Mirror the phone-side picker into local UserDefaults so the
+            // watch's @AppStorage and ActionButtonCoordinator see the new
+            // value immediately. Skip idle writes.
+            let store = UserDefaults.standard
+            if store.string(forKey: ActionButtonMode.storageKey) != raw {
+                store.set(raw, forKey: ActionButtonMode.storageKey)
+            }
+        }
+    }
 }
 #endif
