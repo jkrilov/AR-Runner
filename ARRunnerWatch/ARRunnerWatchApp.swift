@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import SwiftUI
-#if canImport(AppIntents)
-import AppIntents
-#endif
 #if canImport(HealthKit)
 import HealthKit
 #endif
@@ -26,19 +23,19 @@ struct ARRunnerWatchApp: App {
                 try? await HealthKitWorkoutSubstrate.requestAuthorization()
                 #endif
 
-                // Force the system to (re)index our AppShortcuts so the
-                // Action Button picker (Settings → Action Button →
-                // Shortcut) reliably shows "AR-Runner Action Button" on
-                // every install / update. Without this call the picker
-                // can keep serving a stale snapshot from a prior build,
-                // which presented as "the app doesn't appear in Action
-                // Button settings" in v0.5.4. Cheap and idempotent — safe
-                // to fire every cold launch.
-                #if canImport(AppIntents)
-                if #available(watchOS 10.0, *) {
-                    ARRunnerAppShortcuts.updateAppShortcutParameters()
-                }
-                #endif
+                // Note: we intentionally do NOT call
+                // `AppShortcutsProvider.updateAppShortcutParameters()`
+                // here. The Apple Watch Ultra Action Button "Workout"
+                // category (where Strava / Nike Run Club appear) is
+                // populated from apps that ship an
+                // `AppIntents.StartWorkoutIntent` conformance, not from
+                // AppShortcuts. See
+                // `ARRunnerWatch/ActionButton/ActionButtonIntent.swift`
+                // (`ARRunnerStartWorkoutIntent`) for the registration
+                // surface. The previous AppShortcuts approach put us
+                // under Settings → Action Button → Shortcut instead,
+                // which is why AR-Runner never appeared in the Workout
+                // picker through v0.5.5.
             }
         }
     }
