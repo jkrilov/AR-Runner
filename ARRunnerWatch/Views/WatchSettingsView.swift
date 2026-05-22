@@ -11,7 +11,13 @@ import SwiftUI
 /// Presented from `WorkoutView`'s navigation toolbar via the gear icon.
 @MainActor
 struct WatchSettingsView: View {
-    @AppStorage(ActionButtonMode.storageKey) private var actionButtonRaw: String = ActionButtonMode.defaultMode.rawValue
+    // Persist to the shared App Group store (NOT `.standard`) so the
+    // `ActionButtonIntent` — which may execute in the system Shortcuts
+    // process when invoked from the hardware Action Button — observes
+    // the same value the wearer just picked. See
+    // `ActionButtonMode.sharedDefaults` for the full rationale.
+    @AppStorage(ActionButtonMode.storageKey, store: ActionButtonMode.sharedDefaults)
+    private var actionButtonRaw: String = ActionButtonMode.defaultMode.rawValue
 
     private var actionButtonMode: ActionButtonMode {
         ActionButtonMode(rawValue: actionButtonRaw) ?? ActionButtonMode.defaultMode

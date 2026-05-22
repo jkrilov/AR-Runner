@@ -52,6 +52,11 @@ struct WorkoutView: View {
             // `ActionButtonIntent` (foregrounded via openAppWhenRun) can
             // route presses into the live workout state.
             ActionButtonCoordinator.shared.attach(viewModel: viewModel)
+            // Drain any Action Button press that landed while we were
+            // suspended (or in the system Shortcuts process). Mirrors
+            // `maybeAutoStartFromIntent` — both are cross-process flags
+            // consumed on activation.
+            ActionButtonCoordinator.shared.consumePendingPress()
             // First-launch path — `openAppWhenRun` lands here before the
             // scene phase change fires on a cold start.
             await maybeAutoStartFromIntent()
@@ -62,6 +67,7 @@ struct WorkoutView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
+                ActionButtonCoordinator.shared.consumePendingPress()
                 Task { await maybeAutoStartFromIntent() }
             }
         }

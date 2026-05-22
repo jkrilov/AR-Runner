@@ -3,6 +3,12 @@
 
 import Foundation
 
+/// Shared App Group identifier — duplicated from
+/// `ARRunnerCore.arRunnerSharedAppGroupIdentifier` so `Shared/` stays
+/// importable from targets that don't depend on ARRunnerCore (the
+/// `ActionButtonMode` enum has no other reason to pull in Core).
+private let actionButtonSharedAppGroupIdentifier = "group.com.arrunner.shared"
+
 /// User-selected behavior for the Apple Watch Ultra Action Button while
 /// AR-Runner is the assigned app. Persisted via `@AppStorage` under
 /// `ActionButtonMode.storageKey` and dispatched by `ActionButtonCoordinator`
@@ -31,6 +37,24 @@ enum ActionButtonMode: String, CaseIterable, Identifiable {
     /// `.splits` because that is the most-requested behavior in long-form
     /// running apps (and matches Apple's stock Workout app default).
     static let defaultMode: ActionButtonMode = .splits
+
+    /// Shared App Group `UserDefaults` used as the canonical persistence
+    /// store for the mode selection.
+    ///
+    /// **Why not `UserDefaults.standard`?** `ActionButtonIntent.perform()`
+    /// can run in the system Shortcuts process when the user triggers it
+    /// via Settings → Action Button → Shortcut. `UserDefaults.standard` is
+    /// per-process and would let the host app and the intent process drift
+    /// (the host writes `.pauseResume`, the intent reads `.splits` from
+    /// its own untouched defaults). The App Group suite is shared across
+    /// processes, so the press always dispatches the mode the user picked.
+    ///
+    /// Falls back to `.standard` if the App Group entitlement isn't
+    /// available (previews, unit tests without the suite) so SwiftUI's
+    /// `@AppStorage(_, store:)` always has a non-nil store.
+    nonisolated(unsafe) static let sharedDefaults: UserDefaults = {
+        UserDefaults(suiteName: actionButtonSharedAppGroupIdentifier) ?? .standard
+    }()
 
     var id: String { rawValue }
 
