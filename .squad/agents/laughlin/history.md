@@ -224,3 +224,8 @@ When in doubt, ask the user: "which Settings → Action Button sub-screen are yo
 **Key constraint preserved:** Did NOT redeclare `openAppWhenRun` on `StartWorkoutIntent` per Apple's "don't change the property's value" guidance. Only `ARRunnerNextActionIntent` (a plain `AppIntent`) sets `openAppWhenRun = true` explicitly because plain AppIntents default to `false`.
 
 **Files:** `ActionButtonIntent.swift`, `WorkoutControlIntents.swift`, `ARRunnerWatchApp.swift`, `project.yml` (build 40→41).
+
+## Learnings
+- **v0.5.12 — Pause overlay on WorkoutView:** added a glanceable PAUSED indicator overlaid on `metricsSection` when `launchState` is `.paused` or `.pendingFinish`. Used `.overlay(alignment: .center)` + `TimelineView(.animation)` for a frame-driven sin-wave breathing animation (alpha 0.7↔1.0, scale 0.97↔1.0 over 1.4s). Stats dimmed to 0.55 opacity so numbers stay readable underneath. Wrapped overlay appearance in a `.transition(.opacity.combined(with: .scale))` driven by `.animation(.easeInOut(0.2), value: isPaused)`.
+- **`pendingFinish` counts as paused for UI:** the finish confirmation dialog leaves the workout non-recording, so I treated `.pendingFinish` as "paused" too — otherwise the overlay would vanish the moment the user taps Finish, giving the false impression the run resumed.
+- **Sim destination drift:** CI guidance still references `Apple Watch Ultra 2 (49mm)` but the installed Xcode 26.x simulators only have `Apple Watch Ultra 3 (49mm)`. Worth flagging to whoever owns build docs.

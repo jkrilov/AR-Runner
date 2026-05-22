@@ -146,7 +146,13 @@ struct ARRunnerNextActionIntent: AppIntent {
     func perform() async throws -> some IntentResult {
         let timestamp = Date()
         actionButtonLog.notice("NextActionIntent.perform fired at \(timestamp.timeIntervalSinceReferenceDate, privacy: .public)")
-        AppGroupPendingActionButtonPressStore().markPending(at: timestamp)
+        // v0.5.13 — Removed AppGroupPendingActionButtonPressStore flag write.
+        // With openAppWhenRun=true the intent always runs in-host, so the
+        // direct call below is the primary path. Writing the flag caused a
+        // DUPLICATE split: perform() dispatched once here, then
+        // scenePhase→.active fired consumePendingPress() which found the
+        // flag and dispatched again. The in-process pendingMode parking in
+        // dispatch() already handles cold-start races without the flag.
         await MainActor.run {
             ActionButtonCoordinator.shared.handleActionButtonPress()
         }
