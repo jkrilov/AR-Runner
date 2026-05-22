@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Joe Krilov
 // SPDX-License-Identifier: Apache-2.0
 
+import ARRunnerCore
 import Foundation
 #if canImport(WatchKit)
 import WatchKit
@@ -31,6 +32,12 @@ final class ActionButtonCoordinator {
     private weak var viewModel: WorkoutViewModel?
     private var pendingMode: ActionButtonMode?
 
+    /// Cross-process press flag. Written by `ActionButtonIntent.perform()`
+    /// (which may run in the system Shortcuts process) and consumed by
+    /// the host app on `scenePhase == .active` via `consumePendingPress`.
+    /// Exposed for test injection; production uses the App Group store.
+    var pendingPressStore: any PendingActionButtonPressStore = AppGroupPendingActionButtonPressStore()
+
     private init() {}
 
     /// Called by `WorkoutView` once its view-model exists. Replays any
@@ -43,12 +50,30 @@ final class ActionButtonCoordinator {
         }
     }
 
-    /// Invoked by `ActionButtonIntent.perform()`. Pulls the configured mode
-    /// from `@AppStorage` (UserDefaults — same store) and routes accordingly.
+    /// Invoked by `ActionButtonIntent.perform()` on the in-process fast
+    /// path. Reads the persisted mode from the **shared App Group** suite
+    /// — NOT `UserDefaults.standard`, because the intent process and the
+    /// host process have separate `.standard` containers and would see
+    /// stale values. See `ActionButtonMode.sharedDefaults` for the
+    /// rationale.
     func handleActionButtonPress() {
-        let raw = UserDefaults.standard.string(forKey: ActionButtonMode.storageKey)
+        let raw = ActionButtonMode.sharedDefaults.string(forKey: ActionButtonMode.storageKey)
         let mode = ActionButtonMode(rawValue: raw ?? "") ?? ActionButtonMode.defaultMode
         dispatch(mode: mode)
+    }
+
+    /// Drain any cross-process press flag dropped by the intent and, if
+    /// fresh, dispatch the currently-configured mode. Called by
+    /// `WorkoutView` on `.task` and on every `scenePhase == .active`
+    /// transition so a press that landed while the host was suspended is
+    /// never lost. Stale flags (older than the freshness window) are
+    /// silently cleared.
+    func consumePendingPress(
+        now: Date = Date(),
+        freshness: TimeInterval = pendingActionButtonPressDefaultFreshnessSeconds
+    ) {
+        guard pendingPressStore.consumePending(now: now, freshness: freshness) else { return }
+        handleActionButtonPress()
     }
 
     func dispatch(mode: ActionButtonMode) {

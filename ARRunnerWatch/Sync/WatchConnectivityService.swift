@@ -156,10 +156,13 @@ extension WatchConnectivityService: WCSessionDelegate {
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         if let raw = applicationContext[Self.actionButtonModeContextKey] as? String,
            ActionButtonMode(rawValue: raw) != nil {
-            // Mirror the phone-side picker into local UserDefaults so the
-            // watch's @AppStorage and ActionButtonCoordinator see the new
-            // value immediately. Skip idle writes.
-            let store = UserDefaults.standard
+            // Mirror the phone-side picker into the shared App Group
+            // store so both the watch's `@AppStorage` views AND the
+            // `ActionButtonIntent` (potentially running in a separate
+            // process) read the latest value. Writing to `.standard`
+            // alone would leave the intent process stuck on whatever it
+            // last saw, which was the v0.5.4 dispatch-mode-drift bug.
+            let store = ActionButtonMode.sharedDefaults
             if store.string(forKey: ActionButtonMode.storageKey) != raw {
                 store.set(raw, forKey: ActionButtonMode.storageKey)
             }
