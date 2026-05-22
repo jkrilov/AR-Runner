@@ -4,6 +4,7 @@
 import AppIntents
 import ARRunnerCore
 import Foundation
+import os
 
 // MARK: - Cross-process explicit workout control flag
 
@@ -80,6 +81,7 @@ struct ARRunnerPauseWorkoutIntent: PauseWorkoutIntent {
     init() {}
 
     func perform() async throws -> some IntentResult {
+        actionButtonLog.notice("PauseWorkoutIntent.perform fired")
         AppGroupPendingWorkoutControlStore().markPending(.pause)
         // Fast path for the rare in-host invocation (mirrors
         // ARRunnerStartWorkoutIntent.perform). When the intent runs in
@@ -100,6 +102,7 @@ struct ARRunnerResumeWorkoutIntent: ResumeWorkoutIntent {
     init() {}
 
     func perform() async throws -> some IntentResult {
+        actionButtonLog.notice("ResumeWorkoutIntent.perform fired")
         AppGroupPendingWorkoutControlStore().markPending(.resume)
         await MainActor.run {
             _ = ActionButtonCoordinator.shared.applyExplicitWorkoutControl(.resume)
@@ -142,6 +145,7 @@ struct ARRunnerNextActionIntent: AppIntent {
 
     func perform() async throws -> some IntentResult {
         let timestamp = Date()
+        actionButtonLog.notice("NextActionIntent.perform fired at \(timestamp.timeIntervalSinceReferenceDate, privacy: .public)")
         AppGroupPendingActionButtonPressStore().markPending(at: timestamp)
         await MainActor.run {
             ActionButtonCoordinator.shared.handleActionButtonPress()
@@ -160,14 +164,39 @@ struct ARRunnerNextActionIntent: AppIntent {
 /// requirement.
 enum WorkoutControlDonation {
     static func donateNextAction() async {
-        do {
+        // v0.5.11 (build 41) — the donation occasionally fails with
+        // NSCocoaErrorDomain 4099 ("connection to com.apple.linkd.transcript
+        // was invalidated") when called immediately after the workout
+        // session starts collecting data. Give the system a moment to
+        // settle, then retry once on failure. Donation is best-effort, so
+        // a final failure is still non-fatal — `ARRunnerStartWorkoutIntent`
+        // now also returns `.result(actionButtonIntent:)` directly from
+        // `perform()`, which is the primary "next action" wiring path.
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        let attempt: () async throws -> Void = {
             try await ARRunnerStartWorkoutIntent().donate(
                 result: .result(actionButtonIntent: ARRunnerNextActionIntent())
             )
+        }
+
+        do {
+            try await attempt()
+            actionButtonLog.notice("Donated NextActionIntent as Action Button next-action")
+            return
+        } catch {
+            actionButtonLog.error("NextActionIntent donation failed (attempt 1): \(String(describing: error), privacy: .public)")
+        }
+
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        do {
+            try await attempt()
+            actionButtonLog.notice("Donated NextActionIntent on retry")
         } catch {
             // Donation is best-effort; the user can still press the
-            // Action Button — it just won't have a "next action" hint
-            // bound to it for this session. Avoid noisy logging.
+            // Action Button — `perform()`'s returned `actionButtonIntent`
+            // remains the authoritative wiring for the next press.
+            actionButtonLog.error("NextActionIntent donation failed (attempt 2): \(String(describing: error), privacy: .public)")
         }
     }
 }

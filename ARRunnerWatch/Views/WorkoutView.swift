@@ -126,42 +126,61 @@ struct WorkoutView: View {
         }
     }
 
-    /// v0.5.10 — Action Button split confirmation. Appears for ~1.6s when
-    /// the user records a split via the Apple Watch Ultra Action Button
-    /// (mode `.splits`), giving the user the same "Lap 3 · 1:23" flash the
-    /// stock Workout app shows. Auto-dismisses via a `.task(id:)` timer
-    /// keyed on the flash timestamp so a rapid second press cancels the
-    /// in-flight timer and restarts it for the new value. Also shows a
-    /// compact "Splits: N" line under the metrics while any splits exist
-    /// so the user has a persistent confirmation that the press worked
-    /// even after the flash fades.
+    /// v0.5.10 — Action Button split confirmation. v0.5.11 — bumped to
+    /// a chunkier 3-second flash with a persistent split counter row
+    /// underneath so the press is never missed at a glance, even when
+    /// the user is mid-stride and only catches a sliver of the screen.
+    ///
+    /// Behaviour:
+    /// - `lastSplitFlash` → big "Split N · M:SS" pill, auto-dismisses
+    ///   after ~3s via a `.task(id:)` keyed on the flash timestamp so a
+    ///   rapid second press cancels the in-flight timer and restarts
+    ///   it for the new value.
+    /// - `actionButtonSplits` non-empty → small "Splits: N" line stays
+    ///   visible underneath for the rest of the run, giving a durable
+    ///   confirmation that doesn't depend on catching the flash.
     @ViewBuilder
     private var splitFlashBanner: some View {
-        if let flash = viewModel.lastSplitFlash {
-            HStack(spacing: 6) {
-                Image(systemName: "flag.checkered")
-                Text("Split \(flash.index) · \(formatElapsed(flash.delta))")
+        VStack(alignment: .leading, spacing: 4) {
+            if let flash = viewModel.lastSplitFlash {
+                HStack(spacing: 6) {
+                    Image(systemName: "flag.checkered")
+                    Text("Split \(flash.index)")
+                        .font(.headline)
+                    Text(formatElapsed(flash.delta))
+                        .font(.headline.monospacedDigit())
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.green.opacity(0.35))
+                )
+                .foregroundStyle(.green)
+                .transition(.opacity.combined(with: .scale))
+                .accessibilityLabel("Split \(flash.index) recorded at \(formatElapsed(flash.delta))")
+                .task(id: flash.shownAt) {
+                    actionButtonLog.notice("splitFlashBanner: showing flash for split #\(flash.index, privacy: .public)")
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        viewModel.clearSplitFlash(matching: flash.shownAt)
+                    }
+                }
+            }
+            if !viewModel.actionButtonSplits.isEmpty {
+                // Persistent counter — always visible during a run once
+                // the user has marked at least one split. Survives the
+                // flash auto-dismiss so the press is never invisible
+                // even if the user looked away during the 3s flash.
+                Label("Splits: \(viewModel.actionButtonSplits.count)", systemImage: "flag.checkered")
                     .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("\(viewModel.actionButtonSplits.count) splits recorded")
             }
-            .padding(.vertical, 4)
-            .padding(.horizontal, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.green.opacity(0.25))
-            )
-            .foregroundStyle(.green)
-            .transition(.opacity.combined(with: .scale))
-            .accessibilityLabel("Split \(flash.index) recorded at \(formatElapsed(flash.delta))")
-            .task(id: flash.shownAt) {
-                try? await Task.sleep(nanoseconds: 1_600_000_000)
-                viewModel.clearSplitFlash(matching: flash.shownAt)
-            }
-        } else if !viewModel.actionButtonSplits.isEmpty {
-            Label("Splits: \(viewModel.actionButtonSplits.count)", systemImage: "flag.checkered")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("\(viewModel.actionButtonSplits.count) splits recorded")
         }
+        .animation(.easeInOut(duration: 0.2), value: viewModel.lastSplitFlash)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.actionButtonSplits.count)
     }
 
     /// D4 (decision #2) HUD-offline indicator. Compact, non-modal, sits

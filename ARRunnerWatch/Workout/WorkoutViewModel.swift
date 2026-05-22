@@ -3,6 +3,7 @@
 
 import ARRunnerCore
 import Foundation
+import os
 import SwiftUI
 #if canImport(WatchKit)
 import WatchKit
@@ -404,7 +405,10 @@ final class WorkoutViewModel {
     /// workout return `false` and play nothing).
     @discardableResult
     func markSplitFromActionButton() -> Bool {
-        guard launchState == .running else { return false }
+        guard launchState == .running else {
+            actionButtonLog.notice("markSplitFromActionButton: ignored, launchState=\(String(describing: self.launchState), privacy: .public)")
+            return false
+        }
         let prev = actionButtonSplits.last?.elapsedAtPress ?? 0
         let delta = max(0, elapsed - prev)
         let split = ActionButtonSplit(
@@ -416,10 +420,13 @@ final class WorkoutViewModel {
         )
         actionButtonSplits.append(split)
         // v0.5.10 — drive the transient on-screen confirmation. The view
-        // observes this and auto-clears it after ~1.6s via a dispatched
+        // observes this and auto-clears it after ~3s via a dispatched
         // task so the user gets a Workout-app-style "Lap 3" flash without
-        // a persistent UI element competing with live metrics.
+        // a persistent UI element competing with live metrics. v0.5.11
+        // bumped the duration from 1.6s → 3s after sim testing showed
+        // the banner was easy to miss at a glance.
         lastSplitFlash = SplitFlash(index: split.index, delta: split.delta, shownAt: split.wallClock)
+        actionButtonLog.notice("markSplitFromActionButton: recorded split #\(split.index, privacy: .public) delta=\(delta, privacy: .public)s totalSplits=\(self.actionButtonSplits.count, privacy: .public) lastSplitFlash=set")
         // Best-effort HKWorkoutEvent.segment append so the split surfaces
         // on the saved HKWorkout (Health app, Strava import, side-store).
         // Failures are logged in-controller and never strand the workout.

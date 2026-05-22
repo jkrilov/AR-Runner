@@ -31,6 +31,14 @@ final class ActionButtonCoordinator {
 
     private weak var viewModel: WorkoutViewModel?
     private var pendingMode: ActionButtonMode?
+    /// v0.5.11 — cold-start race for the *start-workout* path. The
+    /// `ARRunnerStartWorkoutIntent.perform()` fast path can fire before
+    /// `WorkoutView.task` has attached the view-model (the intent is the
+    /// thing that brought the app to the foreground in the first place).
+    /// Park the request here and replay it from `attach(viewModel:)` so
+    /// the workout starts as soon as the UI is alive. Mirrors the
+    /// `pendingMode` rendezvous used by mid-workout presses.
+    private var pendingStart: Bool = false
 
     /// Cross-process press flag. Written by `ActionButtonIntent.perform()`
     /// (which may run in the system Shortcuts process) and consumed by
@@ -51,9 +59,46 @@ final class ActionButtonCoordinator {
     /// `pendingMode` that arrived before the UI was alive.
     func attach(viewModel: WorkoutViewModel) {
         self.viewModel = viewModel
+        actionButtonLog.notice("attach: viewModel attached, pendingStart=\(self.pendingStart, privacy: .public) pendingMode=\(self.pendingMode?.rawValue ?? "nil", privacy: .public)")
+        if pendingStart {
+            pendingStart = false
+            handleWorkoutStart()
+        }
         if let pending = pendingMode {
             pendingMode = nil
             dispatch(mode: pending)
+        }
+    }
+
+    /// v0.5.11 — dedicated in-process entry point for
+    /// `ARRunnerStartWorkoutIntent.perform()`. The generic
+    /// `handleActionButtonPress()` dispatches the user's *mid-workout*
+    /// `ActionButtonMode` (split / pause / HUD toggle) which is the
+    /// wrong action when the user is launching the app cold via the
+    /// hardware Action Button. This path skips the mode lookup and
+    /// kicks the workout straight to `viewModel.start()`.
+    ///
+    /// In the simulator the App Group cross-process flag
+    /// (`AppGroupPendingWorkoutStartStore`) doesn't reliably surface
+    /// because the Intents extension and host don't share a container;
+    /// this in-process path is the fallback that makes Action Button →
+    /// auto-start work without leaving the simulator.
+    ///
+    /// Cold-start race: if the intent fires before `WorkoutView.task`
+    /// has attached the view-model, park the request in `pendingStart`
+    /// — `attach(viewModel:)` will replay it.
+    func handleWorkoutStart() {
+        guard let viewModel else {
+            actionButtonLog.notice("handleWorkoutStart: no view-model attached, parking pending start")
+            pendingStart = true
+            return
+        }
+        switch viewModel.launchState {
+        case .idle, .ended, .cancelled, .failed:
+            actionButtonLog.notice("handleWorkoutStart: starting workout from launchState=\(String(describing: viewModel.launchState), privacy: .public)")
+            Task { await viewModel.start() }
+        default:
+            actionButtonLog.notice("handleWorkoutStart: ignored, launchState=\(String(describing: viewModel.launchState), privacy: .public)")
         }
     }
 
@@ -66,6 +111,7 @@ final class ActionButtonCoordinator {
     func handleActionButtonPress() {
         let raw = ActionButtonMode.sharedDefaults.string(forKey: ActionButtonMode.storageKey)
         let mode = ActionButtonMode(rawValue: raw ?? "") ?? ActionButtonMode.defaultMode
+        actionButtonLog.notice("handleActionButtonPress: dispatching mode=\(mode.rawValue, privacy: .public) viewModelAttached=\(self.viewModel != nil, privacy: .public)")
         dispatch(mode: mode)
     }
 
@@ -131,6 +177,7 @@ final class ActionButtonCoordinator {
         guard let viewModel else {
             // Intent fired before the UI woke up (rare cold-start race).
             // Park the request — `attach(viewModel:)` will replay it.
+            actionButtonLog.notice("dispatch: no view-model attached, parking mode=\(mode.rawValue, privacy: .public)")
             pendingMode = mode
             return
         }
@@ -139,12 +186,15 @@ final class ActionButtonCoordinator {
             return
         case .splits:
             let didMark = viewModel.markSplitFromActionButton()
+            actionButtonLog.notice("dispatch .splits: markSplitFromActionButton -> \(didMark, privacy: .public) launchState=\(String(describing: viewModel.launchState), privacy: .public)")
             if didMark { playHaptic(forSplit: true) }
         case .pauseResume:
             let didToggle = viewModel.togglePauseResumeFromActionButton()
+            actionButtonLog.notice("dispatch .pauseResume: toggled=\(didToggle, privacy: .public)")
             if didToggle { playHaptic(forSplit: false) }
         case .toggleHUD:
             viewModel.toggleHUDFromActionButton()
+            actionButtonLog.notice("dispatch .toggleHUD applied")
             playHaptic(forSplit: false)
         }
     }
