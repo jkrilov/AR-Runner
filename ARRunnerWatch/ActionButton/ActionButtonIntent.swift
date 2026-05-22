@@ -4,6 +4,14 @@
 import AppIntents
 import ARRunnerCore
 import Foundation
+import os
+
+/// Subsystem-scoped logger shared by all Action Button intents and the
+/// coordinator. Filter Console.app on
+/// `subsystem == "com.arrunner.watch" && category == "ActionButton"` to
+/// watch the full press lifecycle: intent fires → flag dropped → host
+/// foregrounded → coordinator dispatches mode → view-model mutates.
+let actionButtonLog = Logger(subsystem: "com.arrunner.watch", category: "ActionButton")
 
 /// Workout-style enum exposed to the system Action Button picker as the
 /// `@Parameter` value for `ARRunnerStartWorkoutIntent`. The Action Button
@@ -96,6 +104,7 @@ struct ARRunnerStartWorkoutIntent: StartWorkoutIntent {
 
     func perform() async throws -> some IntentResult {
         let timestamp = Date()
+        actionButtonLog.notice("StartWorkoutIntent.perform fired at \(timestamp.timeIntervalSinceReferenceDate, privacy: .public)")
 
         // Authoritative cross-process flags. We always drop both — the
         // host decides which one to honor based on `launchState` at

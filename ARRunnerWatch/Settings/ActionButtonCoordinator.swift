@@ -66,6 +66,7 @@ final class ActionButtonCoordinator {
     func handleActionButtonPress() {
         let raw = ActionButtonMode.sharedDefaults.string(forKey: ActionButtonMode.storageKey)
         let mode = ActionButtonMode(rawValue: raw ?? "") ?? ActionButtonMode.defaultMode
+        actionButtonLog.notice("handleActionButtonPress: dispatching mode=\(mode.rawValue, privacy: .public) viewModelAttached=\(self.viewModel != nil, privacy: .public)")
         dispatch(mode: mode)
     }
 
@@ -131,6 +132,7 @@ final class ActionButtonCoordinator {
         guard let viewModel else {
             // Intent fired before the UI woke up (rare cold-start race).
             // Park the request — `attach(viewModel:)` will replay it.
+            actionButtonLog.notice("dispatch: no view-model attached, parking mode=\(mode.rawValue, privacy: .public)")
             pendingMode = mode
             return
         }
@@ -139,12 +141,15 @@ final class ActionButtonCoordinator {
             return
         case .splits:
             let didMark = viewModel.markSplitFromActionButton()
+            actionButtonLog.notice("dispatch .splits: markSplitFromActionButton -> \(didMark, privacy: .public) launchState=\(String(describing: viewModel.launchState), privacy: .public)")
             if didMark { playHaptic(forSplit: true) }
         case .pauseResume:
             let didToggle = viewModel.togglePauseResumeFromActionButton()
+            actionButtonLog.notice("dispatch .pauseResume: toggled=\(didToggle, privacy: .public)")
             if didToggle { playHaptic(forSplit: false) }
         case .toggleHUD:
             viewModel.toggleHUDFromActionButton()
+            actionButtonLog.notice("dispatch .toggleHUD applied")
             playHaptic(forSplit: false)
         }
     }

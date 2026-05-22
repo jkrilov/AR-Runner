@@ -4,6 +4,7 @@
 import AppIntents
 import ARRunnerCore
 import Foundation
+import os
 
 // MARK: - Cross-process explicit workout control flag
 
@@ -80,6 +81,7 @@ struct ARRunnerPauseWorkoutIntent: PauseWorkoutIntent {
     init() {}
 
     func perform() async throws -> some IntentResult {
+        actionButtonLog.notice("PauseWorkoutIntent.perform fired")
         AppGroupPendingWorkoutControlStore().markPending(.pause)
         // Fast path for the rare in-host invocation (mirrors
         // ARRunnerStartWorkoutIntent.perform). When the intent runs in
@@ -100,6 +102,7 @@ struct ARRunnerResumeWorkoutIntent: ResumeWorkoutIntent {
     init() {}
 
     func perform() async throws -> some IntentResult {
+        actionButtonLog.notice("ResumeWorkoutIntent.perform fired")
         AppGroupPendingWorkoutControlStore().markPending(.resume)
         await MainActor.run {
             _ = ActionButtonCoordinator.shared.applyExplicitWorkoutControl(.resume)
@@ -142,6 +145,7 @@ struct ARRunnerNextActionIntent: AppIntent {
 
     func perform() async throws -> some IntentResult {
         let timestamp = Date()
+        actionButtonLog.notice("NextActionIntent.perform fired at \(timestamp.timeIntervalSinceReferenceDate, privacy: .public)")
         AppGroupPendingActionButtonPressStore().markPending(at: timestamp)
         await MainActor.run {
             ActionButtonCoordinator.shared.handleActionButtonPress()
@@ -164,10 +168,12 @@ enum WorkoutControlDonation {
             try await ARRunnerStartWorkoutIntent().donate(
                 result: .result(actionButtonIntent: ARRunnerNextActionIntent())
             )
+            actionButtonLog.notice("Donated NextActionIntent as Action Button next-action")
         } catch {
             // Donation is best-effort; the user can still press the
             // Action Button — it just won't have a "next action" hint
-            // bound to it for this session. Avoid noisy logging.
+            // bound to it for this session.
+            actionButtonLog.error("NextActionIntent donation failed: \(String(describing: error), privacy: .public)")
         }
     }
 }
