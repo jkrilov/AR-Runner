@@ -12,6 +12,7 @@ struct WorkoutView: View {
         mirror: ARRunnerWatchEnvironment.shared.mirror
     )
     @State private var showGlassesSheet = false
+    @State private var showSettingsSheet = false
 
     /// Cross-process handoff from `StartWorkoutIntent.perform()` (widget
     /// extension) to the foregrounded host. Consumed below on
@@ -36,7 +37,21 @@ struct WorkoutView: View {
             .padding(.bottom)
         }
         .navigationTitle("Run")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showSettingsSheet = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel("Settings")
+            }
+        }
         .task {
+            // Wire the Action Button dispatcher to this view-model so the
+            // `ActionButtonIntent` (foregrounded via openAppWhenRun) can
+            // route presses into the live workout state.
+            ActionButtonCoordinator.shared.attach(viewModel: viewModel)
             // First-launch path — `openAppWhenRun` lands here before the
             // scene phase change fires on a cold start.
             await maybeAutoStartFromIntent()
@@ -53,6 +68,11 @@ struct WorkoutView: View {
         .sheet(isPresented: $showGlassesSheet) {
             NavigationStack {
                 GlassesConnectView(viewModel: viewModel)
+            }
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            NavigationStack {
+                WatchSettingsView()
             }
         }
         .confirmationDialog(
