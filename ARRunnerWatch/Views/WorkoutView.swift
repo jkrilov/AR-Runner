@@ -57,6 +57,10 @@ struct WorkoutView: View {
             // `maybeAutoStartFromIntent` — both are cross-process flags
             // consumed on activation.
             ActionButtonCoordinator.shared.consumePendingPress()
+            // Apple's Pause/Resume intents (Action + Side simultaneous
+            // press) write a separate cross-process flag — drain it on
+            // the same activation cycle so the press is never lost.
+            ActionButtonCoordinator.shared.consumePendingWorkoutControl()
             // First-launch path — `openAppWhenRun` lands here before the
             // scene phase change fires on a cold start.
             await maybeAutoStartFromIntent()
@@ -68,6 +72,7 @@ struct WorkoutView: View {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 ActionButtonCoordinator.shared.consumePendingPress()
+                ActionButtonCoordinator.shared.consumePendingWorkoutControl()
                 Task { await maybeAutoStartFromIntent() }
             }
         }

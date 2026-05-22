@@ -201,6 +201,12 @@ final class WorkoutViewModel {
             startedAt = state.startedAt
             sessionID = state.sessionID
             launchState = .running
+            // Per Apple's Action Button article, donate the "next action"
+            // intent now that a workout is active so subsequent Action
+            // Button presses dispatch our mid-workout intent instead of
+            // trying to start a second workout. Best-effort — donation
+            // is a UX hint, not load-bearing for correctness.
+            await WorkoutControlDonation.donateNextAction()
             // rc13 Bug B defensive: a stale push-policy `lastPayload` could
             // gate the first per-tick frame of this workout if the prior
             // workout ended with an identical zero-state payload (e.g.,
