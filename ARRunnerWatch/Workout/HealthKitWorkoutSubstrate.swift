@@ -63,6 +63,16 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
     public let stateEvents: AsyncStream<WorkoutSubstratePhase>
     public let metricEvents: AsyncStream<WorkoutMetric>
 
+    #if canImport(CoreLocation)
+    /// v0.5.15 — live route coordinates for the on-watch map. Yielded
+    /// from the same filtered batches the route builder consumes, so the
+    /// polyline drawn on screen matches the polyline persisted to the
+    /// HKWorkoutRoute. Parallel stream (not on `WorkoutHealthSubstrate`)
+    /// because Core stays Linux-clean and CoreLocation is watch-only.
+    private let routeCoordinateContinuation: AsyncStream<CLLocationCoordinate2D>.Continuation
+    public let routeCoordinateEvents: AsyncStream<CLLocationCoordinate2D>
+    #endif
+
     private let state = OSAllocatedUnfairLock<MutableState>(initialState: MutableState())
 
     /// rc2 (2026-05-20) — CoreLocation is owned by the substrate so the
@@ -91,6 +101,14 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         }
         self.metricContinuation = metricCont
 
+        #if canImport(CoreLocation)
+        var routeCont: AsyncStream<CLLocationCoordinate2D>.Continuation!
+        self.routeCoordinateEvents = AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            routeCont = continuation
+        }
+        self.routeCoordinateContinuation = routeCont
+        #endif
+
         #if os(watchOS)
         self.locationManager = CLLocationManager()
         self.locationManager.desiredAccuracy = kCLLocationAccuracyBest
@@ -114,6 +132,9 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
     deinit {
         stateContinuation.finish()
         metricContinuation.finish()
+        #if canImport(CoreLocation)
+        routeCoordinateContinuation.finish()
+        #endif
     }
 
     // MARK: - Authorization
@@ -458,6 +479,13 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
                 // best-effort (no throw) but observable.
                 Self.routeLog.error("route: insertRouteData FAILED — count=\(filtered.count, privacy: .public) error=\(String(describing: error), privacy: .public)")
             }
+        }
+
+        // v0.5.15 — fan the same filtered fixes out to the on-watch live
+        // map. Done after the HKWorkoutRouteBuilder hand-off so persistence
+        // can never be starved by UI subscribers.
+        for loc in filtered {
+            routeCoordinateContinuation.yield(loc.coordinate)
         }
     }
     #endif
