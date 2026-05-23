@@ -263,3 +263,13 @@ When in doubt, ask the user: "which Settings → Action Button sub-screen are yo
 - `ARRunnerPhone/Views/WorkoutMirrorViewModel.swift` (accumulates `routeCoordinates` + `currentLocation`)
 - `ARRunnerPhone/Views/WorkoutMirrorView.swift` (wrapped in `ScrollView`, embeds `LiveRouteMapView` at 280pt)
 - `VERSION` → `0.5.16`, `project.yml` MARKETING 0.5.16 / CURRENT_PROJECT_VERSION 46
+
+## Learnings — v0.5.17 (2026-05-23)
+
+- `CLLocationCoordinate2D` is **not** `Equatable` — any struct that holds one and conforms to `Equatable` must supply a custom `==` (compare `latitude`/`longitude` manually). Caught at watch build, not by SPM core tests.
+- SwiftUI `Map(position:interactionModes:)` accepts an empty `MapInteractionModes` set (`[]`) to fully disable pan/zoom. On watchOS this is the way to free the Digital Crown for the parent `TabView(.verticalPage)`; otherwise the map captures crown rotation as zoom and starves page swipes.
+- `onMapCameraChange(frequency: .onEnd)` plus a `Task.sleep(5s)` cancel/replace pattern works cleanly for auto-recenter: every camera change cancels the pending snap-back, the last change wins, and resetting `position` to `.userLocation(...)` is idempotent so the resulting follow-up event is harmless.
+- The watch `WorkoutViewModel.resetLiveCounters()` already cleared `routeCoordinates`/`currentLocation` and cancelled the route task; the phone `WorkoutMirrorViewModel` already cleared on `.started` lifecycle. Item #1 ("clear on new run") needed no behavior change — only verification.
+- `ActionButtonSplit` now carries `coordinateAtPress: CLLocationCoordinate2D?` (under `#if canImport(CoreLocation)`); `splitCoordinates` is a `compactMap` so presses before the first GPS fix don't drop from the timing record but also don't plot a bogus `0,0`.
+- Watch `WorkoutView` post-run map visibility: extended via a new `showMapTab` (= `isInWorkout || isPostRun`); `.ending`/`.ended` keeps the swipe page so the wearer can review the finished route.
+- Key files for live-map work: `Shared/Views/LiveRouteMapView.swift` (renders all annotations), `ARRunnerWatch/Workout/WorkoutViewModel.swift` (route + splits state), `ARRunnerWatch/Views/WorkoutView.swift` (TabView gating + crown ownership), `ARRunnerPhone/Views/WorkoutMirrorView.swift` (phone embed + finish gate), `ARRunnerPhone/Views/WorkoutMirrorViewModel.swift` (already clears on `.started`).

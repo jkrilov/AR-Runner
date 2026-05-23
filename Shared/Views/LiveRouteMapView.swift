@@ -76,6 +76,31 @@ struct LiveRouteMapView: View {
     /// on every camera change so only the *last* pan starts a countdown.
     @State private var recenterTask: Task<Void, Never>?
 
+    /// v0.5.18 — explicit follow-distance (meters) for the phone's live
+    /// map. `.userLocation(fallback: .automatic)` historically landed
+    /// around ~500m which felt too tight for road runs — bumped to 800m
+    /// so the runner sees more of the surrounding area while still being
+    /// able to follow the route. Watch keeps the tighter automatic zoom
+    /// since its screen is a fraction of the size.
+    private static let phoneFollowDistance: CLLocationDistance = 800
+
+    /// Camera that follows `current` at the wider phone zoom. Falls back
+    /// to `.userLocation` until we have a fix so we still get *some* map
+    /// rendered before the first coordinate arrives.
+    private var phoneFollowCamera: MapCameraPosition {
+        if let current {
+            return .camera(
+                MapCamera(
+                    centerCoordinate: current,
+                    distance: Self.phoneFollowDistance,
+                    heading: 0,
+                    pitch: 0
+                )
+            )
+        }
+        return .userLocation(fallback: .automatic)
+    }
+
     /// First accepted GPS fix; anchors the green start marker.
     private var startCoordinate: CLLocationCoordinate2D? { coordinates.first }
 
@@ -155,19 +180,37 @@ struct LiveRouteMapView: View {
         .mapStyle(.standard(elevation: .flat))
         .mapControlVisibility(.hidden)
         .accessibilityLabel("Live route map")
+        .onAppear {
+            // v0.5.18 — phone uses an explicit wider follow camera
+            // (~800m) rather than `.userLocation`'s tighter default.
+            // Watch stays on `.userLocation` since its small screen
+            // benefits from the tighter automatic zoom.
+            if interactive {
+                camera = phoneFollowCamera
+            }
+        }
+        .onChange(of: current?.latitude) { _, _ in
+            // Keep the phone's follow camera centered on the latest fix
+            // *unless* the user is currently inspecting the map (i.e. a
+            // recenter snap-back is pending). Cheap to recompute — this
+            // fires at ~1 Hz with the WCSession tick stream.
+            guard interactive, recenterTask == nil else { return }
+            camera = phoneFollowCamera
+        }
         .onMapCameraChange(frequency: .onEnd) { _ in
             // v0.5.17 — phone-only auto-recenter. Cancel any pending snap-
             // back and schedule a fresh 5s timer; if the camera is still
             // user-controlled when the timer fires, jump back to follow
-            // the runner. Resetting to `.userLocation` itself will fire
-            // another change event but the resulting reset is a no-op so
-            // we don't get a loop.
+            // the runner. Resetting the camera itself will fire another
+            // change event but the resulting reset is a no-op so we don't
+            // get a loop.
             guard interactive else { return }
             recenterTask?.cancel()
             recenterTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !Task.isCancelled else { return }
-                camera = .userLocation(fallback: .automatic)
+                camera = phoneFollowCamera
+                recenterTask = nil
             }
         }
 
