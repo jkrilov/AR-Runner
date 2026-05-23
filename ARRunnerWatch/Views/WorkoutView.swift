@@ -30,15 +30,13 @@ struct WorkoutView: View {
     var body: some View {
         // v0.5.16 — when a workout is live, the screen becomes a 2-page
         // vertical TabView: page 1 = metrics & controls (the long-running
-        // primary surface), page 2 = full-screen live route map. The user
-        // swipes down (crown / finger) to peek at the map without the
-        // metrics shrinking to fit. Outside of a workout we render the
-        // metrics page directly so the swipe affordance doesn't appear
-        // before there's anything to plot. Decision: keep the metrics
-        // page as the *first* page so the watch wakes onto the metrics
-        // every time — the map is opt-in.
+        // primary surface), page 2 = full-screen live route map.
+        // v0.5.17 — also keep the map page available post-run (`.ended`)
+        // so the wearer can review their finished route alongside the
+        // checkered finish marker. The map is cleared on the next workout
+        // start via `resetLiveCounters()` in the view-model.
         Group {
-            if isInWorkout {
+            if showMapTab {
                 TabView {
                     metricsPage
                     mapPage
@@ -153,16 +151,21 @@ struct WorkoutView: View {
         }
     }
 
-    /// Page 2 of the in-workout TabView — full-screen live route map. Only
-    /// shown while a workout is active (the parent gates the TabView on
-    /// `isInWorkout`), so we don't need to re-check here. `height: nil`
-    /// makes the map fill the swipe page.
+    /// Page 2 of the in-workout TabView — full-screen live route map.
+    /// v0.5.17 — disables map interaction so the Digital Crown stays bound
+    /// to the parent `TabView(.verticalPage)` for page navigation (the
+    /// crown previously zoomed the map and starved page swipes). Also
+    /// passes split coordinates and a checkered finish flag once the
+    /// workout has ended.
     @ViewBuilder
     private var mapPage: some View {
         #if canImport(CoreLocation) && canImport(MapKit)
         LiveRouteMapView(
             coordinates: viewModel.routeCoordinates,
             current: viewModel.currentLocation,
+            splitCoordinates: viewModel.splitCoordinates,
+            showFinish: isPostRun,
+            interactive: false,
             height: nil
         )
         .ignoresSafeArea(edges: .bottom)
@@ -333,6 +336,27 @@ struct WorkoutView: View {
         default:
             return false
         }
+    }
+
+    /// v0.5.17 — true once the workout has ended (saved or in the brief
+    /// `.ending` transition). Drives the checkered finish marker and keeps
+    /// the post-run route on screen until the next workout clears it.
+    private var isPostRun: Bool {
+        switch viewModel.launchState {
+        case .ending, .ended:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// v0.5.17 — show the map TabView page whenever there's a route to
+    /// display: during the workout and immediately after finishing. We
+    /// don't gate on `routeCoordinates.isEmpty` because the very first
+    /// fix may not have arrived yet; the user still gets the swipe
+    /// affordance and an empty map shows the user-location pin.
+    private var showMapTab: Bool {
+        isInWorkout || isPostRun
     }
 
     /// Tappable row that shows the live glasses link state and opens the
