@@ -40,6 +40,9 @@ struct WorkoutMirrorView: View {
     /// and above the footer. Only renders once the watch has streamed at
     /// least one GPS fix (older watch builds on schema ≤ v4 never will,
     /// so the section simply stays hidden — graceful degradation).
+    /// v0.5.17 — passes `interactive: true` so the phone keeps pan/zoom
+    /// plus the 5-second auto-recenter, and surfaces a checkered finish
+    /// marker once the watch reports the workout ended.
     @ViewBuilder
     private var liveMapSection: some View {
         #if canImport(CoreLocation) && canImport(MapKit)
@@ -47,11 +50,21 @@ struct WorkoutMirrorView: View {
             LiveRouteMapView(
                 coordinates: viewModel.routeCoordinates,
                 current: viewModel.currentLocation,
+                splitCoordinates: [],
+                showFinish: isMirrorEnded,
+                interactive: true,
                 height: 280
             )
             .transition(.opacity)
         }
         #endif
+    }
+
+    /// True once the watch has reported the workout ended so the phone
+    /// map switches the live runner pin out for a checkered finish flag.
+    private var isMirrorEnded: Bool {
+        if case .ended = viewModel.status { return true }
+        return false
     }
 
     /// rc2 — "Started at HH:MM" row above the live metrics. Sourced from

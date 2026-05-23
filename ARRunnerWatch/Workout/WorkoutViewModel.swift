@@ -87,6 +87,14 @@ final class WorkoutViewModel {
     /// Most recent GPS fix — used by the map to pin the runner marker and
     /// drive the follow-camera. `nil` until the first accepted fix lands.
     private(set) var currentLocation: CLLocationCoordinate2D?
+
+    /// v0.5.17 — coordinates of each Action Button split press in order.
+    /// The map renders a numbered amber dot at each location so the wearer
+    /// can see where every lap was banked. Splits pressed before the first
+    /// GPS fix landed are skipped (no coordinate to plot).
+    var splitCoordinates: [CLLocationCoordinate2D] {
+        actionButtonSplits.compactMap { $0.coordinateAtPress }
+    }
     #endif
 
     // MARK: - Action Button state (v0.5.x)
@@ -142,6 +150,33 @@ final class WorkoutViewModel {
         let delta: TimeInterval
         let distanceMetersAtPress: Double?
         let wallClock: Date
+        #if canImport(CoreLocation)
+        /// v0.5.17 — GPS fix captured at the moment the split was pressed.
+        /// Optional because the runner may press the Action Button before
+        /// the first accepted fix lands (e.g. inside a building). The live
+        /// route map skips splits with no coordinate rather than dropping
+        /// them from the timing record.
+        let coordinateAtPress: CLLocationCoordinate2D?
+        #endif
+
+        static func == (lhs: ActionButtonSplit, rhs: ActionButtonSplit) -> Bool {
+            guard lhs.index == rhs.index,
+                  lhs.elapsedAtPress == rhs.elapsedAtPress,
+                  lhs.delta == rhs.delta,
+                  lhs.distanceMetersAtPress == rhs.distanceMetersAtPress,
+                  lhs.wallClock == rhs.wallClock
+            else { return false }
+            #if canImport(CoreLocation)
+            switch (lhs.coordinateAtPress, rhs.coordinateAtPress) {
+            case (nil, nil): return true
+            case let (l?, r?):
+                return l.latitude == r.latitude && l.longitude == r.longitude
+            default: return false
+            }
+            #else
+            return true
+            #endif
+        }
     }
 
     private var controller: WorkoutController?
@@ -430,6 +465,16 @@ final class WorkoutViewModel {
         }
         let prev = actionButtonSplits.last?.elapsedAtPress ?? 0
         let delta = max(0, elapsed - prev)
+        #if canImport(CoreLocation)
+        let split = ActionButtonSplit(
+            index: actionButtonSplits.count + 1,
+            elapsedAtPress: elapsed,
+            delta: delta,
+            distanceMetersAtPress: distanceMeters,
+            wallClock: now(),
+            coordinateAtPress: currentLocation
+        )
+        #else
         let split = ActionButtonSplit(
             index: actionButtonSplits.count + 1,
             elapsedAtPress: elapsed,
@@ -437,6 +482,7 @@ final class WorkoutViewModel {
             distanceMetersAtPress: distanceMeters,
             wallClock: now()
         )
+        #endif
         actionButtonSplits.append(split)
         // v0.5.10 — drive the transient on-screen confirmation. The view
         // observes this and auto-clears it after ~3s via a dispatched
