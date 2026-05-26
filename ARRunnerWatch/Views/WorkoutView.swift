@@ -114,7 +114,7 @@ struct WorkoutView: View {
                 Task { await viewModel.resumeFromFinish() }
             }
         } message: {
-            Text("Saving writes the workout to Health. Discard removes it from this view (it remains in Health and can be deleted there).")
+            Text("Saving writes the workout to Health. Discard permanently removes it — nothing is saved to Health or Strava.")
         }
     }
 
