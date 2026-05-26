@@ -114,3 +114,15 @@ Final touch: 10 files, 21 net lines removed, 186/186 still green. Wrote skill `s
 **No action needed now** — just flagging so you're not surprised when Joe asks for the README refresh. The v0.4.0 "What works today" section will be the main surface area to touch.
 
 **Link:** See decisions.md entries 2026-05-20T for full rc2 context (richards diagnostic, weiss coords, amber criteria, laughlin implementation).
+
+---
+
+## 2026-05-26 — Cross-agent note: v0.5.19 shipped + v0.5.20 chore recommendation
+
+**From:** Scribe (on behalf of parallel session: Amber + Laughlin + Laughlin-1)
+
+**Heads-up:** v0.5.19 shipped to TestFlight. Joe's discard regression report resolved: code is correct, UX message was stale v0.2 text that contradicted the rc2 fix. Message updated, VERSION bumped 0.5.18→0.5.19, all CI green, PR #116 merged.
+
+**Tech debt flagged:** `release-testflight.yml` tag-monotonicity guard self-collides on pre-release tags. When `v*.*.*-*` is pushed, the guard includes the trigger tag in its own comparison, always fires an error. Workaround: delete tag + re-dispatch via `workflow_dispatch`. Load-bearing issue for next pre-release cycle.
+
+**Recommendation:** v0.5.20 roadmap should include a small chore to fix the guard logic (exclude trigger tag, use semver-correct sort). Laughlin-1's ship log has the diagnostic details.

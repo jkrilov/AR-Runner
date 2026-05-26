@@ -119,3 +119,15 @@ Awaiting Joe's review of the architecture plan and answers to the five open ques
 - `.squad/decisions/inbox/richards-worker-source.md` (new)
 
 **Status:** Files created and `node --check` clean. Not committed — per task, another agent handles the iOS side and the eventual PR. When that PR lands, the iOS Strava ADR should be updated to reference `strava-connect.ar-runner.app` as the canonical worker host (and add `/refresh` + `/deauthorize` to its API surface).
+
+---
+
+## 2026-05-26 — Cross-agent note: v0.5.19 shipped + release-testflight.yml guard bug
+
+**From:** Scribe (on behalf of parallel session: Amber + Laughlin + Laughlin-1)
+
+**Heads-up:** v0.5.19 shipped to TestFlight. Discard dialog message corrected (v0.2 stale text → clear message). VERSION bumped 0.5.18→0.5.19, all CI green, PR #116 merged.
+
+**Tech debt discovered:** `release-testflight.yml` has a self-colliding tag-monotonicity guard. When a pre-release tag `v*.*.*-*` is pushed, the guard calculates `LATEST_TAG = $(git tag --list 'v*' | sort -V | tail -n 1)` which includes the trigger tag itself, so `LATEST_TAG` always equals the new tag and the guard fires `::error::Version X matches an existing tag (vX)`. Workaround: delete the tag and re-dispatch via `workflow_dispatch` with `version=X.Y.Z`. (This is what Laughlin-1 did for v0.5.19.)
+
+**Action for future:** A v0.5.20 chore should fix the guard to exclude its own trigger tag and use semver-correct sort ordering (pre-release suffix < bare release). This is low-urgency but load-bearing for any future pre-release cycle.

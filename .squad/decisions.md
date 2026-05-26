@@ -137,7 +137,7 @@ public actor WorkoutController {
 
 ---
 
-## Recent Decisions (Last 2 Weeks: 2026-05-12 — 2026-05-26)
+## Recent Decisions (Earlier Batch: 2026-05-12 — 2026-05-25)
 
 ### 2026-05-20 — Copilot directive: Strava Path B scope locked
 From user direct input. Path B (direct Strava OAuth + TCX upload) promoted v0.6→v0.5. Three-PR sequence: Amber (TCX encoder) → Laughlin (OAuth + tokens) → Laughlin (uploader + queue).
@@ -180,9 +180,60 @@ Five bench-return items: (A) route recording auth + HKSeriesType.workoutRoute() 
 
 ---
 
-## Current Version: v0.5.17
+## Recent Decisions (Latest: 2026-05-26)
 
-**Shipped 2026-05-23.** Live route map, Action Button refinements, appearance settings.
+### 2026-05-26 — Amber: Terminal-Path Data-Leak Audit — v0.5.18
+**Status:** Code paths correct; UX message bug identified.
+
+Joe reported: "When I discard a run on the watch it shouldn't save to Apple Fitness."
+
+**Findings:** Code is correct. `WorkoutHealthSubstrate.discard()` calls `builder.discardWorkout()` exclusively. Tests pass and are untouched since rc2. **But a critical UX message misleads users.**
+
+**The actual bug:** `ARRunnerWatch/Views/WorkoutView.swift:117` says "Discard removes it from this view (it remains in Health and can be deleted there)." This text was written in v0.2 when discard didn't work. The rc2 fix changed the code but never updated the message.
+
+**Decision:** Fix the message to "Discard permanently removes it — nothing is saved to Health or Strava."
+
+**Bench check for Joe:** (1) Run 30s, (2) Tap Finish → Discard, (3) Open Health app → verify NO NEW WORKOUT, (4) Check Strava → verify NO UPLOAD.
+
+---
+
+### 2026-05-26 — Laughlin: Discard Regression Investigation — v0.5.18
+**Status:** No code regression. The bug is the dialog message.
+
+Full investigation of the discard path from v0.4.0 (rc2) through v0.5.18 confirms the rc2 fix is intact. `WorkoutController.discard()` calls `substrate.discard(at:)`, never `substrate.end(at:)`. `WorkoutDiscardTerminalPathTests` covers all invariants.
+
+**The bug is the misleading confirmation dialog at `WorkoutView.swift:117`.** Current message contradicts actual behavior.
+
+**Decision:** (1) Update `WorkoutView.swift:117` message text. (2) Update stale doc-comment on `.cancelled` enum case in `WorkoutViewModel.swift:41`. (3) No logic changes required.
+
+---
+
+### 2026-05-26 — Laughlin: Decision Packet — v0.5.19 Discard Dialog Fix
+**Status:** SHIPPED (PR #116 merged, dispatched to TestFlight).
+
+**Fix deployed:** PR #116 (`fix/discard-dialog-message`, merged squash → `25ee63a`):
+1. `ARRunnerWatch/Views/WorkoutView.swift:117` — replaced misleading message.
+2. `ARRunnerWatch/Workout/WorkoutViewModel.swift:41` — updated stale doc-comment on `.cancelled` case.
+3. `VERSION + project.yml` — `0.5.18`(48) → `0.5.19`(49) per bundled-bump convention.
+
+No logic changes. CI: all four required checks green.
+
+**TestFlight workflow note:** The pre-release tag push triggered `release-testflight.yml` and failed the monotonicity guard. Root cause: guard runs `git tag --list 'v*' | sort -V | tail -n 1`, which includes the trigger tag itself, so `LATEST_TAG` always equals `RAW_VERSION` on a fresh tag push. Recovered by deleting `v0.5.19-1` from origin and re-dispatching via `workflow_dispatch` with `version=0.5.19`.
+
+**Recommend a v0.5.20 chore PR:** Fix the guard step to exclude the trigger tag from its own monotonicity calculation (e.g. `git tag --list 'v*' | grep -vFx "v${RAW_VERSION}"`) AND switch the sort-order comparison to semver-correct ordering (pre-release suffix < bare release).
+
+---
+
+### 2026-05-26T17:00:37-04:00: User Directive — Code-Writing Agents on Opus 4.7+
+**By:** Joe Krilov (via Copilot)  
+**What:** Any agent editing/writing code (Laughlin, Weiss, Amber, Richards on code-review) MUST run `claude-opus-4.7-1m-internal` or better. The `.squad/config.json` agentModelOverrides already pin these four — the coordinator must honor Layer 0 of the model-selection hierarchy and NOT fall through to task-aware auto-selection (Sonnet) for these agents, even on investigation-only work.  
+**Why:** User request — Joe wants code-touching agents at maximum capability. Captured for team memory and to enforce config compliance on every spawn.
+
+---
+
+## Current Version: v0.5.19
+
+**Shipped 2026-05-26.** Discard dialog message corrected, versioning bumped 0.5.18 → 0.5.19, dispatched to TestFlight.
 
 ### v0.5 Scope (delivered 2026-05-20 — 2026-05-23)
 - Strava OAuth connect button on phone (mobile auth flow)
