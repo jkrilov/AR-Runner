@@ -1,7 +1,7 @@
 name: CI — App Builds (macOS)
 
 # Runs xcodegen + xcodebuild for each of the four schemes in project.yml,
-# matching Amber's local validation commands (docs/dev/macos-build-validation.md).
+# matching the canonical commands in docs/dev/ci-workflows.md.
 # No code signing (CODE_SIGNING_ALLOWED=NO). Generic simulator destinations.
 #
 # macOS runners are billed at ~10x Linux. Concurrency cancellation + matrix

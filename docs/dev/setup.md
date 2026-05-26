@@ -39,8 +39,13 @@ Re-run any time after pulling, switching branches, or noticing an unexpected "mi
 
 ## Shared package layout
 
-`ARRunnerCore` is the shared local Swift Package Manager dependency used by the app and widget targets.
-The package contains shared workout models, WatchConnectivity contracts, HUD layout presets, and side-store abstractions.
+`ARRunnerCore` is the shared local Swift Package Manager dependency used
+by the watch app, phone app, and widget targets. It contains workout
+models, the `WorkoutController` actor, the `GlassesFrameTransport`
+protocol, HUD layout presets, WatchConnectivity message contracts, the
+AR-metadata side-store, and the Strava types. It imports only `Foundation`
+so it builds and tests on Linux CI (no HealthKit, CoreBluetooth, WatchKit,
+or UIKit imports — those live in the app shells).
 
 ## Capabilities and signing
 
@@ -53,13 +58,6 @@ Some project operations only work on a Mac:
 
 ## Decision references
 
-Scaffolding follows the locked decisions in `.squad/decisions.md`:
-
-- D1 — watch owns BLE directly
-- D2 — watchOS 11 / iOS 18 minimums
-- D3 — running-first UX with sport-agnostic core models
-- D5 — watch-only workouts remain supported
-- D6 — curated HUD presets ship at build time
-- D7 — App Intents use foreground launch for workout takeover
-- D8 — Swift 6 strict concurrency from day one
-- D9 — HealthKit + lightweight AR metadata side-store
+The locked architectural decisions live in `.squad/decisions.md`. See
+also [`docs/architecture.md`](../architecture.md) for the current system
+overview.

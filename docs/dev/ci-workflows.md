@@ -61,8 +61,6 @@ We deliberately build only one scheme (the largest single dependency closure) ra
 
 ## Running the same checks locally
 
-Match the canonical commands from `docs/dev/macos-build-validation.md`:
-
 ```bash
 # from repo root
 brew install xcodegen

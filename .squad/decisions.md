@@ -1,6 +1,6 @@
 # Squad Decisions
 
-> **Archive:** Full historical log (284KB) in `decisions-archive-2026-05-20.md`.
+> **Archive:** Historical decisions (pre-2026-05-12) logged in `decisions-archive-2026-05-20.md`. Recent inbox entries merged into active file 2026-05-26.
 
 ---
 
@@ -137,20 +137,67 @@ public actor WorkoutController {
 
 ---
 
-## Current Version: v0.5.0
+## Recent Decisions (Last 2 Weeks: 2026-05-12 — 2026-05-26)
 
-**Shipped 2026-05-20.** Strava mobile OAuth integration.
+### 2026-05-20 — Copilot directive: Strava Path B scope locked
+From user direct input. Path B (direct Strava OAuth + TCX upload) promoted v0.6→v0.5. Three-PR sequence: Amber (TCX encoder) → Laughlin (OAuth + tokens) → Laughlin (uploader + queue).
 
-### v0.5 Scope (delivered)
-- Strava OAuth connect button on phone
-- Mobile OAuth flow (dual-path: native Strava app + web fallback)
-- Token exchange via Cloudflare Worker (`strava-auth-worker.jkrilov.workers.dev`)
+### 2026-05-20 — Richards: TCX Encoder Architecture
+**Format locked: TCX 2.0** (zero deps, best fidelity-to-complexity). Pure-Swift encoder, locale-safe double formatting (`en_US_POSIX`), XML-escaped text. Delivered `ARRunnerCore/Strava/{TCXEncoder,TCXWorkoutData,ActivityNaming}.swift` + tests. All 215 Core tests pass.
+
+### 2026-05-20 — Laughlin: Strava OAuth + Token Store (v0.5.3)
+Phone-side OAuth/token plumbing: `StravaOAuthService` (mobile auth flow with dual-path: Strava app + web fallback), `StravaTokenStore` (keychain + WCSession mirror), Settings tab UI. 39/39 ARRunnerPhoneTests pass.
+
+### 2026-05-21 — Laughlin: Strava API Compliance (v0.5.4)
+Button copy locked to exact "Connect with Strava" string, 48pt height requirement, deauth server-side per API agreement. Token-exchange `client_id` fix (was missing from OAuth code exchange). 39/39 tests pass.
+
+### 2026-05-21 — Laughlin: Appearance Settings (Light/Dark/System)
+`AppearanceMode` enum (`.system / .light / .dark`), @AppStorage persistence (`"appearanceMode"` key), segmented picker in Settings. `.system` → `colorScheme: nil` (device setting). 39/39 tests pass.
+
+### 2026-05-22 — Laughlin: Apple Watch Action Button Support (v0.5.5)
+`ActionButtonMode` enum (off/splits/pauseResume/toggleHUD), `ActionButtonIntent` AppIntent (initial registration), `ActionButtonCoordinator` dispatcher. Process isolation via App Group `PendingActionButtonPressStore`. Haptics on split/pause/HUD toggle. 215 Core tests pass.
+
+### 2026-05-22 → 2026-05-23 — Laughlin: Action Button Surface Correction (v0.5.6)
+v0.5.4 bugs: (1) AppShortcutsProvider → wrong picker (Shortcut not Workout). (2) Process isolation — `ActionButtonIntent.perform()` runs in system process, not host. **Fix:** switched to `StartWorkoutIntent` protocol conformance — only surface that populates Settings → Action Button → Workout → App. Cross-process flag pattern preserved + re-validated. Build green.
+
+### 2026-05-23 — Laughlin: Live Route Map Polish (v0.5.17)
+Watch map is view-only (Digital Crown reserved for TabView). Phone auto-recenter after 5s pan inactivity. Post-run map persists through `.ending`/`.ended`. Splits track `CLLocationCoordinate2D?` under `#if canImport(CoreLocation)`. Phone split markers deferred to v0.6.
+
+### 2026-05-20 — Richards: Strava API Architecture Plan
+Full architecture covering app setup, OAuth options (phone+share recommended; RFC 8628 device-grant not supported by Strava), TCX format, token storage (keychain on watch/phone + Worker proxy). Five architectural decisions locked (D-Strava-1..5). ~850 LOC across 6 files.
+
+### 2026-05-21 — Richards: Cloudflare Worker Source (infrastructure/auth-worker)
+Reconstructed Worker source (previously deployed-but-untracked). `wrangler.toml` (`strava-connect.ar-runner.app` custom domain), `src/index.js` (route table, CORS, 400/404/405/500 error envelopes), three endpoints (/token, /refresh, /deauthorize). **Standing rule:** deployed Workers must land source in git (same PR). `/refresh` is load-bearing for 6h token lifecycle.
+
+### 2026-05-20 — Amber: v0.5 PR 1 — TCX Encoder
+Built TCX 2.0 encoder per D-Strava-2. Pure Foundation, zero deps, Swift 6 strict-concurrency clean. Determinism pinned via byte-equality test (Strava idempotency contract). Locale-safe formatting validated. 215 total tests pass.
+
+### 2026-05-20 — Amber: v0.5 PR 2 — Strava Uploader + Queue + History
+`StravaUploadService` (wire-level), `StravaUploadQueue` (actor-based, Documents/ persistence, 30–900s exponential backoff, 429→queue-pause), `WorkoutTCXBridge` (pure merge over local value types), `AutoUploadCoordinator` (WCMessage listener). 38 phone tests, all pass. HK source-filter in-memory. Auto-trigger on WC + 3s settle.
+
+### 2026-05-20 — Amber: rc2 QA Scenarios (post-rc1 bench feedback)
+Five bench-return items: (A) route recording auth + HKSeriesType.workoutRoute() scope, (B) Strava ingestion (pending Richards diagnosis), (C) 3-line finish-screen reflow, (D) discard-gating data-integrity, (E) phone mirror start-time + WC v3→v4 compat. Severity-first bench order. Terminal-path-data-leak-qa skill extracted.
+
+---
+
+## Current Version: v0.5.17
+
+**Shipped 2026-05-23.** Live route map, Action Button refinements, appearance settings.
+
+### v0.5 Scope (delivered 2026-05-20 — 2026-05-23)
+- Strava OAuth connect button on phone (mobile auth flow)
+- Token exchange via Cloudflare Worker (`strava-connect.ar-runner.app`)
+- TCX encoder (pure Swift, zero deps)
+- Upload queue with exponential backoff
+- Appearance mode (Light/Dark/System)
+- Apple Watch Action Button support (splits, pause/resume, HUD toggle)
+- Live route map (watch view-only, phone pan/zoom + auto-recenter)
 
 ### Backlog (not yet scheduled)
-- Finish screen + glasses disconnect fix (connection drops on run end)
 - Battery level from glasses → phone display (BLE 0x180F, 30s notify)
-- HR zone brightness on HUD
-- Gesture-driven layout switch
+- HR zone brightness on HUD (deferred to v0.4.1)
+- Gesture-driven layout switch (Weiss needs bench time)
+- Phone split markers on map (split lat/lon over WC, v0.6)
 - App Attest (issue #80)
 
 ---

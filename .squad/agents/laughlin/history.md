@@ -273,3 +273,50 @@ When in doubt, ask the user: "which Settings → Action Button sub-screen are yo
 - `ActionButtonSplit` now carries `coordinateAtPress: CLLocationCoordinate2D?` (under `#if canImport(CoreLocation)`); `splitCoordinates` is a `compactMap` so presses before the first GPS fix don't drop from the timing record but also don't plot a bogus `0,0`.
 - Watch `WorkoutView` post-run map visibility: extended via a new `showMapTab` (= `isInWorkout || isPostRun`); `.ending`/`.ended` keeps the swipe page so the wearer can review the finished route.
 - Key files for live-map work: `Shared/Views/LiveRouteMapView.swift` (renders all annotations), `ARRunnerWatch/Workout/WorkoutViewModel.swift` (route + splits state), `ARRunnerWatch/Views/WorkoutView.swift` (TabView gating + crown ownership), `ARRunnerPhone/Views/WorkoutMirrorView.swift` (phone embed + finish gate), `ARRunnerPhone/Views/WorkoutMirrorViewModel.swift` (already clears on `.started`).
+
+### 2026-05-26 — Documentation cleanup pass (v0.5.18)
+
+Did a top-to-bottom doc audit while shipping at v0.5.18.
+
+- **README**: bumped status badge to v0.5.18, expanded feature list (live
+  route map, manual splits, pause overlay, glasses battery monitoring,
+  iPhone live mirror), added a dev stack summary.
+- **`.github/copilot-instructions.md`**: was egregiously stale ("repository
+  is greenfield — no application source code exists yet"). Rewrote from
+  scratch to describe the actual four-target layout (`ARRunnerWatch`,
+  `ARRunnerPhone`, `ARRunnerWidgets`, `ARRunnerCore`), the build commands
+  that actually work, and the binding conventions (no Apple frameworks in
+  Core, SPDX headers, Swift 6 strict concurrency, AsyncStream, watch BLE
+  ownership, etc.).
+- **`docs/planning/`**: deleted in its entirety. The four files
+  (`architecture.md`, `product-brief.md`, `v01-roadmap.md`,
+  `watchos-architecture.md`) were all v0.1 scaffold-era drafts from
+  2026-05-14 with open questions long since answered. Replaced with a
+  single concise `docs/architecture.md` describing current reality.
+- **`docs/dev/macos-build-validation.md`**: deleted — it was a one-off
+  validation snapshot from 2026-05-14, not a maintained doc. Fixed the
+  one inbound reference in `ci-build.yml`.
+- **`docs/dev/setup.md`** and **`ci-workflows.md`**: light edits to
+  point at the new architecture doc and drop the deleted reference.
+
+Left alone:
+- **`docs/research/activelook/`**: still accurate as background research.
+- **`docs/dev/ci-workflows.md`** / **`testflight-setup.md`**: operational,
+  current, kept verbatim except for the broken xref.
+- **`project.yml`**: the rc-trail comments document hard-won Apple
+  validator quirks (BackgroundModes, CFBundleIconName, manual signing,
+  etc.). They look like noise but are load-bearing — left untouched.
+- **Code file SPDX/header comments**: scanned, all current.
+
+### Learnings
+
+- The README's feature list lagged 10 versions behind reality. Worth a
+  quick doc-only sweep after every couple of pre-releases, not just at
+  major milestones.
+- `.github/copilot-instructions.md` was the worst offender — it had
+  drifted into actively misleading. New agents reading it would assume
+  the repo had no code. Doc-only changes can be high-leverage.
+- `docs/planning/` was the right place for v0.1 brainstorming but became
+  a liability once decisions landed. Future planning docs should either
+  get retired into `.squad/decisions.md` or rewritten as current-state
+  architecture docs.
