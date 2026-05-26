@@ -37,10 +37,11 @@ final class WorkoutViewModel {
         case pendingFinish
         case ending
         case ended(WorkoutSummary)
-        /// User chose Cancel from the Finish menu. The on-device summary is
-        /// discarded; the HKWorkout is still finalized (the substrate
-        /// protocol does not expose a discard path in v0.2 — users can
-        /// delete the workout from the Health app).
+        /// User chose Cancel from the Finish menu. The workout is discarded
+        /// via `builder.discardWorkout()` — no HKWorkout is persisted to
+        /// Health. Note: `confirmCancel` currently transitions back to
+        /// `.idle` after the substrate discard succeeds; this case is
+        /// retained for explicit-cancel surfaces and historical parity.
         case cancelled
         case failed(String)
     }
