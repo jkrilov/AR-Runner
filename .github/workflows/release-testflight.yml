@@ -113,21 +113,185 @@ jobs:
           echo "build_number=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Resolved RAW=$RAW_VERSION  MARKETING_VERSION=$MARKETING_VERSION  CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER"
 
+      - name: Self-test semver comparator
+        run: |
+          set -euo pipefail
+          # Sanity-check the semver_gt comparator used by the next step.
+          # If any assertion below fails, the workflow halts before doing
+          # anything destructive (archive/upload). This is the safety net
+          # that catches a regression in the comparator itself — the bug
+          # that forced manual workflow_dispatch on every v0.5.x release
+          # before v0.5.20.
+          #
+          # Semver rule: a pre-release version (1.0.0-rc1) is LESS THAN
+          # its corresponding release (1.0.0). GNU `sort -V` violates this
+          # (it orders 1.0.0 < 1.0.0-rc1, treating the suffix as a longer
+          # continuation), so we cannot use sort -V here.
+          semver_gt() {
+            # Returns 0 (true) iff $1 > $2 under SemVer 2.0 ordering.
+            # Supports MAJOR.MINOR.PATCH and optional -PRERELEASE suffix
+            # where pre-release identifiers are dot-separated and compared
+            # left-to-right (numeric < numeric numerically, otherwise
+            # ASCII lex).
+            local a="$1" b="$2"
+            local a_main="${a%%-*}" b_main="${b%%-*}"
+            local a_pre="" b_pre=""
+            [[ "$a" == *-* ]] && a_pre="${a#*-}"
+            [[ "$b" == *-* ]] && b_pre="${b#*-}"
+            local IFS=.
+            # shellcheck disable=SC2206
+            local am=($a_main) bm=($b_main)
+            unset IFS
+            local i
+            for i in 0 1 2; do
+              local ai="${am[$i]:-0}" bi="${bm[$i]:-0}"
+              if (( ai > bi )); then return 0; fi
+              if (( ai < bi )); then return 1; fi
+            done
+            # MAJOR.MINOR.PATCH equal — pre-release rules:
+            #   no pre-release  > has pre-release  (1.0.0 > 1.0.0-rc1)
+            #   both absent     → equal, not greater
+            if [[ -z "$a_pre" && -z "$b_pre" ]]; then return 1; fi
+            if [[ -z "$a_pre" ]]; then return 0; fi
+            if [[ -z "$b_pre" ]]; then return 1; fi
+            # Compare pre-release identifier-by-identifier.
+            local IFS=.
+            # shellcheck disable=SC2206
+            local ap=($a_pre) bp=($b_pre)
+            unset IFS
+            local n=${#ap[@]} m=${#bp[@]}
+            local max=$(( n > m ? n : m ))
+            for (( i=0; i<max; i++ )); do
+              local ax="${ap[$i]-}" bx="${bp[$i]-}"
+              if [[ -z "$ax" ]]; then return 1; fi  # a shorter → a < b
+              if [[ -z "$bx" ]]; then return 0; fi  # b shorter → a > b
+              if [[ "$ax" =~ ^[0-9]+$ && "$bx" =~ ^[0-9]+$ ]]; then
+                if (( 10#$ax > 10#$bx )); then return 0; fi
+                if (( 10#$ax < 10#$bx )); then return 1; fi
+              else
+                if [[ "$ax" > "$bx" ]]; then return 0; fi
+                if [[ "$ax" < "$bx" ]]; then return 1; fi
+              fi
+            done
+            return 1
+          }
+          assert_gt() {
+            if semver_gt "$1" "$2"; then
+              echo "  ok: $1 > $2"
+            else
+              echo "::error::semver_gt regression: expected $1 > $2"
+              exit 1
+            fi
+          }
+          assert_lt() {
+            if semver_gt "$1" "$2"; then
+              echo "::error::semver_gt regression: expected $1 < $2 (got > )"
+              exit 1
+            else
+              echo "  ok: $1 < $2"
+            fi
+          }
+          echo "Running semver_gt self-tests:"
+          assert_gt 0.5.20    0.5.19
+          assert_gt 0.5.19    0.5.19-1
+          assert_gt 0.5.19    0.5.19-rc2
+          assert_lt 0.5.19-1  0.5.19
+          assert_lt 0.5.19-rc2 0.5.19
+          assert_gt 0.5.20-1  0.5.19
+          assert_lt 0.5.19    0.5.20-1
+          assert_gt 0.5.19-2  0.5.19-1
+          assert_lt 0.5.19-1  0.5.19-2
+          assert_lt 0.5.19    0.5.19          # equality is not >
+          assert_gt 1.0.0     0.99.99
+          echo "All semver_gt self-tests passed."
+
       - name: Guard against backward version steps
         env:
           RAW_VERSION: ${{ steps.version.outputs.raw_version }}
         run: |
           set -euo pipefail
           # Reject any release whose version is not strictly greater than the
-          # highest existing v* tag. This is the safety net that prevents the
-          # 0.5.0-rc2-after-0.5.1 class of mistake. We use `sort -V` (version
-          # sort) which orders 0.5.0-rc2 < 0.5.0 < 0.5.1 < 0.5.2 as expected
-          # for our tag scheme. Pure-release tags (vX.Y.Z) and pre-release
-          # tags (vX.Y.Z-rcN) are both considered.
+          # highest existing v* tag. Two subtleties live here:
+          #
+          # 1. On a tag-push trigger, the trigger tag itself is in the local
+          #    tag list after `git fetch --tags`. We MUST exclude it before
+          #    finding LATEST_TAG, otherwise RAW_VERSION always collides with
+          #    itself and every release is rejected. (This is what forced
+          #    every v0.5.x release through manual workflow_dispatch.)
+          #
+          # 2. We cannot use `sort -V` to find the highest tag. GNU sort -V
+          #    orders `0.5.19 < 0.5.19-1`, but SemVer 2.0 says the opposite:
+          #    a pre-release is LESS THAN its release (1.0.0-rc1 < 1.0.0).
+          #    We use the in-shell `semver_gt` comparator defined below
+          #    (mirrored in the self-test step above).
+          semver_gt() {
+            local a="$1" b="$2"
+            local a_main="${a%%-*}" b_main="${b%%-*}"
+            local a_pre="" b_pre=""
+            [[ "$a" == *-* ]] && a_pre="${a#*-}"
+            [[ "$b" == *-* ]] && b_pre="${b#*-}"
+            local IFS=.
+            # shellcheck disable=SC2206
+            local am=($a_main) bm=($b_main)
+            unset IFS
+            local i
+            for i in 0 1 2; do
+              local ai="${am[$i]:-0}" bi="${bm[$i]:-0}"
+              if (( ai > bi )); then return 0; fi
+              if (( ai < bi )); then return 1; fi
+            done
+            if [[ -z "$a_pre" && -z "$b_pre" ]]; then return 1; fi
+            if [[ -z "$a_pre" ]]; then return 0; fi
+            if [[ -z "$b_pre" ]]; then return 1; fi
+            local IFS=.
+            # shellcheck disable=SC2206
+            local ap=($a_pre) bp=($b_pre)
+            unset IFS
+            local n=${#ap[@]} m=${#bp[@]}
+            local max=$(( n > m ? n : m ))
+            for (( i=0; i<max; i++ )); do
+              local ax="${ap[$i]-}" bx="${bp[$i]-}"
+              if [[ -z "$ax" ]]; then return 1; fi
+              if [[ -z "$bx" ]]; then return 0; fi
+              if [[ "$ax" =~ ^[0-9]+$ && "$bx" =~ ^[0-9]+$ ]]; then
+                if (( 10#$ax > 10#$bx )); then return 0; fi
+                if (( 10#$ax < 10#$bx )); then return 1; fi
+              else
+                if [[ "$ax" > "$bx" ]]; then return 0; fi
+                if [[ "$ax" < "$bx" ]]; then return 1; fi
+              fi
+            done
+            return 1
+          }
           git fetch --tags --force --quiet || true
-          LATEST_TAG="$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -n 1 || true)"
+          # On tag-push, exclude the trigger tag from the candidate set so
+          # the workflow that THAT push triggered doesn't self-collide.
+          TRIGGER_TAG=""
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TRIGGER_TAG="${GITHUB_REF#refs/tags/}"
+            echo "Excluding trigger tag '$TRIGGER_TAG' from monotonicity comparison."
+          fi
+          # Build the candidate list (versions without leading 'v'), excluding
+          # the trigger tag exactly if applicable.
+          if [[ -n "$TRIGGER_TAG" ]]; then
+            CANDIDATES="$(git tag --list 'v*' | grep -v -F -x "$TRIGGER_TAG" | sed 's/^v//' || true)"
+          else
+            CANDIDATES="$(git tag --list 'v*' | sed 's/^v//' || true)"
+          fi
+          if [[ -z "$CANDIDATES" ]]; then
+            echo "No prior v* tags found — skipping monotonicity check."
+            exit 0
+          fi
+          # Find the highest candidate under SemVer ordering using semver_gt.
+          LATEST_TAG=""
+          while IFS= read -r cand; do
+            [[ -z "$cand" ]] && continue
+            if [[ -z "$LATEST_TAG" ]] || semver_gt "$cand" "$LATEST_TAG"; then
+              LATEST_TAG="$cand"
+            fi
+          done <<< "$CANDIDATES"
           if [[ -z "$LATEST_TAG" ]]; then
-            echo "No existing v* tags found — skipping monotonicity check."
+            echo "No usable prior v* tags after filtering — skipping monotonicity check."
             exit 0
           fi
           echo "Latest released version: $LATEST_TAG"
@@ -136,9 +300,8 @@ jobs:
             echo "::error::Version $RAW_VERSION matches an existing tag (v$LATEST_TAG). Bump the VERSION file before releasing."
             exit 1
           fi
-          HIGHEST="$(printf '%s\n%s\n' "$LATEST_TAG" "$RAW_VERSION" | sort -V | tail -n 1)"
-          if [[ "$HIGHEST" != "$RAW_VERSION" ]]; then
-            echo "::error::Refusing to release $RAW_VERSION: it is lower than the latest existing tag v$LATEST_TAG. Bump the VERSION file (and update project.yml MARKETING_VERSION) before retriggering."
+          if ! semver_gt "$RAW_VERSION" "$LATEST_TAG"; then
+            echo "::error::Refusing to release $RAW_VERSION: it is not strictly greater (SemVer 2.0) than the latest existing tag v$LATEST_TAG. Bump the VERSION file (and update project.yml MARKETING_VERSION) before retriggering."
             exit 1
           fi
           echo "OK — $RAW_VERSION is strictly greater than v$LATEST_TAG."
