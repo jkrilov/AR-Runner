@@ -126,3 +126,15 @@ Final touch: 10 files, 21 net lines removed, 186/186 still green. Wrote skill `s
 **Tech debt flagged:** `release-testflight.yml` tag-monotonicity guard self-collides on pre-release tags. When `v*.*.*-*` is pushed, the guard includes the trigger tag in its own comparison, always fires an error. Workaround: delete tag + re-dispatch via `workflow_dispatch`. Load-bearing issue for next pre-release cycle.
 
 **Recommendation:** v0.5.20 roadmap should include a small chore to fix the guard logic (exclude trigger tag, use semver-correct sort). Laughlin-1's ship log has the diagnostic details.
+
+---
+
+## 2026-05-27 — Cross-agent note: v0.5.20 shipped via tag-push (first to do so cleanly)
+
+**From:** Scribe
+
+**Heads-up:** v0.5.20 shipped to TestFlight. The v0.5.20 chore (release-guard fix) that Laughlin-1 had prepared is now complete and validated end-to-end. PR #117 merged (`13c8f7a`), tag `v0.5.20-1` pushed, workflow run 26511705252 PASS (monotonicity guard did NOT self-reject). Build 50 shipped.
+
+**Release infrastructure impact:** This is the first v0.5.x pre-release in project history to traverse the tag-push path cleanly. All prior releases (v0.5.5–v0.5.19) required `workflow_dispatch` workaround. The fix works. All future pre-releases will auto-trigger reliably.
+
+**What this unblocks:** Streamlined release cadence. No more manual workflow_dispatch fallback. Next pre-release will reconfirm the pattern; by then we'll have high confidence that the release path is robust.

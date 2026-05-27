@@ -8,6 +8,9 @@
 
 ## Recent Work (v0.5+)
 
+### 2026-05-27 — Team: v0.5.20 shipped via tag-push (first to do so cleanly)
+Release-guard monotonicity fix validated end-to-end. PR #117, tag `v0.5.20-1`, workflow run 26511705252 PASS. Build 50 shipped to TestFlight. First pre-release to traverse tag-push cleanly; all future releases now auto-trigger reliably.
+
 ### 2026-05-26 — v0.5.20 release-guard fix: COMMITTED, push BLOCKED on missing `workflow` scope
 - **Task:** Fix the two interacting bugs in `release-testflight.yml`'s monotonicity guard that had forced every v0.5.x release through manual `workflow_dispatch`.
 - **Bug 1 — self-collision (confirmed):** On tag-push, `git fetch --tags --force` pulled the trigger tag into the local list; `git tag --list 'v*'` then surfaced it as the candidate `LATEST_TAG`, and `RAW_VERSION == LATEST_TAG` always fired. The guard was comparing the trigger tag against itself.
