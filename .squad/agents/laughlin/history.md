@@ -85,3 +85,14 @@
 ## Next Phase
 
 Waiting for Joe's bench confirmation of v0.5.19 discard fix. v0.5.20 should include a chore to fix the elease-testflight.yml tag-monotonicity guard (framework will need coordination with any parallel pre-release work).
+
+### 2026-05-27 - v0.5.20 monotonicity-guard chore SHIPPED (end-to-end smoke test PASSED)
+- **PR #117** (https://github.com/jkrilov/AR-Runner/pull/117) squash-merged at `13c8f7a`. All 4 required checks green: ARRunnerPhone, ARRunnerWatch, ARRunnerCore Linux tests, CodeQL.
+- **Tag v0.5.20-1** pushed against `13c8f7a`. `release-testflight.yml` auto-triggered as expected (run 26511705252).
+- **Headline result: the guard step passed on tag-push.** First v0.5.x pre-release in project history to traverse the tag-push path cleanly without `workflow_dispatch` fallback. Both bugs (self-collision + `sort -V` semver mis-ordering) are confirmed fixed in production CI.
+- **Self-test step ran first and passed all 11 fixture assertions** before the real guard ran. The defense-in-depth worked exactly as designed.
+- **TestFlight upload completed**: archive + ipa export + ASC upload all green. Run: https://github.com/jkrilov/AR-Runner/actions/runs/26511705252 (total 3m40s on macos-26).
+- **No surprises.** CodeQL took its usual ~35 min; everything else completed in normal windows. Push went through immediately after Joe's `gh auth refresh -s workflow`.
+- **Lesson confirmed:** when fixing release infrastructure, the only proof that matters is the real-world tag-push trigger. The 11-assertion self-test in the workflow was useful for regression-proofing but the actual validation was watching v0.5.20-1 traverse the guard without intervention.
+- **Skill confidence bumped** to `medium` on `.squad/skills/release-monotonicity/SKILL.md` (real-world verification, single observation - not yet `high` until next pre-release reconfirms).
+

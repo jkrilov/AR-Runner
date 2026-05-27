@@ -2,8 +2,8 @@
 name: "release-monotonicity"
 description: "Semver-correct version-monotonicity guards in CI workflows, including trigger-tag self-collision avoidance and in-workflow comparator self-tests."
 domain: "release-engineering"
-confidence: "high"
-source: "earned — AR-Runner v0.5.20 fixed two bugs that had forced manual workflow_dispatch on every v0.5.x release"
+confidence: "medium"
+source: "earned — AR-Runner v0.5.20 fixed two bugs that had forced manual workflow_dispatch on every v0.5.x release; end-to-end tag-push smoke test confirmed 2026-05-27 (run 26511705252). Single real-world confirmation; promote to high after next pre-release reconfirms."
 ---
 
 ## Context
