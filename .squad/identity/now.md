@@ -1,70 +1,63 @@
 ---
-updated_at: 2026-05-20T14:50:00Z
-focus_area: v0.4.0-rc2 on TestFlight (PR #79 merge auto-released). Awaiting Joe's bench: D1 discard smoke FIRST (data-integrity gate), then GPS+Strava 2-for-1 verification, finish screen visual, phone Started row. Three new skills added (HKRouteBuilder lifecycle, terminal-path data-leak QA, third-party fitness integration triage).
+updated_at: 2026-05-31T00:00:00Z
+focus_area: v0.5.20 shipped to TestFlight (build 50). Release-monotonicity guard validated end-to-end on the tag-push path. Awaiting Joe's decision on second 0.5.x fix and on-device smoke for build 50.
 active_issues:
-  - v0.4.0-rc2 shipped: PR #79 ready for merge → auto-release to TestFlight (GPS, discard/save fix, finish-screen, battery, phone mirror)
-  - Joe's rc2 bench validation: D1 discard smoke test FIRST (data-integrity regression gate), then feature parity
-  - Items #1 & #2 collapsed: Richards diagnosed Strava gap couples to GPS. Likely 2-for-1 fix with Laughlin's route-builder work.
+  - v0.5.20 build 50 processing/processed on TestFlight (run 26511705252 green 2026-05-27). Awaiting Joe's on-device smoke confirmation.
+  - "Second 0.5.x fix" hinted by Joe before workstation switch — name + scope still TBD when Joe resumes.
+  - Issue #80 (App Attest) remains the only other open issue in the tracker.
 ---
 
 # What We're Focused On
 
-**Immediate (2026-05-20T14:50Z):** v0.4.0-rc2 shipped as PR #79. Four agents (Richards, Weiss, Amber, Laughlin) executed rc2-bench-feedback batch in parallel. PR ready for code review → auto-release to TestFlight on CI green + merge. Joe's bench validation next: **D1 discard smoke test FIRST** (highest-severity data-integrity gate), then GPS+Strava 2-for-1 verification, finish-screen visual, phone Started row parity.
+**Immediate (2026-05-31):** v0.5.20 is on TestFlight. Two ships completed in
+quick succession this past week:
 
-**rc2 Delivered (2026-05-20T10:42–11:20Z, PR #79 pending merge):**
+- **v0.5.19 (PR #116, `25ee63a`)** — Watch discard dialog text fix. Old v0.2-era
+  copy at `ARRunnerWatch/Views/WorkoutView.swift:117` was telling users their
+  run would be saved when discard already correctly dropped the HKWorkout
+  (rc2 terminal-path fix had been correct since 2026-05-20). One-line dialog
+  copy update; comment cleanup on `WorkoutViewModel.swift:41-44`.
 
-**Item #1 — GPS Route Recording (CLLocationManager + HKWorkoutRouteBuilder):**
-- Location manager started at begin(), feeds route builder, finalized at end()
-- Route samples drop on discard (no leak)
-- NSLocationWhenInUseUsageDescription added to Info.plist via project.yml properties (NOT hand-edited plist)
-- Tests: route builder lifecycle, discard semantics pinned
+- **v0.5.20 (PR #117, `13c8f7a`)** — Release-monotonicity guard fix. The
+  `release-testflight.yml` guard had two bugs: (1) self-collision when the
+  push that triggered the workflow was itself the new tag, and (2)
+  semver-incorrect ordering via `sort -V` (pre-release vs release). Fix:
+  inline `semver_gt()` bash function (SemVer 2.0 correct) + 11-assertion
+  self-test step that runs BEFORE the real guard + trigger-tag exclusion on
+  `push: tags` events. **First v0.5.x release in project history to traverse
+  `git tag && git push` cleanly** (run 26511705252 green in 3m45s).
 
-**Item #2 — Strava Ingestion (Diagnosis: coupled to item #1):**
-- Richards verified: Strava ↔ Apple Health works on Joe's device; gap is AR-Runner's missing route data
-- HKWorkoutRoute absence = outdoor workout filters for auto-import
-- Cheap fix: Laughlin's item #1 implementation likely unblocks Strava for free (same subsystem bug)
-- Escalation path documented if cheap fix doesn't work
+**Skill captured:** `.squad/skills/release-monotonicity/SKILL.md` — medium
+confidence after a single real-world smoke. Promote to high after the next
+pre-release reconfirms.
 
-**Item #3 — Finish-Screen Layout Reshape (3-line / 4-data, font 2 on line 3):**
-- Finished! / distance / time+pace (vs. rc1 banner / distance / time)
-- Y constants 239/151/63 derived under canonical rc16 formula (y_fb = 255 − wearer_top), unchanged from rc17
-- Line 3 right-justify via two separate txt writes (finishPaceX = 180 fixed anchor)
-- ALookFontMetrics extracted (heights + per-font widths); future work (rc3+) makes finishPaceX computed
+## Standing Directives (Layer 0)
 
-**Item #4 — Discard-vs-Save Data Integrity (Terminal-Path Bifurcation — HIGHEST SEVERITY):**
-- Root cause: confirmCancel was calling end() which always persisted HKWorkout regardless of user intent
-- Fix: New WorkoutHealthSubstrate.discard(at:) method (protocol + all implementations)
-- HealthKitWorkoutSubstrate.discard() = session.end() + builder.discardWorkout() (NO finishWorkout, NO route)
-- confirmCancel routes through controller.discard() NOT controller.end()
-- WorkoutDiscardTerminalPathTests pins: save → end 1× never discard; discard → discard 1× never end
-- New skill: `terminal-path-data-leak-qa` (reusable pattern for future discard/save bifurcations)
+- **All code-editing agents must run Opus 4.7 or better** (Joe, 2026-05-26).
+  `.squad/config.json` pins laughlin / weiss / amber / richards to
+  `claude-opus-4.7-1m-internal`. Every spawn of those agents MUST use that
+  model. See `.squad/decisions.md` for the full directive entry.
 
-**Item #5 — Phone Mirror "Started at HH:MM" Row:**
-- WorkoutTickMessage.startedAt: Date? (optional, carried every tick)
-- WC schema v3 → v4 (backward-compat: v3 snapshots decode, fallback to timestamp − elapsedSeconds)
-- Phone-side: "Started" row with SF Symbol checkered flag + short DateFormatter
+## Open Threads for Next Session
 
-**Test Status:** 195/195 Core pass (+9 from rc1). xcodebuild ARRunnerWatch SUCCEEDED. CI ready.
+1. **Second 0.5.x fix.** Joe said "I have a couple fixes in mind" at session
+   start but only named the discard-dialog one before switching workstations.
+   When Joe resumes, ask what the second item is.
+2. **v0.5.20 build 50 on-device smoke.** TestFlight build was green ~4 days
+   ago. Joe to confirm the watch-side discard flow + general regression
+   sanity once he installs it.
+3. **Issue #80 (App Attest).** Still the only other open tracker item.
+   No active work assigned.
 
-**Current Activity (2026-05-20T14:50Z):**
-1. **PR #79:** Code review pending (Killian or Lead). Auto-releases to TestFlight on CI green + merge.
-2. **Joe:** Bench validation on rc2 build. **D1 discard smoke test FIRST** (data-integrity gate), then feature parity verification (GPS, Strava, finish screen, phone mirror).
-3. **Team:** Monitoring for Joe's bench signal. No hotfixes; rc3+ driven by bench results.
+## Release Mechanics Reminder
 
-**Canonical Artifacts:**
-- ADR-1 (BLE-link lifecycle contract)
-- Richards's Strava-integration diagnostic + escalation path
-- Weiss's rc2 finish-screen coordinate spec + safety callouts
-- Amber's rc2 acceptance criteria (§A–G, 30+ bench scenarios)
-- Laughlin's PR #79 implementation (GPS, discard/save, finish, battery, mirror)
-- Killian's `swift-comment-hygiene-checklist` (docs standards)
+- Branch protection blocks direct push to `main`. All commits go via PR.
+- Token must carry `workflow` scope to push files under `.github/workflows/`.
+  `gh auth refresh -h github.com -s workflow` fixes it for both `git push`
+  and `gh`.
+- `project.yml` `MARKETING_VERSION` + `CURRENT_PROJECT_VERSION` bump ships
+  with the work, not in a separate PR.
+- `VERSION` file mirrors marketing version; tooling reads it.
 
-**New Skills Locked (rc2):**
-- `hkworkoutroutebuilder-lifecycle-watchos` (Laughlin) — route-builder lifecycle, location filtering, discard semantics
-- `terminal-path-data-leak-qa` (Amber) — 4 invariants, 6 bench checks, grep list, privacy gate pattern
-- `third-party-fitness-platform-integration-triage` (Richards) — Strava auto-import filter model, escalation paths, diagnostic ordering
-- `activelook-hud-rendering` updated (Weiss) — CRITICAL right-justifying + validate-X-extent
-
-**Release Mechanics (rc2):** Bundle 32 → 33, MARKETING_VERSION stays 0.4.0 (fix-rc), tag v0.4.0-rc2 on merge.
-
-**Updated:** 2026-05-20T14:50:00Z by Scribe (post-rc2-batch-complete session)
+**Updated:** 2026-05-31 by Scribe-equivalent housekeeping pass (coordinator
+direct mode) post-v0.5.20 ship, prior to Joe's workstation switch.
