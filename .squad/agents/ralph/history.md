@@ -8,4 +8,5 @@
 
 ## Learnings
 
-<!-- Append learnings below -->
+### 2026-05-27 — Team: v0.5.20 shipped via tag-push (first to do so cleanly)
+Release-guard monotonicity fix validated end-to-end. PR #117, tag `v0.5.20-1`, build 50 shipped. First pre-release to traverse tag-push cleanly. All future releases now auto-trigger reliably.

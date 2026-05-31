@@ -180,7 +180,22 @@ Five bench-return items: (A) route recording auth + HKSeriesType.workoutRoute() 
 
 ---
 
-## Recent Decisions (Latest: 2026-05-26)
+## Recent Decisions (Latest: 2026-05-27)
+
+### 2026-05-26 — Laughlin: Release Guard Fix (v0.5.20 chore)
+**Status:** SHIPPED — tag-push smoke test validated end-to-end.
+
+**Background:** v0.5.19 shipped via `workflow_dispatch` fallback due to two interacting bugs in `release-testflight.yml`:
+1. **Self-collision:** `git tag --list 'v*'` includes the trigger tag, so tag-push triggering the workflow sees its own tag in the candidate list and self-rejects as duplicate.
+2. **SemVer misordering:** GNU `sort -V` incorrectly places `0.5.19-1` after `0.5.19` (SemVer 2.0 says pre-release comes before release).
+
+**Fix design:** Inline `semver_gt` bash function (~30 lines, self-testing with 11 fixtures on every CI run), trigger-tag exclusion via `grep -vFx`, highest-tag selection by reduction. Updated misleading comment.
+
+**Validation:** PR #117 (merge `13c8f7a`), tag `v0.5.20-1` pushed, `release-testflight.yml` run 26511705252 passed monotonicity guard on first try. Version 0.5.20 build 50 shipped to TestFlight.
+
+**Outcome:** First v0.5.x pre-release to traverse tag-push cleanly. All future pre-release tag-pushes will auto-trigger without `workflow_dispatch` workaround.
+
+---
 
 ### 2026-05-26 — Amber: Terminal-Path Data-Leak Audit — v0.5.18
 **Status:** Code paths correct; UX message bug identified.
@@ -231,9 +246,9 @@ No logic changes. CI: all four required checks green.
 
 ---
 
-## Current Version: v0.5.19
+## Current Version: v0.5.20
 
-**Shipped 2026-05-26.** Discard dialog message corrected, versioning bumped 0.5.18 → 0.5.19, dispatched to TestFlight.
+**Shipped 2026-05-27.** Release guard chore (monotonicity bugs fixed), tag-push smoke test validated end-to-end. Build 50, TestFlight processing.
 
 ### v0.5 Scope (delivered 2026-05-20 — 2026-05-23)
 - Strava OAuth connect button on phone (mobile auth flow)

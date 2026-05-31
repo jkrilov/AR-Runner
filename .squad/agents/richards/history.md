@@ -6,6 +6,12 @@
 - **Role:** Lead / Architect
 - **Joined:** 2026-05-14T18:30:31.650Z
 
+## Session 2026-05-27: v0.5.20 Release Guard Tag-Push Validated
+
+**v0.5.20 shipped — release-guard fix end-to-end validated.** PR #117 (chore/release-monotonicity-guard-fix, merge `13c8f7a`) fixed two interacting bugs in `release-testflight.yml`: self-collision on tag-push + SemVer misordering in `sort -V`. Tag `v0.5.20-1` auto-triggered workflow run 26511705252, guard PASS, build 50 shipped to TestFlight. First v0.5.x pre-release to traverse tag-push cleanly (v0.5.5–v0.5.19 all required `workflow_dispatch` workaround). Release path now functional; all future pre-releases auto-trigger reliably.
+
+---
+
 ## Session 2026-05-18: Release v0.3.0-rc6 (BLE Fix)
 
 **BLE Write Serialization Root Cause (PR #55):** rc5 failed with blank HUD. Root cause: ActiveLook protocol requires two serialization layers: (1) write-response gating per `didWriteValueFor`, (2) flow-control subscription gate (`GlassesInitializer.isReady()` confirms `flowControlCharacteristic.isNotifying == true`). Our adapter violated both, firing 4 frames back-to-back into an unprepared peripheral.

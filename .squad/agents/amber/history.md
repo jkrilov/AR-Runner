@@ -7,6 +7,9 @@
 
 ## Recent Work (v0.5+)
 
+### 2026-05-27 — Team: v0.5.20 shipped via tag-push (first to do so cleanly)
+Release-guard monotonicity fix validated end-to-end. Tag `v0.5.20-1` auto-triggered TestFlight without `workflow_dispatch` fallback (first pre-release in project history to traverse tag-push path cleanly). Build 50 shipped. Unblocks all future v0.5.x/v0.6.x pre-releases.
+
 ### 2026-05-26T16:57:28-04:00 — Terminal-path-data-leak audit (v0.5.18 regression)
 
 Audited Joe's report: "When I discard a run on the watch it shouldn't save to Apple Fitness" at v0.5.18.

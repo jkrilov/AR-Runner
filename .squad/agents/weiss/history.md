@@ -14,6 +14,9 @@ Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in histo
 
 ## Active Sessions (Compacted)
 
+### 2026-05-27 — Team: v0.5.20 shipped via tag-push (first to do so cleanly)
+Release-guard monotonicity fix validated end-to-end. Tag `v0.5.20-1` auto-triggered TestFlight without `workflow_dispatch` fallback. Build 50 shipped. Unblocks all future pre-release tag-pushes.
+
 ### 2026-05-18T22:30:00Z — rc5 release: HUD power-on fix shipped
 - PR #53 carried the HUD power-on handshake fix into `v0.3.0-rc5`; CI was green, but later hardware feedback proved the hypothesis incomplete.
 - Keep this milestone as the point where HUD failures became clearly end-to-end path problems, not isolated command-content bugs.
