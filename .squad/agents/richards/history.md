@@ -137,3 +137,14 @@ Awaiting Joe's review of the architecture plan and answers to the five open ques
 **Tech debt discovered:** `release-testflight.yml` has a self-colliding tag-monotonicity guard. When a pre-release tag `v*.*.*-*` is pushed, the guard calculates `LATEST_TAG = $(git tag --list 'v*' | sort -V | tail -n 1)` which includes the trigger tag itself, so `LATEST_TAG` always equals the new tag and the guard fires `::error::Version X matches an existing tag (vX)`. Workaround: delete the tag and re-dispatch via `workflow_dispatch` with `version=X.Y.Z`. (This is what Laughlin-1 did for v0.5.19.)
 
 **Action for future:** A v0.5.20 chore should fix the guard to exclude its own trigger tag and use semver-correct sort ordering (pre-release suffix < bare release). This is low-urgency but load-bearing for any future pre-release cycle.
+
+---
+
+## Learnings
+
+### 2026-06-17 — Strava OAuth 401 diagnosis
+
+- The user-facing “Couldn't complete Strava sign-in (HTTP 401)” string comes only from `SettingsViewModel.userMessage(for:)` mapping `StravaOAuthError.tokenExchangeFailed`, so this error identifies the initial OAuth code-to-token exchange, not TCX upload.
+- The iOS app posts the auth `code` plus `StravaConfig.clientID` to `https://strava-connect.ar-runner.app/token` in `ARRunnerPhone/Strava/StravaOAuthService.swift`; the Cloudflare Worker then forwards to `https://www.strava.com/oauth/token` with `client_id`, Worker-held `STRAVA_CLIENT_SECRET`, `code`, and `grant_type=authorization_code`.
+- `ARRunnerPhone/Strava/StravaConfig.swift` ships only the public client ID. It resolves from runtime env, then Info.plist key `StravaClientID`, then placeholder. Info.plist gets `StravaClientID: $(STRAVA_CLIENT_ID)` from `project.yml`; `Config/Strava.xcconfig` is gitignored and included indirectly by generated `Config/Signing.xcconfig`.
+- Most likely bench failure class: the app’s `STRAVA_CLIENT_ID` and the Worker’s `STRAVA_CLIENT_SECRET` are not the same Strava API application, or the Worker secret is absent/stale. Redirect domain still matters, but a successful return with a code makes it less likely than token credential mismatch.
