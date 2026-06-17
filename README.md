@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" />
-  <img src="https://img.shields.io/badge/status-v0.5.18%20(TestFlight%20beta)-brightgreen.svg" alt="Status" />
+  <img src="https://img.shields.io/badge/status-v0.5.21%20(TestFlight%20beta)-brightgreen.svg" alt="Status" />
 </p>
 
 A running app for **Apple Watch** that drives a live heads-up display on

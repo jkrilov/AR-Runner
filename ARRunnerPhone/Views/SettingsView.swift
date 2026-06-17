@@ -155,7 +155,7 @@ struct SettingsView: View {
         )) {
             VStack(alignment: .leading) {
                 Text("Auto-upload completed runs")
-                Text("Off by default. Runs upload to Strava when you save them.")
+                Text("Runs upload to Strava when you save them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
