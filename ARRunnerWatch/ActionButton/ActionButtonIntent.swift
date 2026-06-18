@@ -137,7 +137,7 @@ struct ARRunnerStartWorkoutIntent: StartWorkoutIntent {
 
     var displayRepresentation: DisplayRepresentation {
         ARRunnerWorkoutStyleEnum.caseDisplayRepresentations[workoutStyle]
-            ?? DisplayRepresentation(title: workoutStyle.workoutType.displayName)
+            ?? DisplayRepresentation(title: LocalizedStringResource(stringLiteral: workoutStyle.workoutType.displayName))
     }
 
     func perform() async throws -> some IntentResult {

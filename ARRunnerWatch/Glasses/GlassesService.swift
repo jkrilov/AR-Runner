@@ -123,6 +123,10 @@ actor GlassesService {
             let total = Int(metric.value.rounded())
             guard total > 0 else { return "--:--" }
             return String(format: "%d:%02d", total / 60, total % 60)
+        case .speed:
+            // speed is m/s — render as km/h, 1dp (unit-aware HUD formatting
+            // is a follow-up in the per-type glasses layout work).
+            return String(format: "%.1f", metric.value * 3.6)
         case .distance:
             // metres → km, 2dp.
             return String(format: "%.2f", metric.value / 1000.0)
