@@ -481,6 +481,73 @@ Why raw `txt` works: `RunningHUDFrame.frames(for:)` already renders any string a
 
 ---
 
+## Recent Decisions (0.6.0 Build-Out: 2026-06-17 — 2026-06-18)
+
+### 2026-06-17 — Copilot: Data Model for 0.6.x Workout Types — DECIDED
+**By:** jkrilov (via Copilot coordinator)  
+**What:** Model workout type with an ORTHOGONAL activity × environment design (activity {running, walking, cycling} × environment {indoor, outdoor}), implemented with a CUSTOM Codable that preserves the existing raw strings "running"/"walking"/"cycling" for the outdoor variants so shipped v0.5.20 wire/side-store data stays decodable. New combos (indoorRun, indoorWalk, outdoorBike/cycling, indoorBike) encode as new stable raw values. Reconciles Richards' composite `WorkoutType` with Amber's "Option B" orthogonal model and Laughlin's wire-compat requirement.  
+**Why:** Clean, HealthKit-mirroring model AND backward-compatible persistence; avoids a breaking schema migration while still bumping WCMessage to v6 with an `.unknown` fallback.
+
+---
+
+### 2026-06-17 — Copilot: Add Metric/Imperial Units Toggle to 0.6.0 — REQUESTED
+**By:** jkrilov (via Copilot coordinator)  
+**What:** Add a user-facing Metric/Imperial units toggle in the PHONE Settings, scoped into 0.6.0 (it couples tightly with the new cycling speed + per-type formatters).
+- New `Shared/Settings/` unit preference (e.g. `UnitSystem {metric, imperial}`), stored in App Group `group.com.arrunner.shared` (same pattern as ActionButtonMode / the new default-workout-type preference). Default derived from `Locale.current.measurementSystem`.
+- Phone Settings UI: a Units row (Metric / Imperial) in ARRunnerPhone SettingsView.
+- Syncs watch↔phone via WCMessage v6 (the watch needs it for the HUD + watch UI).
+- `RunMetricFormatting` (currently miles-only) must be parameterized by unit system for pace (min/km vs min/mi), speed (km/h vs mph), distance (km vs mi), elevation (m vs ft). Folds into Amber's new speed/cadence formatter work. The glasses HUD consumes the already-formatted strings, so it inherits the preference for free.  
+**Why:** Resolves the units open question raised by Amber/Killian/Laughlin; user wants explicit control rather than locale-only.
+
+---
+
+### 2026-06-17 — Weiss: Correct the Two Dormant ActiveLook Layout Commands — FIXED (PR #120)
+**Agent:** Weiss (AR Integration)  
+**Branch / PR:** `fix/activelook-dormant-layout-cmds` → PR #120 (base `main`)  
+**Scope:** `ARRunnerCore/Sources/ARRunnerCore/Glasses/ActiveLookCommand.swift`, `ARRunnerWatch/Glasses/ActiveLookGlassesAdapter.swift`, + Core encoder tests.
+
+**Context:** During 0.6.x custom-layout feasibility planning two latent bugs in the curated-layout BLE command path were documented (dormant since v0.3 — production renders the live HUD via raw `txt` 0x37). They are independent of the 0.6.0 model work, so fixed now to de-risk the curated path before it ships.
+
+**Decisions:**
+1. **Phantom `widgetUpdate` (0x3A) — removed, not patched in place.** The command ID does not exist in `ActiveLook_API.md`; sending it returns a `0xE2` protocol-decode error (code 4). Removed the `0x3A` enum case and the `updateWidget(...)` encoder. Per-tick layout text updates now use the documented **`layoutClearAndDisplay` (0x69)** `[id, text, 0x00]` — atomic clear+draw (spec §4.9), which prevents ghosting when a new value is shorter than the previous one.
+2. **`displayLayout` (0x62) — append the NUL-terminated text.** Encoder now emits `[id, text, 0x00]` per spec §4.9 / §5.11 (was `[id]` only). `text` defaults to `""`, so the two activation call sites (`selectLayout`, reconnect re-apply) stay source-compatible and now send the spec-correct `[id, 0x00]` activation frame.
+
+**Validation:** `ARRunnerCore` `swift test` on `swift:6.0-jammy`: **218 tests, 1 skipped, 0 failures.** Added byte-exact encoder tests for `layoutClearAndDisplay(id:text:)` and `displayLayout(id:text:)` (empty and non-empty text) plus a regression guard that no command ID maps to `0x3A`.
+
+---
+
+### 2026-06-17 — Richards: v0.6.0 Core Foundation — Implementation (PR #121)
+**Author:** Richards (Lead/Architect)  
+**Branch:** `feat/0.6.0-core-foundation`  
+**Status:** Implemented, tests green (259 executed, 1 skipped, 0 failures — `cd ARRunnerCore && swift test`, Swift 6.0.3 Linux).
+
+**Decisions:**
+1. **`WorkoutType` is a struct, not a flat enum.** `activity: ActivityKind` ({running, walking, cycling}) × `environment: WorkoutEnvironment` ({outdoor, indoor}). `CaseIterable.allCases` = the 6 supported combos (indoor walk included — approved). Mirrors HealthKit's own `activityType + locationType` factoring; scales without enum explosion.
+2. **Single legacy-preserving `sport` field on the wire — NOT dual-key.** Custom `Codable` encodes the three outdoor variants as unchanged raw strings `"running"`/`"walking"`/`"cycling"`, and the indoor combos as new stable strings `"indoor_running"`/`"indoor_walking"`/`"indoor_cycling"`. A v0.5.20 peer's `sport:"running"` still decodes; an unknown raw value decodes to `WorkoutType.fallback` (`.outdoorRun`) instead of throwing. **Trade-off:** a v0.5.20 phone mirror cannot decode a *new* indoor type. Accepted because the phone mirror is optional and the watch is the BLE owner — the workout is never blocked.
+3. **`SportType` removed (no deprecation shim).** All Core call sites moved to `WorkoutType`. Downstream shells (watch `begin(sport:)` + pickers, phone mirror) must migrate — owned by Laughlin.
+4. **`WCMessage` schema 6 with lenient decode.** Added `.defaultWorkoutType(WorkoutType)` and `.unitPreference(UnitSystem)` for settings sync; unrecognized `kind` now decodes to a decode-only `.unknown` case instead of throwing. Hard schema-version incompatibility (version above current) still throws. Layout catalog/defaults payloads deferred to v6.1.
+5. **`UnitSystem` + unit-aware formatters live in Core.** Pure Swift, no `Locale`/`Measurement` coupling. Phone UI + App-Group persistence are Laughlin's later scope.
+6. **Metric correctness:** `MetricKind.speed` added; `WorkoutSummary` gains additive `averageSpeedMetersPerSecond: Double?`; `WorkoutController` branches in `makeSummary` (run/walk → pace, cycling → average speed, the other left nil). `HUDLayout.default(for:)` gives per-type defaults (cycling uses `.speed` not `.pace`; indoor never shows `.elevation`).
+
+---
+
+### 2026-06-18 — Laughlin: v0.6.0 App-Shell Migration to WorkoutType — (PR #121)
+**Agent:** Laughlin (watchOS Dev)  
+**Branch / PR:** `feat/0.6.0-core-foundation` / PR #121  
+**Scope:** ARRunnerWatch, ARRunnerPhone, ARRunnerWidgets, Shared (Core untouched)
+
+**Decisions:**
+1. **New preference types live in `Shared/Settings/`, wrapping Core types.** `WorkoutTypePreference` (default `WorkoutType`) and `UnitPreference` (`UnitSystem`) follow the existing `ActionButtonMode.swift` `sharedDefaults` pattern over App Group `group.com.arrunner.shared`. They wrap the Core enums rather than redefining them. `WorkoutTypePreference` default = outdoor run; `UnitPreference` default = `Locale.current.measurementSystem`-derived.
+2. **Widget targets get `WorkoutTypePreference.swift` added explicitly in `project.yml`.** The widget extensions only source the `ARRunnerWidgets` path, not all of `Shared/`. Added `Shared/Settings/WorkoutTypePreference.swift` to both `ARRunnerWidgetsPhone` and `ARRunnerWidgetsWatch` sources. `UnitPreference` is intentionally NOT added (widgets don't render units). The same file compiled into multiple target modules is safe — separate modules, interoperating only through the shared UserDefaults key.
+3. **`activityType(for:)` returns a tuple** `(HKWorkoutActivityType, HKWorkoutSessionLocationType)` — one source of truth for the HK config's activity AND location type. Indoor gates both `HKWorkoutRouteBuilder` creation and `locationManager.startUpdatingLocation()` on `!sport.isIndoor`.
+4. **Running cadence is NOT implemented (HealthKit limitation).** No public `runningCadence` quantity type exists. Implemented cycling speed (`.cyclingSpeed` → `MetricKind.speed`) and cycling cadence (`.cyclingCadence` → `.cadence`). Running cadence would require derived step-rate math — deferred to a follow-up. **Flagging for the team.**
+5. **Settings sync is bidirectional, last-writer-wins.** New `WCMessage.unitPreference` / `.defaultWorkoutType` are sent from both watch and phone; the receiver persists to the App Group store. Watch send methods are `async` (queued); phone send methods are sync.
+6. **Action Button enum keeps legacy raw value.** `ARRunnerWorkoutStyleEnum` expanded to all 6 `WorkoutType` cases, but the original case retains raw value `"run"` so existing Action Button assignments survive. `perform()` writes `WorkoutTypePreference.current` before signaling start.
+
+**Caveats / unverified:** App-target compilation (watchOS + iOS) is **CI-only** — no Xcode on the Windows bench. AppEnum `caseDisplayRepresentations`, SwiftUI `Picker` `.tag(WorkoutType)` matching, and the `NavigationLink` type-picker push are all compile-pending CI on PR #121. Core was not modified, so no local `swift test` was required.
+
+---
+
 ## Governance
 
 - Decisions inbox: drop files in `.squad/decisions/inbox/{agent}-{slug}.md`; Scribe merges.

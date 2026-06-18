@@ -8,6 +8,17 @@
 
 ## Learnings
 
+### 2026-06-18 — v0.6.0 ActiveLook Command Fixes (PR #120)
+
+**Context:** During 0.6.x custom-layout planning, discovered two latent bugs in the curated-layout BLE command path (dormant since v0.3). Fixed preemptively to de-risk the path before 0.6.1 re-enablement.
+
+**Fixes:**
+1. **Phantom `widgetUpdate` (0x3A) removed** — command ID does not exist in ActiveLook spec. Sending it → `0xE2` protocol error. Removed enum case and encoder. Replaced with spec-correct **`layoutClearAndDisplay` (0x69)** for per-tick text updates (atomic clear+draw, prevents ghosting).
+2. **`displayLayout` (0x62) NUL-termination** — appended `[id, text, 0x00]` per spec §4.9 / §5.11 (was `[id]` only).
+
+**Validation:** ARRunnerCore `swift test` on Linux: 218 tests, 1 skipped, 0 failures. Added byte-exact encoder tests for both commands (empty/non-empty text variants) + regression guard (no command maps to `0x3A`).
+
+**Result:** Curated path de-risked; raw-`txt` HUD path (production v0.5.x+) untouched.
 
 ## Summary
 Pre-RC5 development and audits (2026-05-14 through 2026-05-17) archived in history-archive.md.
