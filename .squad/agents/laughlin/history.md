@@ -131,3 +131,23 @@ Waiting for Joe's bench confirmation of v0.5.19 discard fix. v0.5.20 should incl
 See `.squad/log/` for full session narratives.
 
 
+
+## Learnings
+
+### 2026-06-18 — Strava upload reliability (v0.6.1, fix/strava-upload-reliability)
+
+**The bug:** longer runs stuck in `.uploading`. `StravaUploadQueue.uploadOne` persisted `.uploading` to disk BEFORE awaiting a *foreground* `URLSession.shared.upload`. iOS suspends/kills the backgrounded app mid-upload (likely for a large TCX over cellular, not for sub-second tiny test runs). On relaunch `pickNext()` only selected `.pending`, so the orphaned `.uploading` was never reclaimed → stuck forever.
+
+**Three-part fix:**
+1. **Reclaim** — `StravaUploadQueue.reclaimOrphans` (pure, tested) rewrites any persisted `.uploading` → `.pending` at init (no retry consumed) and persists it. At process start nothing is in flight, so `.uploading` is by definition interrupted. Idempotency (`external_id`=workout UUID → 409) is the double-send safety net.
+2. **Background URLSession** — `BackgroundStravaUploadTransport` (NSObject, `@unchecked Sendable`, conforms to `StravaUploadTransport`). `URLSessionConfiguration.background(withIdentifier: "com.arrunner.phone.strava-upload")`, `isDiscretionary=false`, `sessionSendsLaunchEvents=true`. Background sessions need a file body → write multipart to temp file, `uploadTask(with:fromFile:)`. Delegate bridges callbacks to async via `CheckedContinuation` keyed by `taskIdentifier`; GET polls use a separate ephemeral session (bg sessions can't run data tasks). `PhoneAppDelegate` (`@UIApplicationDelegateAdaptor`) captures `handleEventsForBackgroundURLSession` completion handler and re-attaches.
+3. **Confirm processing** — new `.processing` state. After a 2xx POST with `activity_id==null`, enter `.processing` and poll `checkUploadStatus` (was DEAD CODE) with its own bounded backoff `[2,5,10,20,30]s` / `maxConfirmPolls=12`. `activity_id` → `.completed`; `error` → `.failed`; budget exceeded → back to `.pending` (re-POST → 409 dup → completed).
+
+**State-machine invariant:** `pickNext()` selects BOTH `.pending` and `.processing`; `.uploading` is reclaimed at init. No persisted state is unreachable.
+
+**Gotchas:**
+- Adding a non-optional field to the persisted `StravaUploadQueueEntry` would break decode of pre-v0.6.1 queue files (and `loadEntries` `try?`→`[]` would silently DROP the stuck entry). Made `confirmPollCount: Int? = nil` — optional Codable uses `decodeIfPresent`, and the default keeps the synthesized memberwise init source-compatible.
+- Threaded `externalID` through `StravaUploadTransport.upload(for:from:externalID:)` so the bg transport can tag `task.taskDescription` — touched both the `URLSession` extension and the test `StubTransport`.
+- UIKit's completion handler is non-`Sendable`; wrapped it in an `@unchecked Sendable` `CompletionBox` to cross the `DispatchQueue.main.async` hop under Swift 6.
+- `.processing` maps to `.uploading` in `HistoryViewModel.UploadDisplay` so the History UI needed no new case.
+- Can't build the iOS target on the Windows bench (no Xcode/swift) — phone compile + tests are CI-gated. Was meticulous about every call site.

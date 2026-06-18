@@ -6,9 +6,28 @@ import os
 
 /// Status of one queued upload. Persisted to disk so the queue survives app
 /// restarts (per task spec — phone may be backgrounded mid-retry-backoff).
+///
+/// State machine (v0.6.1 — robust uploads). Every non-terminal state is
+/// reachable by `pickNext()` or reclaimed at init, so nothing can get stuck:
+/// ```
+///   pending ──upload POST──▶ uploading ──2xx, activity pending──▶ processing
+///      ▲  ▲                     │  │                                  │
+///      │  └──reclaim at init────┘  ├──2xx + activity_id / 409─────────┼──▶ completed
+///      │                           └──transient error / 429───────────┘
+///      └──poll budget exceeded (re-POST → 409 dup → completed)◀── processing
+///                                  poll error / activity_id pending ──┘
+/// ```
+/// - `.uploading` is transient (POST in flight). At process start nothing is
+///   actually in flight, so any persisted `.uploading` is an interrupted
+///   attempt and is reclaimed to `.pending` on init (Part 1 of the fix).
+/// - `.processing` means Strava accepted the upload but hasn't finished the
+///   server-side TCX→activity conversion yet; the queue polls
+///   `GET /uploads/{id}` until `activity_id` appears or `error` is set
+///   (Part 3). It is fully reclaimable by `pickNext()`.
 enum StravaUploadEntryStatus: String, Codable, Sendable {
     case pending
     case uploading
+    case processing
     case completed
     case failed
 }
@@ -29,6 +48,11 @@ struct StravaUploadQueueEntry: Codable, Sendable, Equatable {
     var stravaUploadID: Int?
     var stravaActivityID: Int?
     let enqueuedAt: Date
+    /// Number of `GET /uploads/{id}` polls spent confirming server-side
+    /// processing (Part 3). Separate from `retryCount` so confirmation polling
+    /// has its own bounded budget and never burns an upload retry. Optional so
+    /// queue files persisted before v0.6.1 decode without a hard reset.
+    var confirmPollCount: Int? = nil
 }
 
 /// Persistent JSON-backed shape on disk. Versioned so a future migration can
@@ -69,6 +93,13 @@ actor StravaUploadQueue {
     static let maxRetries = 5
     /// Per-attempt backoff schedule (seconds). Index = retryCount.
     static let backoffSchedule: [TimeInterval] = [30, 60, 120, 300, 900]
+    /// Confirmation-poll backoff schedule (seconds). Index = confirmPollCount.
+    /// Short and bounded — Strava usually finishes TCX processing in seconds.
+    static let pollBackoffSchedule: [TimeInterval] = [2, 5, 10, 20, 30]
+    /// Max confirmation polls before giving up on the *current* upload handle
+    /// and re-POSTing (which 409-dedups to `.completed`). Keeps `.processing`
+    /// from looping forever while never leaving the entry unreachable.
+    static let maxConfirmPolls = 12
 
     private var entries: [StravaUploadQueueEntry] = []
     private var pauseUntil: Date?
@@ -82,7 +113,32 @@ actor StravaUploadQueue {
         self.storage = storage
         self.service = service
         self.clock = clock
-        self.entries = (try? storage.loadEntries()) ?? []
+        let loaded = (try? storage.loadEntries()) ?? []
+        // Part 1 — reclaim orphaned uploads. At process start nothing is
+        // actually in flight, so a persisted `.uploading` entry is by
+        // definition an interrupted attempt. Reset it to `.pending` WITHOUT
+        // consuming a retry (the interruption isn't the entry's fault) so
+        // `process()` picks it up again. Idempotency (external_id = workout
+        // UUID → Strava 409 → success) covers any rare double-send if a
+        // background task did happen to land.
+        let reclaimed = Self.reclaimOrphans(loaded)
+        self.entries = reclaimed
+        if reclaimed != loaded {
+            try? storage.saveEntries(reclaimed)
+        }
+    }
+
+    /// Pure, testable reclaim pass: any `.uploading` entry → `.pending`.
+    /// `.processing` entries are left untouched because `pickNext()` already
+    /// reclaims them (they carry a pollable upload handle).
+    static func reclaimOrphans(_ entries: [StravaUploadQueueEntry]) -> [StravaUploadQueueEntry] {
+        entries.map { entry in
+            guard entry.status == .uploading else { return entry }
+            var fixed = entry
+            fixed.status = .pending
+            fixed.errorMessage = "Reclaimed after interrupted upload"
+            return fixed
+        }
     }
 
     // MARK: - Public surface
@@ -124,6 +180,7 @@ actor StravaUploadQueue {
         guard let idx = entries.firstIndex(where: { $0.workoutID == workoutID }) else { return }
         entries[idx].status = .pending
         entries[idx].retryCount = 0
+        entries[idx].confirmPollCount = 0
         entries[idx].errorMessage = nil
         entries[idx].lastAttemptDate = nil
         try storage.saveEntries(entries)
@@ -145,14 +202,14 @@ actor StravaUploadQueue {
         defer { processing = false }
 
         while let next = pickNext() {
-            await uploadOne(workoutID: next)
+            await advance(workoutID: next)
         }
     }
 
     /// Process just one entry (test seam — production code calls `process()`).
     func processOne() async {
         if let next = pickNext() {
-            await uploadOne(workoutID: next)
+            await advance(workoutID: next)
         }
     }
 
@@ -168,19 +225,47 @@ actor StravaUploadQueue {
         if let pauseUntil, pauseUntil > clock() { return nil }
         let now = clock()
         let candidate = entries
-            .filter { $0.status == .pending }
+            // Both `.pending` (needs a POST) and `.processing` (needs a
+            // confirmation poll) are actionable. `.uploading` is never selected
+            // — it is transient and reclaimed at init.
+            .filter { $0.status == .pending || $0.status == .processing }
             .filter { entry in
                 guard let last = entry.lastAttemptDate else { return true }
-                let delay = Self.delay(forRetry: entry.retryCount)
-                return last.addingTimeInterval(delay) <= now
+                return last.addingTimeInterval(Self.delay(for: entry)) <= now
             }
             .min(by: { $0.enqueuedAt < $1.enqueuedAt })
         return candidate?.workoutID
     }
 
+    /// Due-delay for an entry, branching on which phase it's in.
+    static func delay(for entry: StravaUploadQueueEntry) -> TimeInterval {
+        switch entry.status {
+        case .processing:
+            return pollDelay(forPoll: entry.confirmPollCount ?? 0)
+        default:
+            return delay(forRetry: entry.retryCount)
+        }
+    }
+
     static func delay(forRetry retryCount: Int) -> TimeInterval {
         let idx = max(0, min(retryCount, backoffSchedule.count - 1))
         return backoffSchedule[idx]
+    }
+
+    static func pollDelay(forPoll pollCount: Int) -> TimeInterval {
+        let idx = max(0, min(pollCount, pollBackoffSchedule.count - 1))
+        return pollBackoffSchedule[idx]
+    }
+
+    /// Route an entry to the right phase: upload (POST) or confirm (poll).
+    private func advance(workoutID: UUID) async {
+        guard let idx = entries.firstIndex(where: { $0.workoutID == workoutID }) else { return }
+        switch entries[idx].status {
+        case .processing:
+            await confirmOne(workoutID: workoutID)
+        default:
+            await uploadOne(workoutID: workoutID)
+        }
     }
 
     private func uploadOne(workoutID: UUID) async {
@@ -202,12 +287,31 @@ actor StravaUploadQueue {
 
         do {
             let result = try await service.upload(workoutID: workoutID, startDate: startDate, tcx: tcx)
-            entries[idx].status = .completed
-            entries[idx].stravaUploadID = result.uploadId
-            entries[idx].stravaActivityID = result.activityId
+            guard let idx = entries.firstIndex(where: { $0.workoutID == workoutID }) else { return }
             entries[idx].errorMessage = nil
+            entries[idx].stravaUploadID = result.uploadId
+            if result.isDuplicate {
+                // 409 — the activity already exists for this external_id. There
+                // may be no pollable upload id; treat as completed (Part 3).
+                entries[idx].status = .completed
+                entries[idx].stravaActivityID = result.activityId
+                logger.log("Upload duplicate (409) → completed for \(workoutID.uuidString, privacy: .public)")
+            } else if let activityID = result.activityId {
+                // Strava already finished processing — straight to completed.
+                entries[idx].status = .completed
+                entries[idx].stravaActivityID = activityID
+            } else if result.uploadId > 0 {
+                // Accepted but processing server-side: enter the poll phase.
+                entries[idx].status = .processing
+                entries[idx].confirmPollCount = 0
+                entries[idx].lastAttemptDate = clock()
+                logger.log("Upload accepted, awaiting processing for \(workoutID.uuidString, privacy: .public) (id=\(result.uploadId, privacy: .public))")
+            } else {
+                // No activity id and no pollable handle — nothing more we can
+                // do; accept it rather than leaving it stuck.
+                entries[idx].status = .completed
+            }
             try? storage.saveEntries(entries)
-            logger.log("Upload completed for \(workoutID.uuidString, privacy: .public) (duplicate=\(result.isDuplicate, privacy: .public))")
         } catch StravaUploadError.rateLimited(let retryAfter) {
             pauseUntil = clock().addingTimeInterval(retryAfter)
             // Mark back to pending without consuming a retry attempt — the
@@ -226,6 +330,72 @@ actor StravaUploadQueue {
                 entries[idx].status = .pending
             }
             try? storage.saveEntries(entries)
+        }
+    }
+
+    /// Confirmation phase (Part 3): poll `GET /uploads/{id}` until Strava has
+    /// finished server-side processing. Every outcome keeps the entry
+    /// reachable by `pickNext()` until it reaches a terminal state.
+    private func confirmOne(workoutID: UUID) async {
+        guard let idx = entries.firstIndex(where: { $0.workoutID == workoutID }) else { return }
+        entries[idx].lastAttemptDate = clock()
+
+        guard let uploadID = entries[idx].stravaUploadID, uploadID > 0 else {
+            // Nothing pollable (e.g. a duplicate with no id) — accept it.
+            entries[idx].status = .completed
+            try? storage.saveEntries(entries)
+            return
+        }
+
+        do {
+            let status = try await service.checkUploadStatus(uploadId: uploadID)
+            guard let idx = entries.firstIndex(where: { $0.workoutID == workoutID }) else { return }
+            if status.isFailed {
+                entries[idx].status = .failed
+                entries[idx].errorMessage = status.error
+                logger.error("Strava processing failed for \(workoutID.uuidString, privacy: .public): \(status.error ?? "", privacy: .public)")
+            } else if let activityID = status.activityId {
+                entries[idx].status = .completed
+                entries[idx].stravaActivityID = activityID
+                entries[idx].errorMessage = nil
+                logger.log("Strava processing confirmed for \(workoutID.uuidString, privacy: .public) → activity \(activityID, privacy: .public)")
+            } else {
+                bumpPollOrReupload(idx: idx, message: "Awaiting Strava processing")
+            }
+            try? storage.saveEntries(entries)
+        } catch StravaUploadError.rateLimited(let retryAfter) {
+            // Pause the queue but keep the entry in `.processing` so it resumes.
+            pauseUntil = clock().addingTimeInterval(retryAfter)
+            entries[idx].errorMessage = "Rate-limited; paused for \(Int(retryAfter))s"
+            try? storage.saveEntries(entries)
+        } catch {
+            // Transient poll failure — count it against the poll budget, but
+            // never lose the entry.
+            guard let idx = entries.firstIndex(where: { $0.workoutID == workoutID }) else { return }
+            bumpPollOrReupload(idx: idx, message: "Poll failed: \(String(describing: error))")
+            try? storage.saveEntries(entries)
+        }
+    }
+
+    /// Increment the confirmation-poll counter; once the budget is exceeded,
+    /// drop back to `.pending` so the entry re-POSTs (which 409-dedups to
+    /// completed). This consumes one upload retry so a permanently-stuck
+    /// processing entry still terminates at `.failed` after `maxRetries`.
+    private func bumpPollOrReupload(idx: Int, message: String) {
+        let next = (entries[idx].confirmPollCount ?? 0) + 1
+        entries[idx].errorMessage = message
+        if next >= Self.maxConfirmPolls {
+            entries[idx].confirmPollCount = 0
+            entries[idx].retryCount += 1
+            entries[idx].lastAttemptDate = clock()
+            if entries[idx].retryCount >= Self.maxRetries {
+                entries[idx].status = .failed
+            } else {
+                entries[idx].status = .pending
+            }
+        } else {
+            entries[idx].confirmPollCount = next
+            entries[idx].status = .processing
         }
     }
 }
