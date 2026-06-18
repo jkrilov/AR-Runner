@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" />
-  <img src="https://img.shields.io/badge/status-v0.5.21%20(TestFlight%20beta)-brightgreen.svg" alt="Status" />
+  <img src="https://img.shields.io/badge/status-v0.6.0%20(TestFlight%20beta)-brightgreen.svg" alt="Status" />
 </p>
 
 A running app for **Apple Watch** that drives a live heads-up display on
@@ -20,6 +20,12 @@ The watch is the primary device. The phone is optional.
 
 - **Live AR HUD on your glasses** — elapsed time, heart rate, distance, and
   average pace, updated in real time as you run.
+- **Multiple workout types** — outdoor and indoor run, walk, and bike,
+  selectable on the watch or phone with a configurable default. Cycling shows
+  speed; runs and walks show pace, and each type gets a sensible default HUD
+  layout.
+- **Metric or imperial units** — pick your preferred units in the phone app;
+  the watch UI and the glasses HUD both follow your choice.
 - **Icons for quick scanning** — every metric is paired with an icon so you
   can read your stats at a glance, mid-stride.
 - **Live route map** — your GPS trace draws in real time on the watch and on
