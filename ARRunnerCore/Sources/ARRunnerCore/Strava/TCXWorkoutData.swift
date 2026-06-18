@@ -51,6 +51,24 @@ public struct TCXWorkoutData: Sendable, Equatable {
         self.trackpoints = trackpoints
         self.laps = laps
     }
+
+    /// Map an `ActivityKind` to the TCX `<Activity Sport=…>` value Strava
+    /// accepts. Strava only recognizes "Running", "Biking", and "Other", so
+    /// walking maps to "Other" (Strava re-classifies it as a Walk from the
+    /// activity name / GPS profile). Environment (indoor/outdoor) does not
+    /// change the TCX sport string.
+    public static func tcxSport(for activity: ActivityKind) -> String {
+        switch activity {
+        case .running: return "Running"
+        case .cycling: return "Biking"
+        case .walking: return "Other"
+        }
+    }
+
+    /// Convenience: the TCX sport string for a full `WorkoutType`.
+    public static func tcxSport(for type: WorkoutType) -> String {
+        tcxSport(for: type.activity)
+    }
 }
 
 /// A single TCX `<Trackpoint>`. All position/HR/altitude fields are optional

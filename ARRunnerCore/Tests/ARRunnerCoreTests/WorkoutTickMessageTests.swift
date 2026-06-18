@@ -9,7 +9,7 @@ final class WorkoutTickMessageTests: XCTestCase {
     func testCodableRoundTripInsideWCMessage() throws {
         let snapshot = WorkoutTickMessage(
             sessionID: UUID(uuidString: "00000000-0000-0000-0000-0000000000ab")!,
-            sport: .running,
+            sport: .outdoorRun,
             phase: .running,
             timestamp: Date(timeIntervalSince1970: 1_700_000_000),
             startedAt: Date(timeIntervalSince1970: 1_700_000_000 - 312),
@@ -37,11 +37,13 @@ final class WorkoutTickMessageTests: XCTestCase {
     /// rc2 — WC schema bumped 3 → 4 to flag the additive
     /// `WorkoutTickMessage.startedAt` field for the phone-side "Started"
     /// row. v0.5.16 — bumped 4 → 5 to flag the additive
-    /// `WorkoutTickMessage.latitude` / `.longitude` fields for the
-    /// phone-side live route map. Pin the literal version so a regression
-    /// knocking it back trips CI.
-    func testCurrentSchemaVersionIsFive_v0_5_16() {
-        XCTAssertEqual(WCMessage.currentSchemaVersion, 5)
+    /// `WorkoutTickMessage.latitude` / `.longitude` fields. v0.6.0 — bumped
+    /// 5 → 6 for the multi-workout-type foundation (WorkoutType sport field,
+    /// defaultWorkoutType / unitPreference cases, lenient unknown-kind
+    /// decode). Pin the literal version so a regression knocking it back
+    /// trips CI.
+    func testCurrentSchemaVersionIsSix_v0_6_0() {
+        XCTAssertEqual(WCMessage.currentSchemaVersion, 6)
     }
 
     /// v0.5.16 — a v4 snapshot from an older watch build (no lat/lon)
@@ -130,7 +132,7 @@ final class WorkoutTickMessageTests: XCTestCase {
         """.data(using: .utf8)!
 
         let decoded = try JSONDecoder().decode(WCMessage.self, from: v1JSON)
-        XCTAssertEqual(decoded, .workoutLifecycle(.started(.running)))
+        XCTAssertEqual(decoded, .workoutLifecycle(.started(.outdoorRun)))
     }
 
     func testUnsupportedFutureSchemaThrows() {

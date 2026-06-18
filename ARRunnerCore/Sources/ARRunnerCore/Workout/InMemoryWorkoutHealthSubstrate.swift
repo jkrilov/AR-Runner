@@ -12,13 +12,13 @@ import Foundation
 /// ```swift
 /// let substrate = InMemoryWorkoutHealthSubstrate()
 /// let controller = WorkoutController(substrate: substrate)
-/// _ = try await controller.start(activityType: .running)
+/// _ = try await controller.start(activityType: .outdoorRun)
 /// await substrate.emit(metric: WorkoutMetric(kind: .heartRate, value: 152, unit: "count/min", timestamp: .now))
 /// let summary = try await controller.end()
 /// ```
 public actor InMemoryWorkoutHealthSubstrate: WorkoutHealthSubstrate {
     public enum RecordedCall: Sendable, Equatable {
-        case begin(sport: SportType, at: Date)
+        case begin(sport: WorkoutType, at: Date)
         case pause(at: Date)
         case resume(at: Date)
         case end(at: Date)
@@ -98,7 +98,7 @@ public actor InMemoryWorkoutHealthSubstrate: WorkoutHealthSubstrate {
 
     // MARK: - WorkoutHealthSubstrate
 
-    public func begin(sport: SportType, startedAt: Date) async throws {
+    public func begin(sport: WorkoutType, startedAt: Date) async throws {
         if let queuedError {
             self.queuedError = nil
             throw queuedError

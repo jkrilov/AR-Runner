@@ -96,6 +96,8 @@ private func formatMetricImpl(_ metric: WorkoutMetric) -> String {
         return String(Int(metric.value.rounded()))
     case .distance, .elevation:
         return String(format: "%.1f", metric.value)
+    case .speed:
+        return String(format: "%.1f", metric.value)
     case .pace, .duration:
         let total = Int(metric.value.rounded())
         return "\(total / 60):\(String(format: "%02d", total % 60))"
@@ -126,7 +128,7 @@ extension WorkoutControllerIntegrationTests {
         }
 
         // 1. Workout starts.
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
 
         // 2. Glasses connect.
         try await glasses.connect()
@@ -170,7 +172,7 @@ extension WorkoutControllerIntegrationTests {
 
         XCTAssertEqual(summary.healthKitWorkoutID, workoutID,
                        "D9: summary.healthKitWorkoutID must equal substrate's HK UUID")
-        XCTAssertEqual(summary.sport, .running)
+        XCTAssertEqual(summary.sport, .outdoorRun)
         XCTAssertGreaterThanOrEqual(summary.glassesDisconnectCount, 1,
                                     "D4: at least one disconnect must be recorded on the summary")
 
@@ -206,7 +208,7 @@ extension WorkoutControllerIntegrationTests {
         let glassesBridge = await bridgeGlasses(glasses, into: controller)
         defer { glassesBridge.cancel() }
 
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
 
         // Glasses connect attempt fails — controller MUST NOT abort.
         do {
@@ -224,7 +226,7 @@ extension WorkoutControllerIntegrationTests {
         XCTAssertTrue(done)
 
         let summary = try await controller.end()
-        XCTAssertEqual(summary.sport, .running)
+        XCTAssertEqual(summary.sport, .outdoorRun)
 
         // No metric updates ever reached the glasses since we never connected.
         let updates = await glasses.receivedUpdates
@@ -285,7 +287,7 @@ extension WorkoutControllerIntegrationTests {
             }
         }
 
-        try await substrate.begin(sport: .running, startedAt: Date())
+        try await substrate.begin(sport: .outdoorRun, startedAt: Date())
         let done = await waitUntil { await substrate.isScenarioComplete }
         XCTAssertTrue(done)
         _ = try await substrate.end(at: Date())
@@ -302,7 +304,7 @@ extension WorkoutControllerIntegrationTests {
         let substrate = FakeHealthKitSubstrate(workoutID: id, scenario: .ended)
 
         let start = Date(timeIntervalSinceReferenceDate: 0)
-        try await substrate.begin(sport: .running, startedAt: start)
+        try await substrate.begin(sport: .outdoorRun, startedAt: start)
         let result = try await substrate.end(at: start.addingTimeInterval(60))
 
         XCTAssertEqual(result.healthKitWorkoutID, id)

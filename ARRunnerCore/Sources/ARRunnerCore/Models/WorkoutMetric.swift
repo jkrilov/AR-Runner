@@ -11,6 +11,9 @@ public enum MetricKind: String, Sendable, Codable, CaseIterable, Equatable {
     case cadence
     case elevation
     case energy
+    /// Ground speed (metres per second on the wire). Cycling surfaces speed
+    /// rather than pace; formatted as km/h or mph by `RunMetricFormatting`.
+    case speed
 }
 
 public struct WorkoutMetric: Sendable, Codable, Equatable {

@@ -17,7 +17,7 @@ import Foundation
 public struct WorkoutSummary: Sendable, Codable, Equatable {
     public let id: UUID
     public let healthKitWorkoutID: UUID
-    public let sport: SportType
+    public let sport: WorkoutType
     public let startedAt: Date
     public let endedAt: Date
     public let activeDuration: TimeInterval
@@ -33,10 +33,16 @@ public struct WorkoutSummary: Sendable, Codable, Equatable {
     public let totalElevationGainMeters: Double?
     public let averageCadenceStepsPerMinute: Double?
 
+    /// Average ground speed in metres per second. Populated for cycling
+    /// (where pace is meaningless); `nil` for running/walking, which carry
+    /// `averagePaceSecondsPerKilometer` instead. Additive in v0.6.0 — older
+    /// decoders simply ignore the field.
+    public let averageSpeedMetersPerSecond: Double?
+
     public init(
         id: UUID,
         healthKitWorkoutID: UUID,
-        sport: SportType,
+        sport: WorkoutType,
         startedAt: Date,
         endedAt: Date,
         activeDuration: TimeInterval,
@@ -48,7 +54,8 @@ public struct WorkoutSummary: Sendable, Codable, Equatable {
         splits: [WorkoutSplit] = [],
         glassesDisconnectCount: Int = 0,
         totalElevationGainMeters: Double? = nil,
-        averageCadenceStepsPerMinute: Double? = nil
+        averageCadenceStepsPerMinute: Double? = nil,
+        averageSpeedMetersPerSecond: Double? = nil
     ) {
         self.id = id
         self.healthKitWorkoutID = healthKitWorkoutID
@@ -65,6 +72,7 @@ public struct WorkoutSummary: Sendable, Codable, Equatable {
         self.glassesDisconnectCount = glassesDisconnectCount
         self.totalElevationGainMeters = totalElevationGainMeters
         self.averageCadenceStepsPerMinute = averageCadenceStepsPerMinute
+        self.averageSpeedMetersPerSecond = averageSpeedMetersPerSecond
     }
 }
 

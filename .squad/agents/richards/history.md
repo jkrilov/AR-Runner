@@ -180,3 +180,36 @@ Key data-model files and their roles:
 **WCMessage migration:** Dual-key emission (both `sport` and `workoutType` in v0.6.0) handles mixed-version pairs; drop legacy in v0.7.
 
 **29 open questions for jkrilov** across all agents (Richards×6, Killian×8, Amber×6, Weiss×5). Status: COMPLETE, awaiting review + sign-off.
+
+---
+
+## Session 2026-06-17: v0.6.0 Core Foundation — IMPLEMENTED
+
+**Branch:** `feat/0.6.0-core-foundation` · **Tests:** `cd ARRunnerCore && swift test` GREEN (259 executed, 1 skipped, 0 failures, Swift 6.0.3 Linux).
+
+### Learnings
+
+- `swift` is NOT on PATH on the Windows bench. Run Core tests via Docker Linux (matches CI):
+  `docker run --rm -v "${PWD}:/work:ro" swift:6.0 bash -c "cp -r /work/ARRunnerCore /build && cd /build && rm -rf .build && swift test"`.
+  Running `swift test` directly against the bind-mounted `/work` crashes swift-frontend (clang module-cache Bus error) — copy sources into the container's own fs first.
+
+### Final model shape (deviation from plan noted)
+
+- `WorkoutType` is a **struct** (`activity: ActivityKind` × `environment: WorkoutEnvironment`), not an enum — `Sendable/Codable/Equatable/Hashable/RawRepresentable/CaseIterable`. `allCases` = the 6 supported combos (incl. indoor walk, approved).
+- **DEVIATION from my plan's dual-key emission:** wire/storage uses a **single** `sport` field carrying `WorkoutType`'s legacy-preserving raw string, NOT both `sport`+`workoutType`. Custom `Codable` encodes outdoor variants as the unchanged `"running"`/`"walking"`/`"cycling"`; indoor combos use new stable strings `"indoor_running"`/`"indoor_walking"`/`"indoor_cycling"`. Decoding an unknown raw value returns `WorkoutType.fallback` (= `.outdoorRun`) instead of throwing, so one bad field never fatals a whole `WCMessage` decode. Trade-off: a v0.5.20 phone can't mirror a NEW indoor type (its flat `SportType` enum throws on the new string) — acceptable since the phone mirror is optional and the watch is the BLE owner.
+- `SportType` (flat enum) **removed**; all Core call sites migrated to `WorkoutType`. Watch/phone shells must migrate `begin(sport:)` + pickers (Laughlin).
+
+### Key public API (downstream build surface)
+
+- `WorkoutType` + `ActivityKind` + `WorkoutEnvironment`; factories `.outdoorRun/.indoorRun/.outdoorWalk/.indoorWalk/.outdoorBike/.indoorBike`, `.fallback`; `isIndoor`, `usesGPS`, `baseActivity`, `displayName`, `rawValue`, `init?(rawValue:)`.
+- `UnitSystem { metric, imperial }` (`Models/UnitSystem.swift`).
+- `MetricKind.speed` (m/s on the wire; cycling).
+- `RunMetricFormatting`: `formatDistance(meters:unitSystem:)`, `formatAveragePace(elapsedSeconds:distanceMeters:unitSystem:)`, `formatSpeed(metersPerSecond:unitSystem:)`, `formatElevation(meters:unitSystem:)` (+ `formatAveragePacePerKilometer` and legacy per-mile/`formatMiles` retained).
+- `HUDLayout.default(for: WorkoutType)` — per-type defaults (bike → `.speed`; indoor → no `.elevation`).
+- `WCMessage` schema **6**: new cases `.defaultWorkoutType(WorkoutType)`, `.unitPreference(UnitSystem)`, decode-only `.unknown` (unrecognized `kind` no longer throws). Layout-catalog payloads deferred to v6.1.
+- `WorkoutSummary.averageSpeedMetersPerSecond: Double?` (additive); `WorkoutController.makeSummary` branches: run/walk → pace, cycling → avg speed.
+- `TCXWorkoutData.tcxSport(for:)` (run→Running, bike→Biking, walk→Other); `ActivityNaming.activityNoun(for:)`/`name(forStart:workoutType:)`.
+
+### File paths
+
+`ARRunnerCore/Sources/ARRunnerCore/Models/{WorkoutType,UnitSystem,WorkoutMetric,WorkoutSummary,WorkoutState,WorkoutSession,HUDLayout}.swift`, `.../Messaging/{WCMessage,WorkoutTickMessage}.swift`, `.../Workout/{WorkoutController,WorkoutHealthSubstrate,InMemoryWorkoutHealthSubstrate,RunMetricFormatting}.swift`, `.../Strava/{TCXWorkoutData,ActivityNaming}.swift`.

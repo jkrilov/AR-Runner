@@ -32,7 +32,7 @@ public actor FakeHealthKitSubstrate: WorkoutHealthSubstrate {
     public private(set) var recordedCalls: [Call] = []
 
     public enum Call: Sendable, Equatable {
-        case begin(sport: SportType, at: Date)
+        case begin(sport: WorkoutType, at: Date)
         case pause(at: Date)
         case resume(at: Date)
         case end(at: Date)
@@ -85,7 +85,7 @@ public actor FakeHealthKitSubstrate: WorkoutHealthSubstrate {
 
     // MARK: - WorkoutHealthSubstrate
 
-    public func begin(sport: SportType, startedAt: Date) async throws {
+    public func begin(sport: WorkoutType, startedAt: Date) async throws {
         if case .running = currentPhase {
             throw WorkoutHealthSubstrateError.alreadyRunning
         }

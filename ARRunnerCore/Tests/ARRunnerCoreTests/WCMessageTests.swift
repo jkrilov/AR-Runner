@@ -7,7 +7,7 @@ import XCTest
 
 final class WCMessageTests: XCTestCase {
     func testCodableRoundTrip() throws {
-        let original = WCMessage.workoutLifecycle(.started(.running))
+        let original = WCMessage.workoutLifecycle(.started(.outdoorRun))
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(WCMessage.self, from: data)
 

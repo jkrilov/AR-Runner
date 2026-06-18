@@ -12,14 +12,14 @@ public enum WorkoutSessionStatus: String, Sendable, Codable, Equatable {
 
 public struct WorkoutSession: Sendable, Codable, Identifiable, Equatable {
     public let id: UUID
-    public let sport: SportType
+    public let sport: WorkoutType
     public let startedAt: Date
     public let status: WorkoutSessionStatus
     public let metricStream: [WorkoutMetric]
 
     public init(
         id: UUID = UUID(),
-        sport: SportType,
+        sport: WorkoutType,
         startedAt: Date,
         status: WorkoutSessionStatus,
         metricStream: [WorkoutMetric]
