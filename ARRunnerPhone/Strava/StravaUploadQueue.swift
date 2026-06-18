@@ -88,6 +88,11 @@ actor StravaUploadQueue {
     private let storage: StravaUploadQueueStorage
     private let service: StravaUploadService
     private let clock: @Sendable () -> Date
+    /// Sleep seam used by the self-rescheduling drain (Fix A, v0.6.2). The
+    /// production closure is a real `Task.sleep`; tests inject an immediate
+    /// sleeper that advances the injected clock so the autonomous scheduler
+    /// can be driven deterministically.
+    private let sleep: @Sendable (TimeInterval) async -> Void
     /// Max attempts before an entry is marked `.failed` and dropped from the
     /// active retry rotation (user can still manually retry from History).
     static let maxRetries = 5
@@ -104,15 +109,22 @@ actor StravaUploadQueue {
     private var entries: [StravaUploadQueueEntry] = []
     private var pauseUntil: Date?
     private var processing: Bool = false
+    /// Exactly ONE pending self-rescheduling drain (Fix A, v0.6.2). Each
+    /// `process()` pass cancels/replaces it so scheduled calls never pile up.
+    private var scheduledDrain: Task<Void, Never>?
 
     init(
         storage: StravaUploadQueueStorage = FileStravaUploadQueueStorage(),
         service: StravaUploadService = StravaUploadService(),
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { seconds in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+        }
     ) {
         self.storage = storage
         self.service = service
         self.clock = clock
+        self.sleep = sleep
         let loaded = (try? storage.loadEntries()) ?? []
         // Part 1 — reclaim orphaned uploads. At process start nothing is
         // actually in flight, so a persisted `.uploading` entry is by
@@ -126,6 +138,10 @@ actor StravaUploadQueue {
         if reclaimed != loaded {
             try? storage.saveEntries(reclaimed)
         }
+    }
+
+    deinit {
+        scheduledDrain?.cancel()
     }
 
     /// Pure, testable reclaim pass: any `.uploading` entry → `.pending`.
@@ -194,8 +210,18 @@ actor StravaUploadQueue {
         try storage.saveEntries(entries)
     }
 
-    /// Drain everything currently due. Safe to call repeatedly; concurrent
-    /// calls collapse to a single in-flight pass via `processing`.
+    /// Drain everything currently due, then arm a single autonomous follow-up
+    /// pass (Fix A, v0.6.2). Safe to call repeatedly; concurrent calls collapse
+    /// to a single in-flight pass via `processing`.
+    ///
+    /// The historic bug: after draining the *due-now* entries, a freshly
+    /// `.processing` entry (or a `.pending` entry whose retry backoff hadn't
+    /// elapsed) was not yet due, so `pickNext()` returned nil and `process()`
+    /// exited — and nothing ever called it again while the app stayed open. The
+    /// confirmation poll never fired and the entry showed "uploading" forever.
+    /// We now self-reschedule: compute the soonest future due-time and arm one
+    /// follow-up `process()` that re-enters the actor when it elapses. The loop
+    /// self-terminates once no non-terminal entries remain.
     func process() async {
         guard !processing else { return }
         processing = true
@@ -204,6 +230,8 @@ actor StravaUploadQueue {
         while let next = pickNext() {
             await advance(workoutID: next)
         }
+
+        scheduleNextDrain()
     }
 
     /// Process just one entry (test seam — production code calls `process()`).
@@ -255,6 +283,108 @@ actor StravaUploadQueue {
     static func pollDelay(forPoll pollCount: Int) -> TimeInterval {
         let idx = max(0, min(pollCount, pollBackoffSchedule.count - 1))
         return pollBackoffSchedule[idx]
+    }
+
+    // MARK: - Autonomous self-rescheduling (Fix A, v0.6.2)
+
+    /// Pure, testable: the soonest *absolute* due-time across all non-terminal
+    /// entries, honoring per-entry retry/poll backoff and the queue-global
+    /// `pauseUntil`. Returns `nil` when nothing needs re-driving — that is the
+    /// signal for the self-scheduler to stop (loop self-terminates).
+    ///
+    /// Only `.pending` and `.processing` are schedulable; `.uploading` is
+    /// either actively awaited (with its own timeout, Fix B) or reclaimed at
+    /// init, and `.completed`/`.failed` are terminal.
+    static func nextDueDate(
+        entries: [StravaUploadQueueEntry],
+        now: Date,
+        pauseUntil: Date?
+    ) -> Date? {
+        var soonest: Date?
+        for entry in entries {
+            guard entry.status == .pending || entry.status == .processing else { continue }
+            var due: Date
+            if let last = entry.lastAttemptDate {
+                due = last.addingTimeInterval(delay(for: entry))
+            } else {
+                due = now
+            }
+            if let pauseUntil, pauseUntil > due {
+                due = pauseUntil
+            }
+            if soonest == nil || due < soonest! {
+                soonest = due
+            }
+        }
+        return soonest
+    }
+
+    /// Arm exactly one follow-up `process()` for the soonest future due-time.
+    /// Cancels/replaces any previously-scheduled drain so calls never pile up.
+    private func scheduleNextDrain() {
+        scheduledDrain?.cancel()
+        guard let due = Self.nextDueDate(entries: entries, now: clock(), pauseUntil: pauseUntil) else {
+            scheduledDrain = nil
+            return
+        }
+        let interval = max(0, due.timeIntervalSince(clock()))
+        let sleeper = self.sleep
+        scheduledDrain = Task { [weak self] in
+            await sleeper(interval)
+            guard !Task.isCancelled else { return }
+            await self?.process()
+        }
+    }
+
+    /// Test seam: the currently-armed self-rescheduling drain (if any). Tests
+    /// drive the autonomous scheduler by awaiting `.value` in a loop until this
+    /// returns nil, with an injected immediate sleeper that advances the clock.
+    func pendingDrainForTesting() -> Task<Void, Never>? { scheduledDrain }
+
+    // MARK: - Orphaned background-completion reconciliation (Fix C, v0.6.2)
+
+    /// Reconcile a background upload completion that arrived with no in-process
+    /// waiter (e.g. delivered to a relaunched process, or after the in-app
+    /// await already timed out). Matches the entry by `workoutID ==
+    /// UUID(externalID)` and advances it instead of dropping the result. A 2xx
+    /// (or 409 duplicate) is decoded and routed exactly like a fresh upload
+    /// response; anything else marks the entry `.pending` so the self-scheduler
+    /// re-drives it. Idempotency (409 = success) is the backstop.
+    func reconcileOrphanedUpload(_ outcome: OrphanedUploadOutcome) async {
+        guard let id = UUID(uuidString: outcome.externalID),
+              let idx = entries.firstIndex(where: { $0.workoutID == id }) else { return }
+        // Leave already-terminal entries and entries we're actively polling
+        // (`.processing`) alone — the self-scheduler owns those.
+        switch entries[idx].status {
+        case .completed, .failed, .processing:
+            return
+        case .pending, .uploading:
+            break
+        }
+
+        if let code = outcome.statusCode,
+           (200..<300).contains(code) || code == 409,
+           let result = try? StravaUploadService.decodeUpload(data: outcome.body, isDuplicate: code == 409) {
+            entries[idx].errorMessage = nil
+            entries[idx].stravaUploadID = result.uploadId
+            if result.isDuplicate || result.activityId != nil {
+                entries[idx].status = .completed
+                entries[idx].stravaActivityID = result.activityId
+            } else if result.uploadId > 0 {
+                entries[idx].status = .processing
+                entries[idx].confirmPollCount = 0
+                entries[idx].lastAttemptDate = clock()
+            } else {
+                entries[idx].status = .completed
+            }
+        } else {
+            // Failure or undecodable — make it retryable so the self-scheduler
+            // re-POSTs (idempotent 409 → completed) rather than stalling.
+            entries[idx].status = .pending
+            entries[idx].errorMessage = outcome.errorDescription ?? "Reconciled orphaned upload completion"
+        }
+        try? storage.saveEntries(entries)
+        await process()
     }
 
     /// Route an entry to the right phase: upload (POST) or confirm (poll).
