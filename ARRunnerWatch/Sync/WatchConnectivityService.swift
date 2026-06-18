@@ -89,6 +89,37 @@ final class WatchConnectivityService: NSObject, WorkoutMirrorPublisher, @uncheck
 
     static let actionButtonModeContextKey = "actionButtonMode"
 
+    // MARK: - Settings sync (v0.6.0)
+
+    /// Push the user's default `WorkoutType` selection to the iPhone so its
+    /// Settings picker mirrors the watch. Routed through the queued userInfo
+    /// path (like lifecycle) so the phone still receives it if it was
+    /// unreachable at the moment of the change. Best-effort, phone-optional.
+    func sendDefaultWorkoutType(_ type: WorkoutType) async {
+        await transmit(.defaultWorkoutType(type), preferQueued: true)
+    }
+
+    /// Push the user's metric/imperial preference to the iPhone. Queued for
+    /// the same reachability reasons as the workout-type sync above.
+    func sendUnitPreference(_ system: UnitSystem) async {
+        await transmit(.unitPreference(system), preferQueued: true)
+    }
+
+    /// Persist an inbound settings-sync message to the shared App Group
+    /// store (last-writer-wins). Non-settings messages are ignored on the
+    /// watch — it has no live mirror to drive.
+    fileprivate func persist(inbound payload: Data) {
+        guard let message = try? JSONDecoder().decode(WCMessage.self, from: payload) else { return }
+        switch message {
+        case .defaultWorkoutType(let type):
+            WorkoutTypePreference.store(type)
+        case .unitPreference(let system):
+            UnitPreference.store(system)
+        default:
+            break
+        }
+    }
+
     // MARK: - Internals
 
     private func transmit(
@@ -154,6 +185,9 @@ extension WatchConnectivityService: WCSessionDelegate {
     #endif
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        if let payload = applicationContext["wcMessage"] as? Data {
+            persist(inbound: payload)
+        }
         if let raw = applicationContext[Self.actionButtonModeContextKey] as? String,
            ActionButtonMode(rawValue: raw) != nil {
             // Mirror the phone-side picker into the shared App Group
@@ -166,6 +200,20 @@ extension WatchConnectivityService: WCSessionDelegate {
             if store.string(forKey: ActionButtonMode.storageKey) != raw {
                 store.set(raw, forKey: ActionButtonMode.storageKey)
             }
+        }
+    }
+
+    func session(_ session: WCSession, didReceiveMessageData messageData: Data) {
+        // v0.6.0 — inbound settings-sync (defaultWorkoutType / unitPreference)
+        // from the phone when reachable.
+        persist(inbound: messageData)
+    }
+
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        // v0.6.0 — queued settings-sync fallback when the watch was
+        // unreachable at send time.
+        if let payload = userInfo["wcMessage"] as? Data {
+            persist(inbound: payload)
         }
     }
 }

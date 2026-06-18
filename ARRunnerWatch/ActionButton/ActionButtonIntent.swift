@@ -19,15 +19,50 @@ let actionButtonLog = Logger(subsystem: "com.arrunner.watch", category: "ActionB
 /// adopt `AppEnum` (or `AppEntity`) so the system can render the choice
 /// in Settings → Action Button → Workout → App → AR-Runner.
 ///
-/// v0.1 is running-only per D3 (multi-sport scope), so we expose a single
-/// `.run` case. Adding interval / outdoor / treadmill variants later is a
-/// matter of new cases + matching `suggestedWorkouts` entries.
-enum ARRunnerWorkoutStyleEnum: String, AppEnum {
+/// v0.6.0 — expanded from running-only to the full supported set so the
+/// wearer can assign any workout type to the Action Button. The original
+/// `.run` case KEEPS its raw value `"run"` so existing Action Button
+/// assignments (persisted by the system as the raw string) keep resolving
+/// to an outdoor run rather than silently breaking on upgrade.
+enum ARRunnerWorkoutStyleEnum: String, AppEnum, CaseIterable {
     case run
+    case outdoorWalk
+    case outdoorBike
+    case indoorRun
+    case indoorWalk
+    case indoorBike
+
+    /// The orthogonal Core workout type this style maps onto.
+    var workoutType: WorkoutType {
+        switch self {
+        case .run:         return .outdoorRun
+        case .outdoorWalk: return .outdoorWalk
+        case .outdoorBike: return .outdoorBike
+        case .indoorRun:   return .indoorRun
+        case .indoorWalk:  return .indoorWalk
+        case .indoorBike:  return .indoorBike
+        }
+    }
+
+    init(workoutType: WorkoutType) {
+        switch workoutType {
+        case .outdoorRun:  self = .run
+        case .outdoorWalk: self = .outdoorWalk
+        case .outdoorBike: self = .outdoorBike
+        case .indoorRun:   self = .indoorRun
+        case .indoorWalk:  self = .indoorWalk
+        default:           self = .run
+        }
+    }
 
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "AR-Runner Workout"
     static let caseDisplayRepresentations: [ARRunnerWorkoutStyleEnum: DisplayRepresentation] = [
-        .run: DisplayRepresentation(title: "Run")
+        .run:         DisplayRepresentation(title: "Outdoor Run"),
+        .outdoorWalk: DisplayRepresentation(title: "Outdoor Walk"),
+        .outdoorBike: DisplayRepresentation(title: "Outdoor Bike"),
+        .indoorRun:   DisplayRepresentation(title: "Indoor Run"),
+        .indoorWalk:  DisplayRepresentation(title: "Indoor Walk"),
+        .indoorBike:  DisplayRepresentation(title: "Indoor Bike"),
     ]
 }
 
@@ -79,9 +114,8 @@ struct ARRunnerStartWorkoutIntent: StartWorkoutIntent {
     // protocol's own serialized registration flow (same reasoning as
     // `ActionButtonMode.sharedDefaults`). Apple's own sample code uses
     // the same pattern under Swift 6 strict concurrency.
-    nonisolated(unsafe) static var suggestedWorkouts: [ARRunnerStartWorkoutIntent] = [
-        ARRunnerStartWorkoutIntent()
-    ]
+    nonisolated(unsafe) static var suggestedWorkouts: [ARRunnerStartWorkoutIntent] =
+        ARRunnerWorkoutStyleEnum.allCases.map { ARRunnerStartWorkoutIntent(style: $0) }
 
     // Note: `openAppWhenRun` is intentionally NOT redeclared. Per Apple's
     // `StartWorkoutIntent` documentation: "By default, these intents set
@@ -97,14 +131,27 @@ struct ARRunnerStartWorkoutIntent: StartWorkoutIntent {
         workoutStyle = .run
     }
 
+    init(style: ARRunnerWorkoutStyleEnum) {
+        workoutStyle = style
+    }
+
     var displayRepresentation: DisplayRepresentation {
         ARRunnerWorkoutStyleEnum.caseDisplayRepresentations[workoutStyle]
-            ?? DisplayRepresentation(title: "Run")
+            ?? DisplayRepresentation(title: workoutStyle.workoutType.displayName)
     }
 
     func perform() async throws -> some IntentResult {
         let timestamp = Date()
         actionButtonLog.notice("StartWorkoutIntent.perform fired at \(timestamp.timeIntervalSinceReferenceDate, privacy: .public)")
+
+        // v0.6.0 — persist the chosen workout type to the shared App Group
+        // store BEFORE signaling start, so the foregrounded host's
+        // `maybeAutoStartFromIntent()` reads it back via
+        // `WorkoutTypePreference.current` and starts the right activity. The
+        // Action Button selection thus also becomes the new default type.
+        let selectedType = workoutStyle.workoutType
+        WorkoutTypePreference.current = selectedType
+        actionButtonLog.notice("StartWorkoutIntent selected type \(selectedType.rawValue, privacy: .public)")
 
         // Authoritative cross-process flags. We always drop both — the
         // host decides which one to honor based on `launchState` at

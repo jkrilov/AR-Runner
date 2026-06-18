@@ -110,6 +110,24 @@ Waiting for Joe's bench confirmation of v0.5.19 discard fix. v0.5.20 should incl
 
 ## Learnings
 
+### 2026-06-18 — v0.6.0 app-shell migration to WorkoutType + UI (PR #121)
+
+**Context:** Migrated ARRunnerWatch / ARRunnerPhone / ARRunnerWidgets / Shared off the removed flat `SportType` onto Richards' orthogonal `WorkoutType` (activity × environment) Core API, and built the user-facing 0.6.0 surface (type picker, unit prefs, cycling metrics, indoor GPS gating, settings sync). Branch `feat/0.6.0-core-foundation`. No Xcode on the Windows bench — app-target compile is CI-only; only Core has a local `swift test` path and Core was untouched.
+
+**Confirmed:**
+- **`SportType` is fully gone** from every app-shell/Shared `.swift` — verified by repo-wide grep (zero hits outside Core's own doc-comment + squad docs). A single missed reference would fail CI, so I grepped exhaustively rather than relying on the 2 files I first found.
+- **HealthKit has no public `runningCadence` quantity type.** The plan asked for "running cadence" but only `HKQuantityType(.cyclingCadence)` and `.cyclingSpeed` exist (watchOS 10+, always satisfied at our 11.0 floor — no `#available` needed). Implemented cycling speed→`MetricKind.speed` and cycling cadence→`.cadence`. **Running cadence is NOT implemented** — would need a derived calculation (step count / time) or `HKQuantityType(.stepCount)` cadence math, deferred.
+- **Indoor gating seam:** gate BOTH `HKWorkoutRouteBuilder` creation and `locationManager.startUpdatingLocation()` on `!sport.isIndoor` in `begin()`. The pre-existing nil-guards in `end()`/`ingest(locations:)` already tolerate a nil routeBuilder — no change needed there.
+- **`activityType(for:)` is now a tuple** `(HKWorkoutActivityType, HKWorkoutSessionLocationType)` — single source of truth for both the HK config's `.activityType` and `.locationType`. cycling→`.cycling`, walking→`.walking`, running→`.running`; `isIndoor`→`.indoor` else `.outdoor`.
+
+**Patterns established:**
+- **`WorkoutTypePreference` / `UnitPreference`** live in `Shared/Settings/`, mirroring the `ActionButtonMode.swift` `sharedDefaults` pattern (App Group `group.com.arrunner.shared`, `nonisolated(unsafe) static let` suite). They wrap the Core types (`WorkoutType`/`UnitSystem`) rather than redefining them. `UnitPreference` default is `Locale.current.measurementSystem == .metric ? .metric : .imperial`.
+- **Widgets don't include all of `Shared/`** — only the `ARRunnerWidgets` path. Had to add `Shared/Settings/WorkoutTypePreference.swift` explicitly to both `ARRunnerWidgetsPhone` and `ARRunnerWidgetsWatch` `sources:` in `project.yml`. Same source compiled into multiple target modules is fine (no duplicate-symbol clash — separate modules; they interoperate purely via the shared UserDefaults key). Widgets need `WorkoutTypePreference` but NOT `UnitPreference`.
+- **Settings sync uses the existing `transmit`/queued seam.** New `WCMessage.unitPreference` / `.defaultWorkoutType` are sent from BOTH sides; the receiver persists to the App Group store last-writer-wins (`WorkoutTypePreference.store` / `UnitPreference.store`). Watch send methods are `async` (wrap in `Task {}` in SwiftUI); phone send methods are sync.
+- **Action Button writes the preference before signaling start.** `ARRunnerWorkoutStyleEnum` expanded to all 6 cases but KEPT raw `"run"` for the legacy case so existing Action Button assignments don't break. `perform()` sets `WorkoutTypePreference.current` so the host launches the right type.
+
+**Could NOT verify locally (CI-gated on PR #121):** AppEnum conformance with the expanded `caseDisplayRepresentations`; SwiftUI `Picker .tag(WorkoutType)` type-matching; `NavigationLink` push of the picker inside `WorkoutView`'s nav context; `@Observable private(set) var sport` exposure. All compile-pending CI.
+
 ### 2026-06-17 — v0.6 multi-sport planning: workout types + watch selection UI
 
 **Context:** Planning Feature 1 for AR-Runner 0.6.x — additional workout types (outdoor walk, indoor run, outdoor bike, indoor bike) with watch-side type picker and user-selectable default.

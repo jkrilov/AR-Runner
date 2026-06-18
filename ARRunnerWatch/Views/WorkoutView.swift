@@ -19,6 +19,15 @@ struct WorkoutView: View {
     )
     @State private var showGlassesSheet = false
     @State private var showSettingsSheet = false
+    /// v0.6.0 — workout type chosen on the pre-run surface. Seeded from the
+    /// persisted `WorkoutTypePreference` default and updated via the
+    /// `WorkoutTypePickerView`. Carried into `viewModel.start(activity:)`.
+    @State private var selectedType: WorkoutType = WorkoutTypePreference.current
+    /// v0.6.0 — active measurement system for in-run formatting. Bound to
+    /// the shared App Group store so a change in Settings (watch or phone)
+    /// is reflected live.
+    @AppStorage(UnitPreference.storageKey, store: UnitPreference.sharedDefaults)
+    private var unitRaw: String = UnitPreference.defaultValue.rawValue
 
     /// Cross-process handoff from `StartWorkoutIntent.perform()` (widget
     /// extension) to the foregrounded host. Consumed below on
@@ -91,7 +100,11 @@ struct WorkoutView: View {
                 GlassesConnectView(viewModel: viewModel)
             }
         }
-        .sheet(isPresented: $showSettingsSheet) {
+        .sheet(isPresented: $showSettingsSheet, onDismiss: {
+            // Re-seed the pre-run selection from the (possibly updated)
+            // default so a change in Settings is reflected on the controls.
+            selectedType = WorkoutTypePreference.current
+        }) {
             NavigationStack {
                 WatchSettingsView()
             }
@@ -174,6 +187,11 @@ struct WorkoutView: View {
         #endif
     }
 
+    /// v0.6.0 — resolved measurement system for the live metrics section.
+    private var unitSystem: UnitSystem {
+        UnitSystem(rawValue: unitRaw) ?? UnitPreference.defaultValue
+    }
+
     /// Consume any pending-start flag dropped by the widget AppIntent
     /// and, if fresh, kick off the workout flow automatically. Only
     /// runs from `.idle` / terminal states so an already-running
@@ -185,7 +203,9 @@ struct WorkoutView: View {
         ) else { return }
         switch viewModel.launchState {
         case .idle, .ended, .cancelled, .failed:
-            await viewModel.start()
+            // v0.6.0 — honor the user's persisted default workout type so a
+            // widget / Action Button cold-start launches the right activity.
+            await viewModel.start(activity: WorkoutTypePreference.current)
         default:
             break
         }
@@ -355,8 +375,12 @@ struct WorkoutView: View {
     /// don't gate on `routeCoordinates.isEmpty` because the very first
     /// fix may not have arrived yet; the user still gets the swipe
     /// affordance and an empty map shows the user-location pin.
+    ///
+    /// v0.6.0 — suppressed entirely for indoor workouts (treadmill /
+    /// stationary bike), which record no GPS route, so the wearer never
+    /// swipes to an empty map page mid-treadmill.
     private var showMapTab: Bool {
-        isInWorkout || isPostRun
+        (isInWorkout || isPostRun) && !viewModel.sport.isIndoor
     }
 
     /// Tappable row that shows the live glasses link state and opens the
@@ -417,23 +441,46 @@ struct WorkoutView: View {
         }
         HStack {
             Image(systemName: "ruler").foregroundStyle(.blue)
-            Text(viewModel.distanceMeters.map { RunMetricFormatting.formatMiles(meters: $0) } ?? "—")
+            Text(viewModel.distanceMeters.map {
+                RunMetricFormatting.formatDistance(meters: $0, unitSystem: unitSystem)
+            } ?? "—")
                 .font(.title3.monospacedDigit())
         }
         HStack {
             Image(systemName: "clock").foregroundStyle(.secondary)
             Text(formatElapsed(viewModel.elapsed))
                 .font(.title3.monospacedDigit())
-            // Avg pace MM:SS/mi sits next to elapsed time. Placeholder
-            // `--:--/mi` until distance is stable — see
-            // `RunMetricFormatting.formatAveragePacePerMile`.
-            Text(RunMetricFormatting.formatAveragePacePerMile(
-                elapsedSeconds: viewModel.elapsed,
-                distanceMeters: viewModel.distanceMeters ?? 0
-            ))
+            // v0.6.0 — running/walking surface pace; cycling surfaces ground
+            // speed (pace is meaningless on a bike). Both render in the active
+            // unit system.
+            if viewModel.sport.activity == .cycling {
+                Text(RunMetricFormatting.formatSpeed(
+                    metersPerSecond: cyclingSpeedMetersPerSecond,
+                    unitSystem: unitSystem
+                ))
+                .font(.title3.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Speed")
+            } else {
+                // Avg pace sits next to elapsed time. Placeholder until
+                // distance is stable — see RunMetricFormatting.
+                Text(RunMetricFormatting.formatAveragePace(
+                    elapsedSeconds: viewModel.elapsed,
+                    distanceMeters: viewModel.distanceMeters ?? 0,
+                    unitSystem: unitSystem
+                ))
                 .font(.title3.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Average pace")
+            }
+        }
+        if viewModel.sport.activity == .cycling, let cadence = viewModel.cadence {
+            HStack {
+                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.teal)
+                Text(String(format: "%.0f rpm", cadence))
+                    .font(.title3.monospacedDigit())
+                    .accessibilityLabel("Cadence")
+            }
         }
         HStack {
             Image(systemName: "flame.fill").foregroundStyle(.orange)
@@ -442,12 +489,43 @@ struct WorkoutView: View {
         }
     }
 
+    /// Live cycling speed for display: prefer the substrate's `.speed`
+    /// sample, falling back to the running average (distance / elapsed) so
+    /// the readout is non-placeholder even before the first speed sample.
+    private var cyclingSpeedMetersPerSecond: Double {
+        if let speed = viewModel.speedMetersPerSecond { return speed }
+        guard let distance = viewModel.distanceMeters, viewModel.elapsed > 0 else {
+            return .nan
+        }
+        return distance / viewModel.elapsed
+    }
+
     @ViewBuilder
     private var controlsSection: some View {
         switch viewModel.launchState {
         case .idle, .ended, .cancelled, .failed:
-            Button("Start Run") {
-                Task { await viewModel.start() }
+            // v0.6.0 — pre-run workout-type selector. Tappable row navigates
+            // to the picker; the Start button reflects the chosen type.
+            NavigationLink {
+                WorkoutTypePickerView(selection: $selectedType)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: WorkoutTypePreference.symbolName(for: selectedType))
+                        .foregroundStyle(.green)
+                    Text(selectedType.displayName)
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Workout type: \(selectedType.displayName). Tap to change.")
+
+            Button("Start \(selectedType.displayName)") {
+                let type = selectedType
+                Task { await viewModel.start(activity: type) }
             }
             .buttonStyle(.borderedProminent)
         case .starting, .ending:

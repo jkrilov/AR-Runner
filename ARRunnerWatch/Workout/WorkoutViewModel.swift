@@ -49,6 +49,14 @@ final class WorkoutViewModel {
     private(set) var launchState: LaunchState = .idle
     private(set) var heartRate: Double?
     private(set) var distanceMeters: Double?
+    /// v0.6.0 — live cycling ground speed (m/s). Populated from the
+    /// substrate's `.speed` metric during bike workouts; nil for run/walk.
+    /// The metrics section renders speed instead of pace when the active
+    /// `sport.activity == .cycling`.
+    private(set) var speedMetersPerSecond: Double?
+    /// v0.6.0 — live cadence. RPM for cycling. Surfaced on the HUD/metrics
+    /// for cycling workouts; nil until the first sample lands.
+    private(set) var cadence: Double?
     private(set) var elapsed: TimeInterval = 0
     private(set) var glassesConnected: Bool = false
     /// Live glasses link state — observed by the pre-run "Connect Glasses"
@@ -191,7 +199,7 @@ final class WorkoutViewModel {
     private var glassesStateTask: Task<Void, Never>?
     private var glassesStatusTask: Task<Void, Never>?
     private var startedAt: Date?
-    private var sport: SportType = .running
+    private(set) var sport: WorkoutType = .outdoorRun
     private var sessionID: UUID?
     private var energy: EnergyAccumulator?
 
@@ -231,7 +239,7 @@ final class WorkoutViewModel {
         #endif
     }
 
-    func start(activity: SportType = .running) async {
+    func start(activity: WorkoutType = .outdoorRun) async {
         guard isStartable() else { return }
         launchState = .starting
         sport = activity
@@ -896,6 +904,8 @@ final class WorkoutViewModel {
     private func resetLiveCounters() {
         heartRate = nil
         distanceMeters = nil
+        speedMetersPerSecond = nil
+        cadence = nil
         elapsed = 0
         estimatedActiveKilocalories = nil
         hasLiveHKEnergy = false
@@ -986,6 +996,12 @@ final class WorkoutViewModel {
             }
         case .distance:
             distanceMeters = metric.value
+        case .speed:
+            // v0.6.0 — cycling ground speed (m/s). Drives the metrics
+            // section's speed readout for bike workouts.
+            speedMetersPerSecond = metric.value
+        case .cadence:
+            cadence = metric.value
         case .energy:
             // v0.2 audit P1.3: live HK kcal now reaches the UI. Latch
             // so subsequent heart-rate ticks don't overwrite the HK

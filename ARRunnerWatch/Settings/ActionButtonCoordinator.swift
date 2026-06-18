@@ -96,7 +96,10 @@ final class ActionButtonCoordinator {
         switch viewModel.launchState {
         case .idle, .ended, .cancelled, .failed:
             actionButtonLog.notice("handleWorkoutStart: starting workout from launchState=\(String(describing: viewModel.launchState), privacy: .public)")
-            Task { await viewModel.start() }
+            // v0.6.0 — honor the persisted default workout type (the Action
+            // Button intent wrote it before foregrounding) so the in-host
+            // start path launches the right activity.
+            Task { await viewModel.start(activity: WorkoutTypePreference.current) }
         default:
             actionButtonLog.notice("handleWorkoutStart: ignored, launchState=\(String(describing: viewModel.launchState), privacy: .public)")
         }

@@ -14,6 +14,8 @@ import CoreLocation
 @MainActor
 struct WorkoutMirrorView: View {
     @State private var viewModel: WorkoutMirrorViewModel
+    @AppStorage(UnitPreference.storageKey, store: UnitPreference.sharedDefaults)
+    private var unitRaw: String = UnitPreference.defaultValue.rawValue
 
     init(service: WatchConnectivityService) {
         _viewModel = State(wrappedValue: WorkoutMirrorViewModel(service: service))
@@ -156,7 +158,7 @@ struct WorkoutMirrorView: View {
                 .font(.headline)
                 .foregroundStyle(color)
             if let snapshot {
-                Text(snapshot.sport.rawValue.capitalized)
+                Text(snapshot.sport.displayName)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -183,14 +185,31 @@ struct WorkoutMirrorView: View {
                 icon: "ruler",
                 color: .blue,
                 label: "Distance",
-                value: snapshot?.distanceMeters.map { String(format: "%.0f m", $0) }
+                value: snapshot?.distanceMeters.map {
+                    RunMetricFormatting.formatDistance(meters: $0, unitSystem: unitSystem)
+                }
             )
-            metricRow(
-                icon: "speedometer",
-                color: .purple,
-                label: "Pace",
-                value: snapshot?.paceSecondsPerKilometer.map { formatPace($0) }
-            )
+            if snapshot?.sport.activity == .cycling {
+                metricRow(
+                    icon: "speedometer",
+                    color: .purple,
+                    label: "Speed",
+                    value: snapshot.flatMap { cyclingSpeedValue(for: $0) }
+                )
+            } else {
+                metricRow(
+                    icon: "speedometer",
+                    color: .purple,
+                    label: "Pace",
+                    value: snapshot.map {
+                        RunMetricFormatting.formatAveragePace(
+                            elapsedSeconds: $0.elapsedSeconds,
+                            distanceMeters: $0.distanceMeters ?? 0,
+                            unitSystem: unitSystem
+                        )
+                    }
+                )
+            }
             metricRow(
                 icon: "flame.fill",
                 color: .orange,
@@ -251,9 +270,22 @@ struct WorkoutMirrorView: View {
         return String(format: "%02d:%02d", m, s)
     }
 
-    private func formatPace(_ secondsPerKm: TimeInterval) -> String {
-        let m = Int(secondsPerKm) / 60
-        let s = Int(secondsPerKm) % 60
-        return String(format: "%d:%02d /km", m, s)
+    /// v0.6.0 — average ground speed for a cycling snapshot, derived from
+    /// distance / elapsed (the tick doesn't carry a discrete speed field).
+    /// Returns nil until enough data has accumulated to be meaningful.
+    private func cyclingSpeedValue(for snapshot: WorkoutTickMessage) -> String? {
+        guard let distance = snapshot.distanceMeters, snapshot.elapsedSeconds > 0 else {
+            return nil
+        }
+        return RunMetricFormatting.formatSpeed(
+            metersPerSecond: distance / snapshot.elapsedSeconds,
+            unitSystem: unitSystem
+        )
+    }
+
+    /// Active measurement system, bound to the shared App Group store so a
+    /// change in Settings (phone or watch) is reflected live.
+    private var unitSystem: UnitSystem {
+        UnitSystem(rawValue: unitRaw) ?? UnitPreference.defaultValue
     }
 }

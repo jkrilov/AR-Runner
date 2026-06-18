@@ -228,6 +228,11 @@ targets:
     sources:
       - path: ARRunnerWidgets
         optional: true
+      # v0.6.0 — the Smart Stack tile reads the user's default workout type
+      # from the App Group store via WorkoutTypePreference. Include just that
+      # file (not all of Shared/) so the widget stays lean.
+      - path: Shared/Settings/WorkoutTypePreference.swift
+        optional: true
     dependencies:
       - package: ARRunnerCore
     settings:
@@ -261,6 +266,9 @@ targets:
     deploymentTarget: '11.0'
     sources:
       - path: ARRunnerWidgets
+        optional: true
+      # v0.6.0 — see ARRunnerWidgetsPhone: type-aware Smart Stack tile.
+      - path: Shared/Settings/WorkoutTypePreference.swift
         optional: true
     dependencies:
       - package: ARRunnerCore
