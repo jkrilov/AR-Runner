@@ -270,6 +270,30 @@ No logic changes. CI: all four required checks green.
 
 ---
 
+
+## Recent Decisions (2026-06-18)
+
+### 2026-06-18 — Laughlin: Strava Upload Reliability (v0.6.1)
+
+**Status:** PR open (`fix/strava-upload-reliability`, base main). Phone compile + phone tests CI-gated (no Xcode on the Windows bench); ARRunnerCore untouched.
+
+**The bug (confirmed):** Longer runs (e.g. 3.25 mi) stuck in `.uploading`, present in HealthKit but never reaching Strava; sub-0.1 mi test runs uploaded fine. Root cause: `StravaUploadQueue.uploadOne` persisted the entry as `.uploading` BEFORE awaiting a *foreground* `URLSession.shared.upload`. iOS suspends/kills a backgrounded app mid-upload (far likelier for a large TCX over cellular). The orphaned `.uploading` entry was never reclaimed because `pickNext()` only ever selected `.pending` → stuck forever.
+
+**Fix — three parts:**
+1. **Reclaim orphans.** `StravaUploadQueue.reclaimOrphans` (pure, unit-tested) rewrites any persisted `.uploading` → `.pending` at init (no retry consumed) and persists. Idempotency (`external_id` = `HKWorkout.uuid` → Strava 409 → success) is the double-send safety net.
+2. **Background URLSession.** New `BackgroundStravaUploadTransport` conforms to `StravaUploadTransport`. Background config `com.arrunner.phone.strava-upload`, `isDiscretionary=false`, `sessionSendsLaunchEvents=true`. File-based body (multipart written to temp file, byte-identical to `makeMultipartBody`, D-Strava-8), `uploadTask(with:fromFile:)`. Delegate bridges callbacks to async via `CheckedContinuation` keyed by `taskIdentifier`; GET polls use a separate ephemeral session. `PhoneAppDelegate` (`@UIApplicationDelegateAdaptor`) captures `handleEventsForBackgroundURLSession` and re-attaches the session on background-launch.
+3. **Confirm processing.** New `.processing` state. After a 2xx POST with `activity_id == null`, the queue polls `checkUploadStatus` (previously dead code) with its own bounded backoff `[2,5,10,20,30]s` and `maxConfirmPolls=12`: `activity_id` → `.completed`; non-empty `error` → `.failed`; budget exceeded → `.pending` (re-POST → 409 dup → completed). 409 duplicate with no pollable id → completed.
+
+**State-machine invariant (enforced):** `pickNext()` selects BOTH `.pending` and `.processing`; `.uploading` is reclaimed at init. No persisted state is unreachable.
+
+**Compatibility note:** Added `confirmPollCount: Int? = nil` (optional → `decodeIfPresent`) so queue files persisted before v0.6.1 decode without a reset, and the synthesized memberwise init stays source-compatible. Threaded `externalID` through `StravaUploadTransport.upload(for:from:externalID:)` for background `taskDescription` tagging.
+
+**Version:** MARKETING_VERSION 0.6.0→0.6.1, CURRENT_PROJECT_VERSION 52→53, VERSION 0.6.1, README/architecture/copilot-instructions bumped (bundled-bump convention).
+
+**Tests added** (`StravaUploadQueueTests`): orphan `.uploading`→`.pending` reclaim (+persist) and process-to-completion; pure `reclaimOrphans`; confirmation poll (pending→activity→completed; error→failed; budget-exceeded→reclaimable `.pending`); 409 duplicate→completed; re-enqueue-completed no-op.
+
+---
+
 ## v0.6.x Planning (2026-06-17) — Multi-Workout Types + Custom HUD Layouts
 
 ### Richards — Architecture Plan
@@ -554,3 +578,4 @@ Why raw `txt` works: `RunningHUDFrame.frames(for:)` already renders any string a
 - Each agent only edits its own `history.md`.
 - Reviewer rejections lock out original author — different agent must revise.
 - Coordinator dispatches, never implements domain code.
+
