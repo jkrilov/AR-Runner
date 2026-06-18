@@ -101,7 +101,8 @@ final class RunningHUDPresetTests: XCTestCase {
                            "Preset \(preset) descriptor must match displayLayout(id: 0x\(String(id, radix: 16)))")
 
             // Frame envelope sanity per ActiveLook spec §3.1:
-            //   start byte 0xFF, cmdID 0x62, ..., terminator 0xAA, payload [id].
+            //   start byte 0xFF, cmdID 0x62, ..., terminator 0xAA, payload
+            //   [id, text, 0x00] (text empty for a bare activation frame).
             XCTAssertEqual(descriptor.first, 0xFF, "ActiveLook frames start with 0xFF")
             XCTAssertEqual(descriptor.last,  0xAA, "ActiveLook frames terminate with 0xAA")
             XCTAssertEqual(descriptor[1], ActiveLookCommand.ID.layoutDisplay.rawValue,
