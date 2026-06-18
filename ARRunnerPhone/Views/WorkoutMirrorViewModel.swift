@@ -120,7 +120,7 @@ final class WorkoutMirrorViewModel {
             case .paused, .resumed:
                 break
             }
-        case .layoutConfig, .workoutTick:
+        case .layoutConfig, .workoutTick, .defaultWorkoutType, .unitPreference, .unknown:
             break
         case .glassesBattery(let level):
             // Clamp defensively — the spec is 0–100 but we never want a
