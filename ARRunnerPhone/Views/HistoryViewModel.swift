@@ -22,8 +22,9 @@ final class HistoryViewModel {
 
     enum UploadDisplay: Sendable, Equatable {
         case notUploaded
-        case pending
+        case pending(message: String?)
         case uploading
+        case processing(message: String?)
         case completed(activityID: Int?)
         case failed(message: String?)
     }
@@ -141,9 +142,9 @@ final class HistoryViewModel {
     static func displayStatus(for entry: StravaUploadQueueEntry?) -> UploadDisplay {
         guard let entry else { return .notUploaded }
         switch entry.status {
-        case .pending:    return .pending
+        case .pending:    return .pending(message: entry.errorMessage)
         case .uploading:  return .uploading
-        case .processing: return .uploading
+        case .processing: return .processing(message: entry.errorMessage)
         case .completed:  return .completed(activityID: entry.stravaActivityID)
         case .failed:     return .failed(message: entry.errorMessage)
         }

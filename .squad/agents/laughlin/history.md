@@ -77,3 +77,24 @@ Post-release stale-task sweep. v0.6.1 stable; no blockers. v0.6.1+ custom-layout
 2. Background URLSession requires file bodies; in-memory won't survive suspension.
 3. 409 Duplicate is idempotency's friend; unlock retry/confirmation patterns.
 4. Polling with max-attempt gates prevents infinite loops; budget→reclaimable bridges to re-POST.
+
+---
+
+## v0.6.2 — Autonomous queue scheduling (the v0.6.1 follow-up)
+
+User reported the 3.25 mi run STILL stuck on "uploading" in v0.6.1 — foregrounded, hit Retry, never finished. Short runs fine. The v0.6.1 fix (orphan reclaim + background URLSession + confirm-poll state) was correct but INCOMPLETE: it added a `.processing` poll phase but never built anything to *drive* it while the app stays open.
+
+### Root cause (the lesson)
+`StravaUploadQueue.process()` drained only entries currently *due* via `pickNext()`, then returned. When `uploadOne` moved an entry to `.processing` with a fresh `lastAttemptDate`, the next `pickNext()` found it not-yet-due (poll backoff `[2,5,10,20,30]s`) and returned nil — so `process()` exited. **Nothing ever called `process()` again.** No timer, no scheduler. A `.processing` entry's confirm poll never fired → stalled forever. The History UI showed `.processing` as "uploading", which is exactly the stuck spinner the user saw. The same gap froze any `.pending` entry whose retry backoff hadn't elapsed.
+
+### The fix (v0.6.2 A–D)
+- **A — self-rescheduling drain.** After `process()` drains the due-now pass, compute the soonest future due-time (`nextDueDate`, pure/tested) across non-terminal entries and arm exactly ONE follow-up `Task { await sleep; await process() }`, cancel/replace each pass. Loop self-terminates when no non-terminal entries remain. Injected `sleep` seam so tests drive the scheduler deterministically via the mutable clock.
+- **B — upload continuation timeout.** `BackgroundStravaUploadTransport` now arms a 120s `DispatchWorkItem` watchdog per upload; on timeout it cancels the URLSession task and resumes the continuation with a network error → `uploadOne` catch marks the entry retryable `.pending`. Single-resume guard = whoever removes the continuation from the dict first wins.
+- **C — orphaned-completion reconcile.** `didCompleteWithError`'s no-waiter branch no longer DROPS the result; it hands `(externalID=taskDescription, statusCode, body)` to a queue-registered `OrphanReconciler` that finds the entry by `workoutID == UUID(externalID)` and advances it (→ `.processing`/`.completed`) or marks `.pending`.
+- **D — visible status.** `HistoryViewModel.UploadDisplay` gained `.processing(message:)` and `.pending(message:)`; History rows now surface the queue's `errorMessage`/Strava processing note so a stuck/failed upload shows WHY instead of an indefinite spinner.
+
+### Learnings
+1. **A new non-terminal state needs a DRIVER, not just a transition.** v0.6.1 added `.processing` but no scheduler — adding a state without an autonomous advance path is how you build a new stall. State-machine invariant: no non-terminal entry may sit without an autonomous path to advance while the app runs.
+2. **`CheckedContinuation` with no timeout is a latent hang.** Always race a bridged continuation against a timeout and guarantee exactly-once resume.
+3. **Don't drop orphaned async results — reconcile them.** A completion with no in-process waiter still carries truth (`taskDescription` = externalID); route it back into the state machine.
+4. **An actor's fire-and-forget scheduler Task must re-enter via `await self?.method()` and be cancelled in `deinit`** so it can't outlive the instance (critical for test hygiene — a real-`Task.sleep` drain would otherwise hit the stub transport after the test ended).

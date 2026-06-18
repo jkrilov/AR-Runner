@@ -55,6 +55,12 @@ final class AutoUploadCoordinator {
     /// Start listening. Idempotent — safe to call multiple times at launch.
     func start() {
         guard task == nil else { return }
+        // Reconcile orphaned background-upload completions through this queue
+        // (Fix C, v0.6.2) — a completion delivered with no in-process waiter
+        // advances the matching entry by `externalID` instead of being dropped.
+        BackgroundStravaUploadTransport.shared.setOrphanReconciler { [queue] outcome in
+            await queue.reconcileOrphanedUpload(outcome)
+        }
         let stream = connectivity.incomingMessages
         task = Task { [weak self] in
             for await message in stream {

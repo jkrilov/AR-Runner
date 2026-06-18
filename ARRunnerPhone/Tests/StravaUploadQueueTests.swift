@@ -379,4 +379,227 @@ final class StravaUploadQueueTests: XCTestCase {
         XCTAssertEqual(snap.count, 1)
         XCTAssertEqual(snap[0].status, .completed)
     }
+
+    // MARK: - Fix A: autonomous self-rescheduling drain (v0.6.2)
+
+    /// Drives the production self-scheduler to completion without any external
+    /// `process()` call: an immediate sleeper advances the injected clock so
+    /// each armed follow-up pass fires as if real time had elapsed.
+    private func drainViaScheduler(_ q: StravaUploadQueue) async {
+        await q.process()
+        while let drain = await q.pendingDrainForTesting() {
+            await drain.value
+        }
+    }
+
+    func test_processing_autoAdvancesToCompleted_withoutExternalProcessCall() async throws {
+        let storage = InMemoryStorage()
+        let (svc, _) = makeService(responses: [
+            (201, Data(#"{"id":77}"#.utf8), [:]),                  // POST accepted, no activity → .processing
+            (200, Data(#"{"id":77,"activity_id":888}"#.utf8), [:]) // confirm poll → done
+        ])
+        let clock = MutableClock(Date(timeIntervalSince1970: 3_000_000))
+        // Immediate sleeper that advances the clock by the requested interval:
+        // models real time passing so the armed poll becomes due.
+        let q = StravaUploadQueue(
+            storage: storage, service: svc,
+            clock: { clock.now },
+            sleep: { secs in clock.advance(by: secs) }
+        )
+        let id = uuid("12121212-1212-1212-1212-121212121212")
+        _ = try await q.enqueue(workoutID: id, startDate: clock.now, tcxData: Data("<tcx/>".utf8))
+
+        // Single kick; the queue must self-reschedule the confirm poll.
+        await drainViaScheduler(q)
+
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .completed, "the confirm poll must fire autonomously")
+        XCTAssertEqual(snap[0].stravaActivityID, 888)
+    }
+
+    func test_pendingRetry_autoRetriesWhenBackoffElapses_withoutExternalProcessCall() async throws {
+        let storage = InMemoryStorage()
+        let (svc, _) = makeService(responses: [
+            (500, Data("boom".utf8), [:]),                       // first POST fails → .pending (retry)
+            (201, Data(#"{"id":9,"activity_id":111}"#.utf8), [:]) // retry succeeds
+        ])
+        let clock = MutableClock(Date(timeIntervalSince1970: 3_100_000))
+        let q = StravaUploadQueue(
+            storage: storage, service: svc,
+            clock: { clock.now },
+            sleep: { secs in clock.advance(by: secs) }
+        )
+        let id = uuid("13131313-1313-1313-1313-131313131313")
+        _ = try await q.enqueue(workoutID: id, startDate: clock.now, tcxData: Data("<tcx/>".utf8))
+
+        await drainViaScheduler(q)
+
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .completed, "retry must fire autonomously once backoff elapses")
+        XCTAssertEqual(snap[0].stravaActivityID, 111)
+    }
+
+    // MARK: - Fix A: next-due-time computation (pure)
+
+    func test_nextDueDate_picksSoonestAcrossMixedEntries() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let mk: (StravaUploadEntryStatus, Date?, Int, Int?) -> StravaUploadQueueEntry = { status, last, retry, polls in
+            StravaUploadQueueEntry(
+                workoutID: UUID(), startDate: now, status: status,
+                retryCount: retry, lastAttemptDate: last, errorMessage: nil,
+                stravaUploadID: 1, stravaActivityID: nil, enqueuedAt: now,
+                confirmPollCount: polls)
+        }
+        let entries = [
+            mk(.pending, now, 0, nil),       // retry delay 30 → due now+30
+            mk(.processing, now, 0, 0),      // poll delay 2  → due now+2  (soonest)
+            mk(.completed, now, 0, nil),     // terminal — ignored
+            mk(.failed, now, 5, nil)         // terminal — ignored
+        ]
+        let due = StravaUploadQueue.nextDueDate(entries: entries, now: now, pauseUntil: nil)
+        XCTAssertEqual(due, now.addingTimeInterval(2))
+    }
+
+    func test_nextDueDate_neverAttempted_isDueNow() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let entry = StravaUploadQueueEntry(
+            workoutID: UUID(), startDate: now, status: .pending,
+            retryCount: 0, lastAttemptDate: nil, errorMessage: nil,
+            stravaUploadID: nil, stravaActivityID: nil, enqueuedAt: now)
+        XCTAssertEqual(StravaUploadQueue.nextDueDate(entries: [entry], now: now, pauseUntil: nil), now)
+    }
+
+    func test_nextDueDate_honorsPauseUntil() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let pause = now.addingTimeInterval(300)
+        let entry = StravaUploadQueueEntry(
+            workoutID: UUID(), startDate: now, status: .processing,
+            retryCount: 0, lastAttemptDate: now, errorMessage: nil,
+            stravaUploadID: 1, stravaActivityID: nil, enqueuedAt: now,
+            confirmPollCount: 0) // poll delay 2 → due now+2, but pause pushes to now+300
+        XCTAssertEqual(StravaUploadQueue.nextDueDate(entries: [entry], now: now, pauseUntil: pause), pause)
+    }
+
+    func test_nextDueDate_allTerminal_isNil() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let mk: (StravaUploadEntryStatus) -> StravaUploadQueueEntry = { status in
+            StravaUploadQueueEntry(
+                workoutID: UUID(), startDate: now, status: status,
+                retryCount: 0, lastAttemptDate: now, errorMessage: nil,
+                stravaUploadID: nil, stravaActivityID: nil, enqueuedAt: now)
+        }
+        XCTAssertNil(StravaUploadQueue.nextDueDate(entries: [mk(.completed), mk(.failed)], now: now, pauseUntil: nil))
+    }
+
+    // MARK: - Fix B: upload timeout → retryable .pending
+
+    /// A transport that throws (modelling the background-upload timeout, which
+    /// surfaces as `StravaUploadError.network`) must leave the entry retryable
+    /// `.pending`, never stuck in `.uploading`.
+    func test_uploadTransportTimeout_marksPendingNotStuck() async throws {
+        let storage = InMemoryStorage()
+        let (svc, transport) = makeService()
+        transport.errors = [StravaUploadError.network("Upload timed out")]
+        let clock = MutableClock(Date(timeIntervalSince1970: 3_200_000))
+        let q = StravaUploadQueue(storage: storage, service: svc, clock: { clock.now })
+        let id = uuid("14141414-1414-1414-1414-141414141414")
+        _ = try await q.enqueue(workoutID: id, startDate: clock.now, tcxData: Data("<tcx/>".utf8))
+        await q.processOne()
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .pending, "a timed-out upload must be retryable, not stuck in .uploading")
+        XCTAssertEqual(snap[0].retryCount, 1, "the timeout consumes one retry")
+    }
+
+    // MARK: - Fix C: orphaned background completion reconciliation
+
+    func test_reconcileOrphanedUpload_2xxWithActivity_completesEntry() async throws {
+        let storage = InMemoryStorage()
+        let id = uuid("15151515-1515-1515-1515-151515151515")
+        storage.entries = [StravaUploadQueueEntry(
+            workoutID: id, startDate: Date(), status: .uploading,
+            retryCount: 0, lastAttemptDate: Date(), errorMessage: nil,
+            stravaUploadID: nil, stravaActivityID: nil, enqueuedAt: Date())]
+        storage.tcx[id] = Data("<tcx/>".utf8)
+        let (svc, _) = makeService()
+        // Reclaim-at-init rewrites the persisted `.uploading` → `.pending`,
+        // which is still a reconcilable state for an in-flight bg completion.
+        let q = StravaUploadQueue(storage: storage, service: svc)
+        let outcome = OrphanedUploadOutcome(
+            externalID: id.uuidString,
+            statusCode: 201,
+            body: Data(#"{"id":77,"activity_id":999}"#.utf8),
+            errorDescription: nil)
+        await q.reconcileOrphanedUpload(outcome)
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .completed, "orphaned 2xx completion must advance the entry, not be dropped")
+        XCTAssertEqual(snap[0].stravaActivityID, 999)
+    }
+
+    func test_reconcileOrphanedUpload_2xxProcessing_movesToProcessing() async throws {
+        let storage = InMemoryStorage()
+        let id = uuid("16161616-1616-1616-1616-161616161616")
+        storage.entries = [StravaUploadQueueEntry(
+            workoutID: id, startDate: Date(), status: .pending,
+            retryCount: 0, lastAttemptDate: Date(), errorMessage: nil,
+            stravaUploadID: nil, stravaActivityID: nil, enqueuedAt: Date())]
+        storage.tcx[id] = Data("<tcx/>".utf8)
+        // No POST responses needed: reconcile sets `.processing`, then the
+        // self-scheduler's first poll has no response — but processOne isn't
+        // auto-called here because reconcile awaits process() which will pick
+        // the not-yet-due processing entry → no transport call. Provide one
+        // poll response anyway in case it is due.
+        let (svc, _) = makeService(responses: [
+            (200, Data(#"{"id":77,"status":"processing"}"#.utf8), [:])
+        ])
+        let clock = MutableClock(Date(timeIntervalSince1970: 3_300_000))
+        let q = StravaUploadQueue(storage: storage, service: svc, clock: { clock.now })
+        let outcome = OrphanedUploadOutcome(
+            externalID: id.uuidString,
+            statusCode: 201,
+            body: Data(#"{"id":77}"#.utf8),
+            errorDescription: nil)
+        await q.reconcileOrphanedUpload(outcome)
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .processing, "accepted-but-processing orphan enters the poll phase")
+        XCTAssertEqual(snap[0].stravaUploadID, 77)
+    }
+
+    func test_reconcileOrphanedUpload_failure_marksPendingRetryable() async throws {
+        let storage = InMemoryStorage()
+        let id = uuid("17171717-1717-1717-1717-171717171717")
+        storage.entries = [StravaUploadQueueEntry(
+            workoutID: id, startDate: Date(), status: .pending,
+            retryCount: 0, lastAttemptDate: Date().addingTimeInterval(-10_000),
+            errorMessage: nil, stravaUploadID: nil, stravaActivityID: nil,
+            enqueuedAt: Date())]
+        storage.tcx[id] = Data("<tcx/>".utf8)
+        // The reconcile marks `.pending`; the awaited process() then re-POSTs
+        // (entry is overdue). Give it a 409 → completed so the test is closed.
+        let (svc, _) = makeService(responses: [
+            (409, Data(#"{"id":1,"status":"duplicate"}"#.utf8), [:])
+        ])
+        let q = StravaUploadQueue(storage: storage, service: svc)
+        let outcome = OrphanedUploadOutcome(
+            externalID: id.uuidString,
+            statusCode: 500,
+            body: Data("server error".utf8),
+            errorDescription: "server error")
+        await q.reconcileOrphanedUpload(outcome)
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .completed, "failed orphan is re-driven and 409-deduped to completed")
+    }
+
+    func test_reconcileOrphanedUpload_unknownWorkout_isNoOp() async throws {
+        let storage = InMemoryStorage()
+        let (svc, _) = makeService()
+        let q = StravaUploadQueue(storage: storage, service: svc)
+        let outcome = OrphanedUploadOutcome(
+            externalID: UUID().uuidString,
+            statusCode: 201,
+            body: Data(#"{"id":1,"activity_id":1}"#.utf8),
+            errorDescription: nil)
+        await q.reconcileOrphanedUpload(outcome)
+        let snap = await q.snapshot()
+        XCTAssertTrue(snap.isEmpty, "an orphan for an unknown workout must not create an entry")
+    }
 }

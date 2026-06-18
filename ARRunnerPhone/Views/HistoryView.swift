@@ -70,7 +70,7 @@ struct HistoryView: View {
         case .pending:
             Image(systemName: "hourglass")
                 .foregroundStyle(.orange)
-        case .uploading:
+        case .uploading, .processing:
             ProgressView()
                 .controlSize(.small)
         case .completed:
@@ -97,16 +97,29 @@ struct HistoryView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.stravaOrange)
-            case .failed:
-                Button {
-                    Task { await viewModel.retryUpload(id: row.id) }
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                        .font(.callout)
+            case .failed(let message):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(Self.failedText(message))
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Button {
+                        Task { await viewModel.retryUpload(id: row.id) }
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .font(.callout)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
-            case .pending, .uploading:
+            case .pending(let message):
+                Text(Self.statusText(prefix: "Waiting", message: message))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .uploading:
                 Text("Uploading…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .processing(let message):
+                Text(Self.statusText(prefix: "Strava processing", message: message))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .completed(let activityID):
@@ -123,6 +136,23 @@ struct HistoryView: View {
                 }
             }
         }
+    }
+
+    /// Compose a concise status line, appending the queue's diagnostic message
+    /// (Strava processing note or last error) when present so a stuck upload
+    /// shows *why* instead of an indefinite spinner (Fix D, v0.6.2).
+    static func statusText(prefix: String, message: String?) -> String {
+        if let message, !message.isEmpty {
+            return "\(prefix): \(message)"
+        }
+        return "\(prefix)…"
+    }
+
+    static func failedText(_ message: String?) -> String {
+        if let message, !message.isEmpty {
+            return "Failed: \(message)"
+        }
+        return "Upload failed"
     }
 
     // MARK: - Formatting
