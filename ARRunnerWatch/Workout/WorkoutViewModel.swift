@@ -304,6 +304,13 @@ final class WorkoutViewModel {
             // display state regardless of what happened pre-workout.
             hudPushPolicy.reset()
             needsHUDPowerOn = true
+            // v0.6.0 — give the glasses fan-out the active unit system +
+            // activity so per-field formatting (km/h↔mph, min/km↔min/mi)
+            // matches the wrist display for this workout type.
+            await glasses?.configure(
+                unitSystem: UnitPreference.current,
+                activity: activity.activity
+            )
             startElapsedTicker()
             startMirrorTicker()
             await mirror?.sendLifecycle(.started(activity))
@@ -792,25 +799,63 @@ final class WorkoutViewModel {
     /// (re)connect, and on workout end.
     fileprivate func pushHUDFrameIfConnected(transport overrideTransport: (any GlassesFrameTransport)? = nil) async {
         guard let transport = overrideTransport ?? self.transport else { return }
-        let payload = RunningHUDFrame.payload(
+        // v0.6.0 — the live HUD follows the active workout type's default
+        // layout (`HUDLayout.default(for:)`) and the user's unit system, so
+        // an outdoor-bike HUD shows km/h speed where a run HUD shows pace.
+        // Slot→metric ordering and formatting are the same source of truth
+        // the watch UI uses; the fixed-slot grid keeps the rc16
+        // bench-validated geometry.
+        let unitSystem = UnitPreference.current
+        let layout = HUDLayout.default(for: sport)
+        let grid = HUDGridDefinition.standard4
+        let snapshot = RunningHUDFrame.HUDMetricSnapshot(
             elapsedSeconds: elapsed,
-            distanceMeters: distanceMeters ?? 0,
-            heartRate: heartRate
+            distanceMeters: distanceMeters,
+            heartRate: heartRate,
+            speedMetersPerSecond: hudSpeedMetersPerSecond,
+            cadence: cadence,
+            activeKilocalories: estimatedActiveKilocalories,
+            elevationMeters: nil
         )
-        guard hudPushPolicy.shouldSend(payload, now: now()) else { return }
+        let strings = RunningHUDFrame.metricStrings(
+            snapshot: snapshot, activity: sport.activity, unitSystem: unitSystem
+        )
+        // Change-detection gates on the rendered slot values so a frame with
+        // identical visible metrics collapses to zero BLE traffic.
+        let signature = RunningHUDFrame.orderedSlotStrings(
+            metricStrings: strings, layout: layout, grid: grid
+        )
+        guard hudPushPolicy.shouldSend(signature, now: now()) else { return }
         guard await transport.connectionState == .connected else { return }
         // rc4 regression: the very first frame of a connection prepends
-        // `power(on:true)` so Engo 2's display is guaranteed to be active
-        // before any `txt` draws land. Subsequent ticks use plain frames
-        // to keep BLE writes minimal.
+        // `cfgSet → power(on:true)` so Engo 2's display is active and the
+        // ALooK font/icon namespace is selected before any `txt`/`imgDisplay`
+        // land. Subsequent ticks use plain frames to keep BLE writes minimal.
         let frames: [[UInt8]]
         if needsHUDPowerOn {
-            frames = RunningHUDFrame.framesWithPowerOn(for: payload)
+            frames = RunningHUDFrame.framesWithPowerOn(
+                metricStrings: strings, layout: layout, grid: grid
+            )
             needsHUDPowerOn = false
         } else {
-            frames = RunningHUDFrame.frames(for: payload)
+            frames = RunningHUDFrame.frames(
+                metricStrings: strings, layout: layout, grid: grid
+            )
         }
         try? await transport.sendCommands(frames)
+    }
+
+    /// Live ground speed (m/s) for the cycling HUD: prefer the substrate's
+    /// `.speed` sample, falling back to the running average
+    /// (distance / elapsed) so the speed slot is non-placeholder before the
+    /// first sample. Mirrors `WorkoutView.cyclingSpeedMetersPerSecond`.
+    /// `nil` for non-cycling activities (whose default layouts carry no
+    /// speed slot anyway).
+    private var hudSpeedMetersPerSecond: Double? {
+        guard sport.activity == .cycling else { return nil }
+        if let speed = speedMetersPerSecond { return speed }
+        guard let distance = distanceMeters, elapsed > 0 else { return nil }
+        return distance / elapsed
     }
 
     /// End-of-workout splash — single fire-and-forget push with the final
@@ -827,7 +872,8 @@ final class WorkoutViewModel {
         let payload = RunningHUDFrame.payload(
             elapsedSeconds: elapsed,
             distanceMeters: distanceMeters ?? 0,
-            heartRate: heartRate
+            heartRate: heartRate,
+            unitSystem: UnitPreference.current
         )
         // Same power-on belt-and-braces as the per-tick path: if the
         // display drifted into low-power between the last tick and the

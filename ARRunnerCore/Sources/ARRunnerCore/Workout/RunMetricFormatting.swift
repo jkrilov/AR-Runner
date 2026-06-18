@@ -134,6 +134,28 @@ public enum RunMetricFormatting {
         }
     }
 
+    /// Unit-aware *instantaneous* pace from a seconds-per-kilometre value.
+    ///
+    /// Distinct from `formatAveragePace(...)`, which derives pace from
+    /// cumulative elapsed/distance. This variant formats a pace the caller
+    /// already holds in sec/km (e.g. the `.pace` `WorkoutMetric` the glasses
+    /// fan-out delivers). Metric renders `MM:SS/km`; imperial converts to
+    /// `MM:SS/mi`. Non-finite / non-positive input returns the matching
+    /// `--:--` placeholder.
+    public static func formatPace(
+        secondsPerKilometer: Double,
+        unitSystem: UnitSystem
+    ) -> String {
+        switch unitSystem {
+        case .metric:
+            return formatPace(secondsPerUnit: secondsPerKilometer, suffix: "/km") ?? "--:--/km"
+        case .imperial:
+            // sec/km → sec/mi by scaling the per-unit distance.
+            let secondsPerMile = secondsPerKilometer * (metersPerMile / metersPerKilometer)
+            return formatPace(secondsPerUnit: secondsPerMile, suffix: "/mi") ?? "--:--/mi"
+        }
+    }
+
     // MARK: - Elevation
 
     /// Unit-aware elevation, e.g. "123 m" (metric) or "404 ft" (imperial).
