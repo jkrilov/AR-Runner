@@ -143,6 +143,7 @@ final class HistoryViewModel {
         switch entry.status {
         case .pending:    return .pending
         case .uploading:  return .uploading
+        case .processing: return .uploading
         case .completed:  return .completed(activityID: entry.stravaActivityID)
         case .failed:     return .failed(message: entry.errorMessage)
         }

@@ -25,7 +25,7 @@ final class StravaUploadServiceTests: XCTestCase {
         func data(for request: URLRequest) async throws -> (Data, URLResponse) {
             try next(request: request, body: Data())
         }
-        func upload(for request: URLRequest, from body: Data) async throws -> (Data, URLResponse) {
+        func upload(for request: URLRequest, from body: Data, externalID: String) async throws -> (Data, URLResponse) {
             try next(request: request, body: body)
         }
         private func next(request: URLRequest, body: Data) throws -> (Data, URLResponse) {

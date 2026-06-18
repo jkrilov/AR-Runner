@@ -52,13 +52,18 @@ enum StravaUploadError: Error, Equatable, Sendable {
 /// Tiny transport seam so tests can swap `URLSession.shared` for a fake
 /// without instantiating a real network stack. Mirrors the relevant slice of
 /// `URLSession.data(for:)` + `URLSession.upload(for:from:)`.
+///
+/// `externalID` (= `HKWorkout.uuid`) is threaded into the upload call so a
+/// background-session transport can tag the underlying `URLSessionTask`
+/// (`taskDescription`) and reconcile it after an app relaunch. In-memory
+/// transports ignore it.
 protocol StravaUploadTransport: Sendable {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
-    func upload(for request: URLRequest, from body: Data) async throws -> (Data, URLResponse)
+    func upload(for request: URLRequest, from body: Data, externalID: String) async throws -> (Data, URLResponse)
 }
 
 extension URLSession: StravaUploadTransport {
-    func upload(for request: URLRequest, from body: Data) async throws -> (Data, URLResponse) {
+    func upload(for request: URLRequest, from body: Data, externalID: String) async throws -> (Data, URLResponse) {
         try await self.upload(for: request, from: body, delegate: nil)
     }
 }
@@ -78,7 +83,7 @@ final class StravaUploadService: @unchecked Sendable {
 
     init(
         tokenStore: StravaTokenStore = .shared,
-        transport: StravaUploadTransport = URLSession.shared,
+        transport: StravaUploadTransport = BackgroundStravaUploadTransport.shared,
         apiBaseURL: URL = URL(string: "https://www.strava.com/api/v3")!,
         multipartBoundary: @escaping () -> String = { "arrunner-\(UUID().uuidString)" }
     ) {
@@ -184,7 +189,7 @@ final class StravaUploadService: @unchecked Sendable {
     private func performUpload(request: URLRequest, body: Data, externalID: String) async throws -> StravaUploadResult {
         let (data, response): (Data, URLResponse)
         do {
-            (data, response) = try await transport.upload(for: request, from: body)
+            (data, response) = try await transport.upload(for: request, from: body, externalID: externalID)
         } catch {
             throw StravaUploadError.network(error.localizedDescription)
         }

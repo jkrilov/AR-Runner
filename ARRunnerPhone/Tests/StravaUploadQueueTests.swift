@@ -202,7 +202,7 @@ final class StravaUploadQueueTests: XCTestCase {
         let storage = InMemoryStorage()
         let (svc, _) = makeService(responses: [
             (500, Data("err".utf8), [:]),
-            (201, Data(#"{"id":1}"#.utf8), [:])
+            (201, Data(#"{"id":1,"activity_id":999}"#.utf8), [:])
         ])
         let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
         let q = StravaUploadQueue(storage: storage, service: svc, clock: { clock.now })
@@ -218,6 +218,165 @@ final class StravaUploadQueueTests: XCTestCase {
         clock.advance(by: 60)
         await q.processOne()
         snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .completed)
+    }
+
+    // MARK: - Part 1: reclaim orphaned `.uploading` entries
+
+    func test_orphanedUploading_isReclaimedToPending_onInit_andPersisted() async throws {
+        let storage = InMemoryStorage()
+        let id = uuid("88888888-8888-8888-8888-888888888888")
+        // Simulate an app killed mid-upload: persisted as `.uploading`.
+        storage.entries = [StravaUploadQueueEntry(
+            workoutID: id, startDate: Date(), status: .uploading,
+            retryCount: 0, lastAttemptDate: Date(), errorMessage: nil,
+            stravaUploadID: nil, stravaActivityID: nil, enqueuedAt: Date())]
+        storage.tcx[id] = Data("<tcx/>".utf8)
+        let (svc, _) = makeService()
+        let q = StravaUploadQueue(storage: storage, service: svc)
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .pending, "interrupted upload must be reclaimed")
+        XCTAssertEqual(snap[0].retryCount, 0, "reclaim must not consume a retry attempt")
+        XCTAssertEqual(storage.entries[0].status, .pending, "reclaim must be persisted")
+    }
+
+    func test_reclaimedUploading_isProcessedToCompletion() async throws {
+        let storage = InMemoryStorage()
+        let id = uuid("99999999-9999-9999-9999-999999999999")
+        storage.entries = [StravaUploadQueueEntry(
+            workoutID: id, startDate: Date(), status: .uploading,
+            retryCount: 0, lastAttemptDate: nil, errorMessage: nil,
+            stravaUploadID: nil, stravaActivityID: nil, enqueuedAt: Date())]
+        storage.tcx[id] = Data("<tcx/>".utf8)
+        let (svc, _) = makeService(responses: [
+            (201, Data(#"{"id":11,"activity_id":555}"#.utf8), [:])
+        ])
+        let q = StravaUploadQueue(storage: storage, service: svc)
+        await q.processOne()
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .completed)
+        XCTAssertEqual(snap[0].stravaActivityID, 555)
+    }
+
+    func test_reclaimOrphans_pureFunction_onlyRewritesUploading() {
+        let base = Date()
+        let mk: (StravaUploadEntryStatus) -> StravaUploadQueueEntry = { status in
+            StravaUploadQueueEntry(
+                workoutID: UUID(), startDate: base, status: status,
+                retryCount: 2, lastAttemptDate: base, errorMessage: nil,
+                stravaUploadID: nil, stravaActivityID: nil, enqueuedAt: base)
+        }
+        let input = [mk(.pending), mk(.uploading), mk(.processing), mk(.completed), mk(.failed)]
+        let out = StravaUploadQueue.reclaimOrphans(input)
+        XCTAssertEqual(out.map(\.status), [.pending, .pending, .processing, .completed, .failed])
+        XCTAssertEqual(out[1].retryCount, 2, "reclaim preserves retryCount")
+    }
+
+    // MARK: - Part 3: confirmation polling
+
+    func test_processing_pollPendingThenActivity_completesWithActivityID() async throws {
+        let storage = InMemoryStorage()
+        let (svc, _) = makeService(responses: [
+            (201, Data(#"{"id":77}"#.utf8), [:]),                       // POST accepted, no activity yet
+            (200, Data(#"{"id":77,"status":"processing"}"#.utf8), [:]), // poll #1 — still processing
+            (200, Data(#"{"id":77,"activity_id":888}"#.utf8), [:])      // poll #2 — done
+        ])
+        let clock = MutableClock(Date(timeIntervalSince1970: 2_000_000))
+        let q = StravaUploadQueue(storage: storage, service: svc, clock: { clock.now })
+        let id = uuid("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        _ = try await q.enqueue(workoutID: id, startDate: clock.now, tcxData: Data("<tcx/>".utf8))
+
+        await q.processOne()
+        var snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .processing)
+        XCTAssertEqual(snap[0].stravaUploadID, 77)
+
+        clock.advance(by: 5)
+        await q.processOne()
+        snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .processing, "still processing after first poll")
+        XCTAssertEqual(snap[0].confirmPollCount, 1)
+
+        clock.advance(by: 30)
+        await q.processOne()
+        snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .completed)
+        XCTAssertEqual(snap[0].stravaActivityID, 888)
+    }
+
+    func test_processing_pollError_marksFailed() async throws {
+        let storage = InMemoryStorage()
+        let (svc, _) = makeService(responses: [
+            (201, Data(#"{"id":77}"#.utf8), [:]),
+            (200, Data(#"{"id":77,"error":"Time data not found"}"#.utf8), [:])
+        ])
+        let clock = MutableClock(Date(timeIntervalSince1970: 2_000_000))
+        let q = StravaUploadQueue(storage: storage, service: svc, clock: { clock.now })
+        let id = uuid("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        _ = try await q.enqueue(workoutID: id, startDate: clock.now, tcxData: Data("<tcx/>".utf8))
+
+        await q.processOne()
+        clock.advance(by: 5)
+        await q.processOne()
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .failed)
+        XCTAssertEqual(snap[0].errorMessage, "Time data not found")
+    }
+
+    func test_processing_budgetExceeded_revertsToPending_andStaysReclaimable() async throws {
+        let storage = InMemoryStorage()
+        // 1 POST + maxConfirmPolls GETs that never produce an activity.
+        var responses: [(Int, Data, [String: String])] = [
+            (201, Data(#"{"id":77}"#.utf8), [:])
+        ]
+        responses.append(contentsOf: Array(
+            repeating: (200, Data(#"{"id":77,"status":"processing"}"#.utf8), [String: String]()),
+            count: StravaUploadQueue.maxConfirmPolls))
+        let (svc, _) = makeService(responses: responses)
+        let clock = MutableClock(Date(timeIntervalSince1970: 2_000_000))
+        let q = StravaUploadQueue(storage: storage, service: svc, clock: { clock.now })
+        let id = uuid("cccccccc-cccc-cccc-cccc-cccccccccccc")
+        _ = try await q.enqueue(workoutID: id, startDate: clock.now, tcxData: Data("<tcx/>".utf8))
+
+        await q.processOne() // POST → processing
+        for _ in 0..<StravaUploadQueue.maxConfirmPolls {
+            clock.advance(by: 60)
+            await q.processOne()
+        }
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .pending, "budget exceeded must revert to a reclaimable .pending, not a stuck state")
+        XCTAssertEqual(snap[0].retryCount, 1, "a processing timeout consumes exactly one upload retry")
+        XCTAssertEqual(snap[0].confirmPollCount, 0)
+    }
+
+    // MARK: - 409 duplicate → completed (idempotency safety net)
+
+    func test_duplicate409_marksCompleted() async throws {
+        let storage = InMemoryStorage()
+        let (svc, _) = makeService(responses: [
+            (409, Data(#"{"id":42,"external_id":"x","status":"duplicate","error":"duplicate of activity"}"#.utf8), [:])
+        ])
+        let q = StravaUploadQueue(storage: storage, service: svc)
+        let id = uuid("dddddddd-dddd-dddd-dddd-dddddddddddd")
+        _ = try await q.enqueue(workoutID: id, startDate: Date(), tcxData: Data("<tcx/>".utf8))
+        await q.processOne()
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap[0].status, .completed, "409 duplicate is an idempotent success")
+    }
+
+    func test_reEnqueueCompleted_isNoOp() async throws {
+        let storage = InMemoryStorage()
+        let (svc, _) = makeService(responses: [
+            (201, Data(#"{"id":11,"activity_id":555}"#.utf8), [:])
+        ])
+        let q = StravaUploadQueue(storage: storage, service: svc)
+        let id = uuid("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+        _ = try await q.enqueue(workoutID: id, startDate: Date(), tcxData: Data("<tcx/>".utf8))
+        await q.processOne()
+        // Re-enqueue the same workout — must not reset the completed entry.
+        _ = try await q.enqueue(workoutID: id, startDate: Date(), tcxData: Data("<tcx/>".utf8))
+        let snap = await q.snapshot()
+        XCTAssertEqual(snap.count, 1)
         XCTAssertEqual(snap[0].status, .completed)
     }
 }

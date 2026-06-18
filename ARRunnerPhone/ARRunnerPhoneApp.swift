@@ -2,10 +2,37 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import SwiftUI
+import UIKit
+
+/// Bridges UIKit app-lifecycle callbacks that SwiftUI's `App` doesn't expose.
+///
+/// The only thing it does today is re-attach the Strava background upload
+/// session when iOS relaunches the app to deliver finished background transfer
+/// events (`sessionSendsLaunchEvents = true`). Without capturing this
+/// completion handler the system would treat the app as hung and may throttle
+/// future background uploads.
+final class PhoneAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == BackgroundStravaUploadTransport.sessionIdentifier else {
+            completionHandler()
+            return
+        }
+        BackgroundStravaUploadTransport.shared.setSystemCompletionHandler(completionHandler)
+        BackgroundStravaUploadTransport.shared.reattach()
+        // Drain any entries the just-finished background uploads moved forward
+        // (e.g. `.processing` confirmations) now that we're awake.
+        Task { await StravaUploadQueue.shared.process() }
+    }
+}
 
 @main
 @MainActor
 struct ARRunnerPhoneApp: App {
+    @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw: String = AppearanceMode.system.rawValue
 
     private var appearance: AppearanceMode {
