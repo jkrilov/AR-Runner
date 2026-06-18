@@ -245,10 +245,13 @@ public actor ActiveLookGlassesAdapter: GlassesFrameTransport {
         }
         // P1.4 — same guard at the per-tick write site.
         CuratedLayoutCatalog.assertNotPlaceholder(deviceID, layoutID: update.layoutID)
-        let frame = ActiveLookCommand.updateWidget(
-            layoutID: deviceID,
-            fieldIndex: update.fieldIndex,
-            value: update.value
+        // ActiveLook layouts are one-field-per-slot (spec §4.9); the device
+        // layout ID *is* the slot identity. Push the new value via the
+        // atomic clear+draw primitive (0x69) — the phantom 0x3A widgetUpdate
+        // command was removed (it does not exist in the ActiveLook spec).
+        let frame = ActiveLookCommand.layoutClearAndDisplay(
+            id: deviceID,
+            text: update.value
         )
         try await write(frame)
     }

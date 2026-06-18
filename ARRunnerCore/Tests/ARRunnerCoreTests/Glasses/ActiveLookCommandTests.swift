@@ -29,26 +29,40 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(frame[5], 15)
     }
 
-    func testWidgetUpdateContainsLayoutAndFieldAndUTF8Value() {
-        let frame = ActiveLookCommand.updateWidget(layoutID: 0x02, fieldIndex: 0x01, value: "5:42")
+    func testLayoutClearAndDisplayContainsLayoutIDAndUTF8Value() {
+        // 0x69 layoutClearAndDisplay per ActiveLook spec §4.9: payload is
+        // [id, text bytes, 0x00]. This is the per-tick atomic erase+draw
+        // primitive that replaced the phantom 0x3A widgetUpdate command.
+        let frame = ActiveLookCommand.layoutClearAndDisplay(id: 0x02, text: "5:42")
         XCTAssertEqual(frame.first, 0xFF)
         XCTAssertEqual(frame.last, 0xAA)
-        XCTAssertEqual(frame[1], ActiveLookCommand.ID.widgetUpdate.rawValue)
+        XCTAssertEqual(frame[1], ActiveLookCommand.ID.layoutClearAndDisplay.rawValue)
+        XCTAssertEqual(frame[1], 0x69)
         XCTAssertEqual(frame[2], 0x01)            // format: 1-byte queryID
         // queryID placeholder at index 4; payload starts at index 5
         XCTAssertEqual(frame[4], 0x00)
-        XCTAssertEqual(frame[5], 0x02)
-        XCTAssertEqual(frame[6], 0x01)
+        XCTAssertEqual(frame[5], 0x02)            // layout id
         // value bytes "5:42" + null terminator
-        XCTAssertEqual(Array(frame[7..<11]), Array("5:42".utf8))
-        XCTAssertEqual(frame[11], 0x00)
+        XCTAssertEqual(Array(frame[6..<10]), Array("5:42".utf8))
+        XCTAssertEqual(frame[10], 0x00)
+        // Full byte-exact frame:
+        XCTAssertEqual(frame, [0xFF, 0x69, 0x01, 0x0C, 0x00,
+                               0x02, 0x35, 0x3A, 0x34, 0x32, 0x00, 0xAA])
+    }
+
+    func testNoPhantomWidgetUpdateCommandID() {
+        // Regression guard: the phantom 0x3A command must never reappear.
+        // No ActiveLookCommand.ID case may carry rawValue 0x3A — it does not
+        // exist in ActiveLook_API.md and triggers a 0xE2 protocol error.
+        XCTAssertNil(ActiveLookCommand.ID(rawValue: 0x3A),
+                     "0x3A is a phantom command and must not be defined")
     }
 
     func testTwoByteLengthPromotionForLargePayload() {
         // Force length > 255 to verify the format byte's high bit flips
         // while the queryID nibble stays at 0x01.
         let big = String(repeating: "x", count: 300)
-        let frame = ActiveLookCommand.updateWidget(layoutID: 0x01, fieldIndex: 0x00, value: big)
+        let frame = ActiveLookCommand.layoutClearAndDisplay(id: 0x01, text: big)
         XCTAssertGreaterThan(frame.count, 0xFF)
         // Format byte must indicate 2-byte length encoding AND 1-byte queryID.
         XCTAssertEqual(frame[2] & 0x10, 0x10)
@@ -83,11 +97,20 @@ final class ActiveLookCommandTests: XCTestCase {
         XCTAssertEqual(frame, [0xFF, 0x01, 0x00, 0x05, 0xAA])
     }
 
-    func testDisplayLayoutFrameCarriesOnlyTheLayoutID() {
-        // v0.2 spec compliance: cmd 0x62 takes a single layout-ID byte as
-        // payload. With the queryID byte, the frame is 7 bytes (was 6 in v0.1).
-        let frame = ActiveLookCommand.displayLayout(id: 0x02)
-        XCTAssertEqual(frame, [0xFF, 0x62, 0x01, 0x07, 0x00, 0x02, 0xAA])
+    func testDisplayLayoutFrameCarriesIDAndNullTerminatedText() {
+        // ActiveLook spec §4.9: cmd 0x62 layoutDisplay takes [id, text, 0x00].
+        // With no text, the payload is [id, 0x00] (empty but still NUL-
+        // terminated). With the queryID byte the frame is 8 bytes.
+        let activate = ActiveLookCommand.displayLayout(id: 0x02)
+        XCTAssertEqual(activate, [0xFF, 0x62, 0x01, 0x08, 0x00, 0x02, 0x00, 0xAA])
+
+        // With text "12.5" rendered into layout #0x0D (spec §5.11 shape, plus
+        // our mandatory 1-byte queryID): payload = [0x0D, '1','2','.','5', 0x00].
+        let withText = ActiveLookCommand.displayLayout(id: 0x0D, text: "12.5")
+        XCTAssertEqual(withText, [0xFF, 0x62, 0x01, 0x0C, 0x00,
+                                  0x0D, 0x31, 0x32, 0x2E, 0x35, 0x00, 0xAA])
+        // Byte immediately before the footer is always the NUL terminator.
+        XCTAssertEqual(withText[withText.count - 2], 0x00)
     }
 
     /// rc9: holdFlush (cmdID 0x39) per ActiveLook spec §4.6 — wraps a
