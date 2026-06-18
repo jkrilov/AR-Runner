@@ -24,9 +24,18 @@ Audited Joe's report: "When I discard a run on the watch it shouldn't save to Ap
 
 ---
 
-## Key Patterns (Load-Bearing)
+## Session 2026-06-18 — v0.6.0 Fitness-Domain Correctness Analysis
 
-**Terminal-path separation:** save/discard/confirm/cancel need distinct code paths. Never branch off a shared path; tests must cover positive save, positive discard, shared helpers, and crash-safety. Skill: 	erminal-path-data-leak-qa.
+**Context:** QA analysis for 0.6.0 multi-sport launch. Evaluated metric validity (pace/speed/cadence/elevation per sport), HealthKit correctness (indoor/outdoor mapping), TCX sport mapping, and energy estimation accuracy across running/walking/cycling.
+
+**Deliverables:**
+- **11 correctness risks identified** (R1–R11): missing `.speed` MetricKind (blocker for cycling), pace formatter miles-only (no km/h path), GlassesService pace assumes sec/km for all sports, all HUD presets named `*Run`, indoor elevation meaningless (barometric noise), cadence unit semantics differ (steps/min vs. RPM), TCX sport defaults to "Running" for all, etc.
+- **Test strategy:** SportTypeExtendedTests, MetricValidityTests, MetricFormattingExtendedTests, HUDLayoutDefaultTests, MetricLayoutValidationTests, EnergyEstimatorCrossSportTests, WCMessageSchemaVersionTests.
+- **Device bench:** indoor distance accuracy, cadence sensor presence/absence, elevation indoors (barometric noise), energy kcal reconciliation across sports.
+
+**Status:** Analysis delivered to Richards/Laughlin; test writing deferred to post-PR-#121 (after Core API stabilizes).
+
+**Learnings:** Per-sport metric validity must be checked at edit time (phone layout picker) + render time (watch HUD display). Cadence semantics differ (running ≠ cycling); formatters branch on sport. Energy formula (Keytel) validated for running; walking/cycling ranges must be plausible but may need activity-specific scaling.
 
 **Coordinate system:** y_fb = 255 − wearer_top (no font-height subtraction). Real font heights: F1=24 / F2=38 / F3=64 / F4=75 / F5=82. Pin formula in tests, not just constant values. Pinned via rc12/rc16/rc17/rc2 revalidations.
 

@@ -183,33 +183,41 @@ Key data-model files and their roles:
 
 ---
 
-## Session 2026-06-17: v0.6.0 Core Foundation — IMPLEMENTED
+## Session 2026-06-18: v0.6.0 Core Foundation — COMPLETED & SHIPPED
 
-**Branch:** `feat/0.6.0-core-foundation` · **Tests:** `cd ARRunnerCore && swift test` GREEN (259 executed, 1 skipped, 0 failures, Swift 6.0.3 Linux).
+**Branch:** `feat/0.6.0-core-foundation` · **Tests:** 259 executed, 1 skipped, 0 failures  
+**PR #121 merged** (commit 91c6860) → v0.6.0 release tagged v0.6.0-1 → TestFlight build 52.
 
-### Learnings
+**Summary:** Orthogonal `WorkoutType` (activity × environment composite), custom Codable for backward compat on wire, `UnitSystem` + unit-aware formatters, `MetricKind.speed`, per-type `HUDLayout.default(for:)`, WCMessage v6 with lenient decode. All Core tests pass on Linux CI mirror (Docker).
 
-- `swift` is NOT on PATH on the Windows bench. Run Core tests via Docker Linux (matches CI):
-  `docker run --rm -v "${PWD}:/work:ro" swift:6.0 bash -c "cp -r /work/ARRunnerCore /build && cd /build && rm -rf .build && swift test"`.
-  Running `swift test` directly against the bind-mounted `/work` crashes swift-frontend (clang module-cache Bus error) — copy sources into the container's own fs first.
+**Key API surface:**
+- `WorkoutType(activity:ActivityKind, environment:WorkoutEnvironment)` with 6 factories (outdoor run/walk/bike, indoor run/walk/bike) and `.fallback` = `.outdoorRun`
+- `UnitSystem {metric, imperial}`
+- `RunMetricFormatting` parameterized by `UnitSystem` — `formatDistance(meters:unitSystem:)`, `formatSpeed(metersPerSecond:unitSystem:)`, `formatElevation(meters:unitSystem:)`
+- `WCMessage` schema 6: new `.defaultWorkoutType(WorkoutType)`, `.unitPreference(UnitSystem)` cases + `.unknown` fallback for unrecognized kinds
+- `HUDLayout.default(for:)` — per-type presets (cycling → speed, indoor → no elevation)
+- `WorkoutSummary.averageSpeedMetersPerSecond: Double?` (additive)
 
-### Final model shape (deviation from plan noted)
+**Downstream:** Laughlin app-shell migration + Weiss command fixes merged in same PR; Coordinator resolved 3 app-target compile errors (ActionButtonIntent, GlassesService, WorkoutMirrorViewModel) before test.
 
-- `WorkoutType` is a **struct** (`activity: ActivityKind` × `environment: WorkoutEnvironment`), not an enum — `Sendable/Codable/Equatable/Hashable/RawRepresentable/CaseIterable`. `allCases` = the 6 supported combos (incl. indoor walk, approved).
-- **DEVIATION from my plan's dual-key emission:** wire/storage uses a **single** `sport` field carrying `WorkoutType`'s legacy-preserving raw string, NOT both `sport`+`workoutType`. Custom `Codable` encodes outdoor variants as the unchanged `"running"`/`"walking"`/`"cycling"`; indoor combos use new stable strings `"indoor_running"`/`"indoor_walking"`/`"indoor_cycling"`. Decoding an unknown raw value returns `WorkoutType.fallback` (= `.outdoorRun`) instead of throwing, so one bad field never fatals a whole `WCMessage` decode. Trade-off: a v0.5.20 phone can't mirror a NEW indoor type (its flat `SportType` enum throws on the new string) — acceptable since the phone mirror is optional and the watch is the BLE owner.
-- `SportType` (flat enum) **removed**; all Core call sites migrated to `WorkoutType`. Watch/phone shells must migrate `begin(sport:)` + pickers (Laughlin).
+**Outcome:** v0.6.0 shipped to TestFlight; baseline for 0.6.x custom-layout work (v0.6.1+).
 
-### Key public API (downstream build surface)
+---
 
-- `WorkoutType` + `ActivityKind` + `WorkoutEnvironment`; factories `.outdoorRun/.indoorRun/.outdoorWalk/.indoorWalk/.outdoorBike/.indoorBike`, `.fallback`; `isIndoor`, `usesGPS`, `baseActivity`, `displayName`, `rawValue`, `init?(rawValue:)`.
-- `UnitSystem { metric, imperial }` (`Models/UnitSystem.swift`).
-- `MetricKind.speed` (m/s on the wire; cycling).
-- `RunMetricFormatting`: `formatDistance(meters:unitSystem:)`, `formatAveragePace(elapsedSeconds:distanceMeters:unitSystem:)`, `formatSpeed(metersPerSecond:unitSystem:)`, `formatElevation(meters:unitSystem:)` (+ `formatAveragePacePerKilometer` and legacy per-mile/`formatMiles` retained).
-- `HUDLayout.default(for: WorkoutType)` — per-type defaults (bike → `.speed`; indoor → no `.elevation`).
-- `WCMessage` schema **6**: new cases `.defaultWorkoutType(WorkoutType)`, `.unitPreference(UnitSystem)`, decode-only `.unknown` (unrecognized `kind` no longer throws). Layout-catalog payloads deferred to v6.1.
-- `WorkoutSummary.averageSpeedMetersPerSecond: Double?` (additive); `WorkoutController.makeSummary` branches: run/walk → pace, cycling → avg speed.
-- `TCXWorkoutData.tcxSport(for:)` (run→Running, bike→Biking, walk→Other); `ActivityNaming.activityNoun(for:)`/`name(forStart:workoutType:)`.
+## Session 2026-06-17: v0.6 Multi-Sport Planning & Decisions Merged
 
-### File paths
+Comprehensive planning delivered for Feature 1 (multi-sport types). 29 open questions resolved with jkrilov, 5-agent fan-out (Killian, Laughlin, Weiss, Amber, Richards). Key decision: activity × location composite model (not flat 6-case enum) — scales for future sports, mirrors HealthKit's own factoring. Dual-key wire encoding (both `sport` and `workoutType`) for mixed-version compatibility.
 
-`ARRunnerCore/Sources/ARRunnerCore/Models/{WorkoutType,UnitSystem,WorkoutMetric,WorkoutSummary,WorkoutState,WorkoutSession,HUDLayout}.swift`, `.../Messaging/{WCMessage,WorkoutTickMessage}.swift`, `.../Workout/{WorkoutController,WorkoutHealthSubstrate,InMemoryWorkoutHealthSubstrate,RunMetricFormatting}.swift`, `.../Strava/{TCXWorkoutData,ActivityNaming}.swift`.
+**Decisions archived** into `.squad/decisions.md`:
+- Richards: Core foundation (WorkoutType, UnitSystem, v6 schema)
+- Weiss: ActiveLook command fixes (#120)
+- Laughlin: App-shell migration (type picker, preference storage, HealthKit mapping)
+- Amber: Fitness-domain correctness matrix + test strategy
+- Copilot directives: data model + units toggle scope
+
+---
+
+## Earlier Sessions (v0.5 Releases: 2026-05-19 — 2026-05-27)
+
+**Compacted archive:** v0.5.1–v0.5.7 releases (Strava OAuth, TCX, Uploader, Action Button, Appearance) + v0.5.19 dialog fix + v0.5.20 release-guard chore. Full session logs in `.squad/log/` for detailed reference. Key learnings: lifecycle ownership (workout ≠ peripheral), AppIntent cross-process pattern (App Group UserDefaults bridge), WatchConnectivity schema evolution (Codable + Optional + version bump).
+
