@@ -42,10 +42,10 @@ public enum ActiveLookCommand {
         case clear          = 0x01
         case battery        = 0x05
         case luma           = 0x10
-        case widgetUpdate   = 0x3A
         case holdFlush      = 0x39
         case textUpdate     = 0x37
         case layoutDisplay  = 0x62
+        case layoutClearAndDisplay = 0x69
         case layoutPosition = 0x65
         case cfgSet         = 0xD2
         case imgDisplay     = 0x42
@@ -103,21 +103,42 @@ public enum ActiveLookCommand {
         return encode(id: .luma, payload: [clamped])
     }
 
-    /// Activate a baked layout by its on-device numeric ID. (CmdID 0x62)
+    /// Activate a baked layout by its on-device numeric ID and render `text`
+    /// into the layout's text field. (CmdID 0x62 — `layoutDisplay`.)
     ///
-    /// Per spec the activation frame carries only the layout ID byte;
-    /// initial slot content is pushed via `updateWidget(...)` afterwards.
-    public static func displayLayout(id: UInt8) -> [UInt8] {
-        encode(id: .layoutDisplay, payload: [id])
+    /// Per ActiveLook API spec §4.9, the `layoutDisplay` frame is
+    /// `[id, text_string, 0x00]` — the NUL-terminated text string is part of
+    /// **this** command, not a separate update. The example in spec §5.11
+    /// (`0xFF62000914383500AA`) displays layout #20 with text `"85\0"`.
+    ///
+    /// A v0.1 bug shipped `[id]` only; the layout activated but rendered no
+    /// text. `text` defaults to the empty string (still NUL-terminated) so
+    /// callers that only need to activate a slot — and push content later
+    /// via `layoutClearAndDisplay(...)` — keep working unchanged.
+    public static func displayLayout(id: UInt8, text: String = "") -> [UInt8] {
+        var payload: [UInt8] = [id]
+        payload.append(contentsOf: Array(text.utf8))
+        payload.append(0x00)   // NUL-terminate the layout text string
+        return encode(id: .layoutDisplay, payload: payload)
     }
 
-    /// Update one slot inside the currently displayed layout. (CmdID 0x3A)
-    /// This is the runtime hot-path encoder — keep it allocation-light.
-    public static func updateWidget(layoutID: UInt8, fieldIndex: UInt8, value: String) -> [UInt8] {
-        var payload: [UInt8] = [layoutID, fieldIndex]
-        payload.append(contentsOf: Array(value.utf8))
-        payload.append(0x00)
-        return encode(id: .widgetUpdate, payload: payload)
+    /// Atomically clear a layout's clipping region and redraw it with `text`.
+    /// (CmdID 0x69 — `layoutClearAndDisplay`.) This is the correct per-tick
+    /// live-update primitive per ActiveLook spec §4.9: a single atomic
+    /// erase+draw avoids the ghosting a bare `layoutDisplay` (0x62) redraw
+    /// would leave behind when the new value is shorter than the old one.
+    ///
+    /// Wire format (identical shape to `layoutDisplay`): `[id, text, 0x00]`.
+    ///
+    /// Replaces the phantom `0x3A widgetUpdate` command removed in this
+    /// change — that command ID does not exist in `ActiveLook_API.md`
+    /// (the table goes `0x39 holdFlush → (gap) → 0x3C arc`) and triggered a
+    /// 0xE2 protocol-decode error (code 4) on Engo 2 firmware.
+    public static func layoutClearAndDisplay(id: UInt8, text: String) -> [UInt8] {
+        var payload: [UInt8] = [id]
+        payload.append(contentsOf: Array(text.utf8))
+        payload.append(0x00)   // NUL-terminate the layout text string
+        return encode(id: .layoutClearAndDisplay, payload: payload)
     }
 
     /// Draw a UTF-8 string at an absolute (x, y) coordinate on the HUD.
