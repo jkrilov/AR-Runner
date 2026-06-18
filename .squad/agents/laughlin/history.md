@@ -87,7 +87,69 @@ Release-guard monotonicity fix validated end-to-end. PR #117, tag `v0.5.20-1`, w
 
 ## Next Phase
 
-Waiting for Joe's bench confirmation of v0.5.19 discard fix. v0.5.20 should include a chore to fix the elease-testflight.yml tag-monotonicity guard (framework will need coordination with any parallel pre-release work).
+Waiting for Joe's bench confirmation of v0.5.19 discard fix. v0.5.20 should include a chore to fix the release-testflight.yml tag-monotonicity guard (framework will need coordination with any parallel pre-release work).
+
+## Session 2026-06-17: v0.6 Multi-Sport Planning
+
+**Context:** Feature 1 for v0.6.x (Phase 1) — additional workout types with watch-side picker and user-selectable default.
+
+**Deliverable:** 10 working decisions (WD-1–WD-10) covering SportType enum expansion, HealthKit locationType mapping (sport.isIndoor ? .indoor : .outdoor), MetricKind.speed addition, WorkoutController.makeSummary branching on sport, WorkoutView type-picker UI, default workout type preference (App Group UserDefaults), Action Button expansion (5 cases), WCMessage schema v6 (defaultWorkoutType case), HealthKit cycling cadence authorization, and file inventory.
+
+**Key codebase findings:**
+- SportType already accepted by WorkoutController.start() — just add cases, no signature change.
+- HealthKitWorkoutSubstrate hardcodes locationType = .outdoor at line 201; extend mapping via sport.isIndoor.
+- GPS must be gated on location type (skip HKWorkoutRouteBuilder creation and locationManager for indoor).
+- MetricKind needs .speed case (cycling); WorkoutSummary needs companion averageSpeedMetersPerSecond field.
+- WorkoutView pre-run state needs type picker; WorkoutViewModel.start() already accepts SportType = .running.
+- Action Button (ARRunnerWorkoutStyleEnum) should expose all 5 types via AppGroupPendingWorkoutStartStore + UserDefaults default.
+- WCSession: add WCMessage.defaultWorkoutType(SportType) case for phone↔watch sync.
+
+**Pattern:** Add computed properties (isIndoor, baseActivity) in Core, not framework imports. Watch shell does HealthKit mapping via existing activityType(for:) seam.
+
+**Status:** COMPLETE, awaiting jkrilov review. Downstream coordination needed: Amber (TCX sport), Richards (phone WCMessage v6), Weiss (cycling HUD + smart stack).
+
+## Learnings
+
+### 2026-06-18 — v0.6.0 app-shell migration to WorkoutType + UI (PR #121)
+
+**Context:** Migrated ARRunnerWatch / ARRunnerPhone / ARRunnerWidgets / Shared off the removed flat `SportType` onto Richards' orthogonal `WorkoutType` (activity × environment) Core API, and built the user-facing 0.6.0 surface (type picker, unit prefs, cycling metrics, indoor GPS gating, settings sync). Branch `feat/0.6.0-core-foundation`. No Xcode on the Windows bench — app-target compile is CI-only; only Core has a local `swift test` path and Core was untouched.
+
+**Confirmed:**
+- **`SportType` is fully gone** from every app-shell/Shared `.swift` — verified by repo-wide grep (zero hits outside Core's own doc-comment + squad docs). A single missed reference would fail CI, so I grepped exhaustively rather than relying on the 2 files I first found.
+- **HealthKit has no public `runningCadence` quantity type.** The plan asked for "running cadence" but only `HKQuantityType(.cyclingCadence)` and `.cyclingSpeed` exist (watchOS 10+, always satisfied at our 11.0 floor — no `#available` needed). Implemented cycling speed→`MetricKind.speed` and cycling cadence→`.cadence`. **Running cadence is NOT implemented** — would need a derived calculation (step count / time) or `HKQuantityType(.stepCount)` cadence math, deferred.
+- **Indoor gating seam:** gate BOTH `HKWorkoutRouteBuilder` creation and `locationManager.startUpdatingLocation()` on `!sport.isIndoor` in `begin()`. The pre-existing nil-guards in `end()`/`ingest(locations:)` already tolerate a nil routeBuilder — no change needed there.
+- **`activityType(for:)` is now a tuple** `(HKWorkoutActivityType, HKWorkoutSessionLocationType)` — single source of truth for both the HK config's `.activityType` and `.locationType`. cycling→`.cycling`, walking→`.walking`, running→`.running`; `isIndoor`→`.indoor` else `.outdoor`.
+
+**Patterns established:**
+- **`WorkoutTypePreference` / `UnitPreference`** live in `Shared/Settings/`, mirroring the `ActionButtonMode.swift` `sharedDefaults` pattern (App Group `group.com.arrunner.shared`, `nonisolated(unsafe) static let` suite). They wrap the Core types (`WorkoutType`/`UnitSystem`) rather than redefining them. `UnitPreference` default is `Locale.current.measurementSystem == .metric ? .metric : .imperial`.
+- **Widgets don't include all of `Shared/`** — only the `ARRunnerWidgets` path. Had to add `Shared/Settings/WorkoutTypePreference.swift` explicitly to both `ARRunnerWidgetsPhone` and `ARRunnerWidgetsWatch` `sources:` in `project.yml`. Same source compiled into multiple target modules is fine (no duplicate-symbol clash — separate modules; they interoperate purely via the shared UserDefaults key). Widgets need `WorkoutTypePreference` but NOT `UnitPreference`.
+- **Settings sync uses the existing `transmit`/queued seam.** New `WCMessage.unitPreference` / `.defaultWorkoutType` are sent from BOTH sides; the receiver persists to the App Group store last-writer-wins (`WorkoutTypePreference.store` / `UnitPreference.store`). Watch send methods are `async` (wrap in `Task {}` in SwiftUI); phone send methods are sync.
+- **Action Button writes the preference before signaling start.** `ARRunnerWorkoutStyleEnum` expanded to all 6 cases but KEPT raw `"run"` for the legacy case so existing Action Button assignments don't break. `perform()` sets `WorkoutTypePreference.current` so the host launches the right type.
+
+**Could NOT verify locally (CI-gated on PR #121):** AppEnum conformance with the expanded `caseDisplayRepresentations`; SwiftUI `Picker .tag(WorkoutType)` type-matching; `NavigationLink` push of the picker inside `WorkoutView`'s nav context; `@Observable private(set) var sport` exposure. All compile-pending CI.
+
+### 2026-06-17 — v0.6 multi-sport planning: workout types + watch selection UI
+
+**Context:** Planning Feature 1 for AR-Runner 0.6.x — additional workout types (outdoor walk, indoor run, outdoor bike, indoor bike) with watch-side type picker and user-selectable default.
+
+**Key findings from codebase audit:**
+
+- `SportType.swift:6` is a flat 3-case enum with no location dimension. `WorkoutController.start()` signature already accepts `SportType` and forwards to `substrate.begin(sport:)`. No structural surgery needed — just add cases.
+- `HealthKitWorkoutSubstrate.begin(sport:startedAt:)` at line 201 hardcodes `configuration.locationType = .outdoor`. The `activityType(for:)` mapping at line 495 is a clean 3-case switch — the indoor/outdoor split is a one-line addition per new case.
+- **GPS must be gated on location type.** `locationManager.startUpdatingLocation()` at line 240 fires unconditionally today. For indoor workouts, neither the `HKWorkoutRouteBuilder` creation (line 220) nor the location manager start should execute. The existing nil-guards at line 379 (`if let workout, let routeBuilder`) and line 454 (`guard let routeBuilder`) in `end()` and `ingest(locations:)` already handle the nil-routeBuilder case safely — no logic change there.
+- **Metric pipeline**: `MetricKind` at `WorkoutMetric.swift:6` has no `.speed` case. `WorkoutController.makeSummary()` at line 339 always computes pace; cycling needs speed instead. `WorkoutSummary` at `WorkoutSummary.swift:28` already has `averagePaceSecondsPerKilometer: Double?` — add a companion `averageSpeedMetersPerSecond: Double?`.
+- **Watch UI**: `WorkoutView.controlsSection` (line 447) shows `Button("Start Run")` calling `viewModel.start()` with no argument. Type picker needs to live in the pre-run state alongside this button. The `WorkoutViewModel.start(activity:)` at line 234 already accepts `SportType = .running` — no signature change needed.
+- **Action Button**: `ARRunnerWorkoutStyleEnum` at `ActionButtonIntent.swift:25` has a single `.run` case. All 5 types should be exposed as suggested workouts. The cross-process `AppGroupPendingWorkoutStartStore` + default-type `UserDefaults` key (App Group suite, same as `ActionButtonMode.sharedDefaults`) is the right pattern for carrying the selected type from the intent to the host.
+- **WCSession**: `LifecycleEvent.started(SportType)` and `WorkoutTickMessage.sport` already carry the active type — phone mirrors see it correctly from day one. What's missing is a message for syncing the user's *default* type selection from phone to watch (or watch to phone). Recommend a new `WCMessage.defaultWorkoutType(SportType)` case in v6.
+
+**Concurrency:** No new hazards. Indoor workout simply skips the location manager entirely; HKWorkoutSessionDelegate callbacks (line 505) map HKWorkoutSessionState → WorkoutSubstratePhase independently of sport type.
+
+**Pattern confirmed:** "Add computed properties, not framework imports." `SportType.isIndoor` and `SportType.baseActivity` belong in Core (pure Swift logic). The watch shell does the HealthKit mapping — same seam pattern as the existing `activityType(for:)` static method at line 495.
+
+**Downstream dependencies identified:**
+- Amber: TCX encoder Sport attribute for cycling.
+- Richards: phone-side WCMessage v6 + default-type sync UI.
+- Weiss: cycling HUD layout (speed, no pace) + Smart Stack default-type respect.
 
 ### 2026-05-27 - v0.5.20 monotonicity-guard chore SHIPPED (end-to-end smoke test PASSED)
 - **PR #117** (https://github.com/jkrilov/AR-Runner/pull/117) squash-merged at `13c8f7a`. All 4 required checks green: ARRunnerPhone, ARRunnerWatch, ARRunnerCore Linux tests, CodeQL.

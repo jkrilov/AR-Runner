@@ -39,7 +39,7 @@ final class GlassesTransportBridgeTests: XCTestCase {
     func testStubTransportDropDoesNotPauseWorkoutPerD4() async throws {
         let substrate = InMemoryWorkoutHealthSubstrate()
         let controller = WorkoutController(substrate: substrate)
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
 
         let transport = StubGlassesTransport()
         try await transport.connect()

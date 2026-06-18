@@ -336,18 +336,26 @@ public enum RunningHUDFrame {
     ///   - distanceMeters: cumulative HK distance.
     ///   - heartRate: latest HK heart-rate reading in BPM (`nil` before
     ///     the first sample lands).
+    ///   - unitSystem: measurement system for distance + pace. Defaults to
+    ///     `.imperial` so legacy call sites (and the summary screen before
+    ///     the user picks a system) keep their miles/`/mi` rendering.
     public static func payload(
         elapsedSeconds: TimeInterval,
         distanceMeters: Double,
-        heartRate: Double? = nil
+        heartRate: Double? = nil,
+        unitSystem: UnitSystem = .imperial
     ) -> Payload {
         Payload(
             time:      formatElapsed(elapsedSeconds),
             heartRate: formatHeartRate(heartRate),
-            distance:  RunMetricFormatting.formatMiles(meters: distanceMeters),
-            pace:      RunMetricFormatting.formatAveragePacePerMile(
+            distance:  RunMetricFormatting.formatDistance(
+                           meters: distanceMeters,
+                           unitSystem: unitSystem
+                       ),
+            pace:      RunMetricFormatting.formatAveragePace(
                            elapsedSeconds: elapsedSeconds,
-                           distanceMeters: distanceMeters
+                           distanceMeters: distanceMeters,
+                           unitSystem: unitSystem
                        )
         )
     }
@@ -617,6 +625,198 @@ public enum RunningHUDFrame {
         }
         return String(format: "%d:%02d", m, s)
     }
+
+    // MARK: - Per-type, unit-aware live HUD (v0.6.0)
+
+    /// A preloaded ALooK icon and its pixel footprint. The stock ALooK
+    /// configuration ships these images addressable by `imgDisplay`; the
+    /// width/height let the renderer centre an icon of any size on its slot
+    /// line via the lens-flip formula.
+    public struct HUDIcon: Sendable, Equatable {
+        public let id: UInt8
+        public let width: UInt16
+        public let height: UInt16
+
+        public init(id: UInt8, width: UInt16, height: UInt16) {
+            self.id = id
+            self.width = width
+            self.height = height
+        }
+    }
+
+    /// The preloaded icon for a metric, or `nil` for metrics that ship no
+    /// stock ALooK glyph (`.speed`, `.cadence`, `.energy`, `.elevation`).
+    /// Those render text-only — acceptable for v0.6.x per the custom-layout
+    /// feasibility decision; the unit suffix in the value string carries the
+    /// semantic (e.g. "27.4 km/h", "350 kcal").
+    public static func icon(for metric: MetricKind) -> HUDIcon? {
+        switch metric {
+        case .duration:  return HUDIcon(id: Layout.chronoIconID,   width: 40, height: 40)
+        case .heartRate: return HUDIcon(id: Layout.heartIconID,    width: 28, height: 28)
+        case .distance:  return HUDIcon(id: Layout.distanceIconID, width: 28, height: 28)
+        case .pace:      return HUDIcon(id: Layout.paceIconID,     width: 28, height: 28)
+        case .speed, .cadence, .energy, .elevation:
+            return nil
+        }
+    }
+
+    /// Raw live-workout numbers the HUD formats. Captured as a struct so the
+    /// per-type renderer and the push-policy change-detection share one
+    /// value, and so future metrics extend the type without re-shaping call
+    /// sites. All fields are optional except elapsed time — a missing value
+    /// renders the metric's `--` placeholder.
+    public struct HUDMetricSnapshot: Sendable, Equatable {
+        public let elapsedSeconds: TimeInterval
+        public let distanceMeters: Double?
+        public let heartRate: Double?
+        public let speedMetersPerSecond: Double?
+        public let cadence: Double?
+        public let activeKilocalories: Double?
+        public let elevationMeters: Double?
+
+        public init(
+            elapsedSeconds: TimeInterval,
+            distanceMeters: Double? = nil,
+            heartRate: Double? = nil,
+            speedMetersPerSecond: Double? = nil,
+            cadence: Double? = nil,
+            activeKilocalories: Double? = nil,
+            elevationMeters: Double? = nil
+        ) {
+            self.elapsedSeconds = elapsedSeconds
+            self.distanceMeters = distanceMeters
+            self.heartRate = heartRate
+            self.speedMetersPerSecond = speedMetersPerSecond
+            self.cadence = cadence
+            self.activeKilocalories = activeKilocalories
+            self.elevationMeters = elevationMeters
+        }
+    }
+
+    /// Format every `MetricKind` the HUD can render into a glanceable string,
+    /// unit-aware and sport-aware so the glasses match the watch UI exactly
+    /// (`RunMetricFormatting` is the shared source of truth). Cadence is
+    /// RPM for cycling, steps/min otherwise; missing values become `--`.
+    public static func metricStrings(
+        snapshot: HUDMetricSnapshot,
+        activity: ActivityKind,
+        unitSystem: UnitSystem
+    ) -> [MetricKind: String] {
+        [
+            .duration: formatElapsed(snapshot.elapsedSeconds),
+            .heartRate: formatHeartRate(snapshot.heartRate),
+            .distance: RunMetricFormatting.formatDistance(
+                meters: snapshot.distanceMeters ?? .nan,
+                unitSystem: unitSystem
+            ),
+            .pace: RunMetricFormatting.formatAveragePace(
+                elapsedSeconds: snapshot.elapsedSeconds,
+                distanceMeters: snapshot.distanceMeters ?? 0,
+                unitSystem: unitSystem
+            ),
+            .speed: RunMetricFormatting.formatSpeed(
+                metersPerSecond: snapshot.speedMetersPerSecond ?? .nan,
+                unitSystem: unitSystem
+            ),
+            .cadence: formatCadence(snapshot.cadence, activity: activity),
+            .energy: snapshot.activeKilocalories.map { String(format: "%.0f kcal", $0) } ?? "--",
+            .elevation: snapshot.elevationMeters.map {
+                RunMetricFormatting.formatElevation(meters: $0, unitSystem: unitSystem)
+            } ?? "--",
+        ]
+    }
+
+    /// Cadence string. Cycling cadence is crank RPM; run/walk cadence is
+    /// steps per minute. `nil` → `--` placeholder (no sensor / pre-sample).
+    public static func formatCadence(_ value: Double?, activity: ActivityKind) -> String {
+        guard let value, value.isFinite, value >= 0 else { return "--" }
+        let suffix = activity == .cycling ? "rpm" : "spm"
+        return String(format: "%.0f \(suffix)", value)
+    }
+
+    /// The ordered list of value strings the per-type renderer will paint,
+    /// in slot order, skipping empty (`nil`) layout slots. Feed this to
+    /// `RunningHUDPushPolicy.shouldSend(_:now:)` so change-detection tracks
+    /// exactly what's on the panel.
+    public static func orderedSlotStrings(
+        metricStrings: [MetricKind: String],
+        layout: HUDLayout,
+        grid: HUDGridDefinition
+    ) -> [String] {
+        var out: [String] = []
+        let count = min(grid.slots.count, layout.slots.count)
+        for index in 0..<count where layout.slots[index] != nil {
+            let metric = layout.slots[index]!
+            out.append(metricStrings[metric] ?? "--")
+        }
+        return out
+    }
+
+    /// Render a per-workout-type live HUD frame batch from a layout's
+    /// slot→metric assignment and a fixed-slot grid geometry.
+    ///
+    /// Each non-empty layout slot paints (optional preloaded icon +) its
+    /// metric value at the matching grid slot's anchor/font. Slots whose
+    /// metric has no value render the `--` placeholder; empty (`nil`) layout
+    /// slots paint nothing. The whole batch is wrapped in `holdFlush` so the
+    /// wearer sees one atomic transition. Backward compatible — the existing
+    /// `frames(for: Payload)` (fixed running layout) is unchanged.
+    public static func frames(
+        metricStrings: [MetricKind: String],
+        layout: HUDLayout,
+        grid: HUDGridDefinition
+    ) -> [[UInt8]] {
+        var commands: [[UInt8]] = [
+            ActiveLookCommand.holdFlush(hold: true),
+            ActiveLookCommand.clear(),
+        ]
+        let count = min(grid.slots.count, layout.slots.count)
+        for index in 0..<count {
+            guard let metric = layout.slots[index] else { continue }
+            let slot = grid.slots[index]
+            let value = metricStrings[metric] ?? "--"
+            if let icon = icon(for: metric) {
+                let position = iconFramebuffer(slot: slot, icon: icon)
+                commands.append(
+                    ActiveLookCommand.imgDisplay(id: icon.id, x: position.x, y: position.y)
+                )
+            }
+            commands.append(
+                ActiveLookCommand.text(
+                    x: slot.textX, y: slot.textY,
+                    rotation: Layout.rotation, fontSize: slot.font, color: Layout.color,
+                    string: value
+                )
+            )
+        }
+        commands.append(ActiveLookCommand.holdFlush(hold: false))
+        return commands
+    }
+
+    /// Per-type live HUD prefixed with `cfgSet("ALooK")` + `power(on:true)`
+    /// — the first frame of a (re)connection. Mirrors the legacy
+    /// `framesWithPowerOn(for:)` belt-and-braces guarantee.
+    public static func framesWithPowerOn(
+        metricStrings: [MetricKind: String],
+        layout: HUDLayout,
+        grid: HUDGridDefinition
+    ) -> [[UInt8]] {
+        [
+            ActiveLookCommand.cfgSet(name: "ALooK"),
+            ActiveLookCommand.power(on: true),
+        ] + frames(metricStrings: metricStrings, layout: layout, grid: grid)
+    }
+
+    /// Framebuffer top-left for a slot's icon, centred vertically on the
+    /// slot line via the rc16 lens-flip identities:
+    ///   `x_fb = 303 − wearerLeft − width`
+    ///   `y_fb = 255 − (centerY − height/2) − height`
+    static func iconFramebuffer(slot: HUDGridDefinition.Slot, icon: HUDIcon) -> (x: UInt16, y: UInt16) {
+        let wearerTop = Int(slot.iconWearerCenterY) - Int(icon.height) / 2
+        let xFB = 303 - Int(slot.iconWearerLeft) - Int(icon.width)
+        let yFB = 255 - wearerTop - Int(icon.height)
+        return (UInt16(clamping: xFB), UInt16(clamping: yFB))
+    }
 }
 
 /// Push-rate gate for the running HUD.
@@ -637,7 +837,7 @@ public struct RunningHUDPushPolicy: Sendable, Equatable {
 
     public let minimumInterval: TimeInterval
     private var lastSentAt: Date?
-    private var lastPayload: RunningHUDFrame.Payload?
+    private var lastSignature: [String]?
 
     public init(minimumInterval: TimeInterval = RunningHUDPushPolicy.defaultMinimumInterval) {
         precondition(minimumInterval >= 0, "minimumInterval must be non-negative")
@@ -650,13 +850,22 @@ public struct RunningHUDPushPolicy: Sendable, Equatable {
     /// still passes — pace flipping from `--:--/mi` to `8:30/mi` should
     /// reach the glasses immediately, not wait out the gate.
     public mutating func shouldSend(_ payload: RunningHUDFrame.Payload, now: Date) -> Bool {
+        shouldSend([payload.time, payload.heartRate, payload.distance, payload.pace], now: now)
+    }
+
+    /// Generalized change-detection for the per-type live HUD: gate on the
+    /// ordered slot value strings (see
+    /// `RunningHUDFrame.orderedSlotStrings(...)`). Same 1 Hz minimum +
+    /// identical-frame suppression as the `Payload` overload, so a layout
+    /// whose visible values haven't changed collapses to zero BLE traffic.
+    public mutating func shouldSend(_ signature: [String], now: Date) -> Bool {
         if let last = lastSentAt,
            now.timeIntervalSince(last) < minimumInterval,
-           lastPayload == payload {
+           lastSignature == signature {
             return false
         }
         lastSentAt = now
-        lastPayload = payload
+        lastSignature = signature
         return true
     }
 
@@ -665,6 +874,6 @@ public struct RunningHUDPushPolicy: Sendable, Equatable {
     /// to match the pre-disconnect one.
     public mutating func reset() {
         lastSentAt = nil
-        lastPayload = nil
+        lastSignature = nil
     }
 }

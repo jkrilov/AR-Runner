@@ -13,8 +13,8 @@ settings:
   base:
     SWIFT_VERSION: '6.0'
     # SWIFT_STRICT_CONCURRENCY=complete is implicit under Swift 6 language mode — D8 still in effect.
-    CURRENT_PROJECT_VERSION: 51
-    MARKETING_VERSION: 0.5.21
+    CURRENT_PROJECT_VERSION: 52
+    MARKETING_VERSION: 0.6.0
     # CODE_SIGN_STYLE is intentionally NOT pinned here. xcodegen would otherwise
     # bake Automatic into the project-level pbxproj, which has higher precedence
     # than xcconfig and prevents CI from switching to Manual signing for the
@@ -228,6 +228,11 @@ targets:
     sources:
       - path: ARRunnerWidgets
         optional: true
+      # v0.6.0 — the Smart Stack tile reads the user's default workout type
+      # from the App Group store via WorkoutTypePreference. Include just that
+      # file (not all of Shared/) so the widget stays lean.
+      - path: Shared/Settings/WorkoutTypePreference.swift
+        optional: true
     dependencies:
       - package: ARRunnerCore
     settings:
@@ -261,6 +266,9 @@ targets:
     deploymentTarget: '11.0'
     sources:
       - path: ARRunnerWidgets
+        optional: true
+      # v0.6.0 — see ARRunnerWidgetsPhone: type-aware Smart Stack tile.
+      - path: Shared/Settings/WorkoutTypePreference.swift
         optional: true
     dependencies:
       - package: ARRunnerCore

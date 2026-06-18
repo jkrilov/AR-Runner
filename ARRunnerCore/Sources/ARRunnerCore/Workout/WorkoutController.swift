@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Decisions in scope:
 /// - **D2** — watchOS 11 / iOS 18 / Swift 6 strict concurrency (actor isolation).
-/// - **D3** — sport-agnostic core; `start(activityType:)` defaults to `.running` for v0.1.
+/// - **D3** — sport-agnostic core; `start(activityType:)` defaults to `.outdoorRun` for v0.1.
 /// - **D4** — glasses disconnect signals are recorded but DO NOT pause the workout.
 /// - **D5** — phone is optional; the controller never assumes a paired iPhone.
 /// - **D7** — foreground launch from the watch app; this controller is the worker.
@@ -30,7 +30,7 @@ public actor WorkoutController {
     private let clock: @Sendable () -> Date
     private let sessionID: UUID
 
-    private var sport: SportType = .running
+    private var sport: WorkoutType = .outdoorRun
     private var phase: WorkoutPhase = .idle
     private var startedAt: Date?
     private var endedAt: Date?
@@ -45,6 +45,7 @@ public actor WorkoutController {
     private var lastEnergyKilocalories: Double?
     private var lastCadenceStepsPerMinute: Double?
     private var lastElevationGainMeters: Double?
+    private var lastSpeedMetersPerSecond: Double?
 
     private let stateContinuation: AsyncStream<WorkoutState>.Continuation
     private let metricContinuation: AsyncStream<WorkoutMetric>.Continuation
@@ -92,9 +93,10 @@ public actor WorkoutController {
 
     // MARK: - Lifecycle
 
-    /// Begin a workout. Activity defaults to `.running` (v0.1 surface — D3).
+    /// Begin a workout. Activity defaults to `.outdoorRun` (the historical
+    /// v0.1 surface — D3).
     @discardableResult
-    public func start(activityType: SportType = .running) async throws -> WorkoutState {
+    public func start(activityType: WorkoutType = .outdoorRun) async throws -> WorkoutState {
         guard phase == .idle else {
             throw Error.alreadyStarted
         }
@@ -287,6 +289,8 @@ public actor WorkoutController {
             lastCadenceStepsPerMinute = metric.value
         case .elevation:
             lastElevationGainMeters = metric.value
+        case .speed:
+            lastSpeedMetersPerSecond = metric.value
         case .pace, .duration, .energy:
             break
         }
@@ -336,9 +340,17 @@ public actor WorkoutController {
         let peakHR = heartRateSamples.max() ?? result.peakHeartRateBeatsPerMinute
 
         let distance = result.totalDistanceMeters ?? lastDistanceMeters
+        let isCycling = sport.activity == .cycling
+
+        // Running/walking report pace; cycling reports average speed instead
+        // (pace is meaningless on a bike). Each leaves the other field nil.
         let pace: Double? = {
-            guard let distance, distance > 0, result.activeDuration > 0 else { return nil }
+            guard !isCycling, let distance, distance > 0, result.activeDuration > 0 else { return nil }
             return result.activeDuration / (distance / 1000.0)
+        }()
+        let averageSpeed: Double? = {
+            guard isCycling, let distance, distance > 0, result.activeDuration > 0 else { return nil }
+            return distance / result.activeDuration
         }()
 
         return WorkoutSummary(
@@ -356,7 +368,8 @@ public actor WorkoutController {
             splits: [],
             glassesDisconnectCount: glassesDisconnectCount,
             totalElevationGainMeters: result.totalElevationGainMeters ?? lastElevationGainMeters,
-            averageCadenceStepsPerMinute: lastCadenceStepsPerMinute
+            averageCadenceStepsPerMinute: lastCadenceStepsPerMinute,
+            averageSpeedMetersPerSecond: averageSpeed
         )
     }
 }

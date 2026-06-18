@@ -142,9 +142,74 @@ Awaiting Joe's review of the architecture plan and answers to the five open ques
 
 ## Learnings
 
+### 2026-06-17 — v0.6.x Architecture Plan: Multi-Workout Types + Custom HUD Layouts
+
+**Decision: Activity × Location composite model over flat expanded enum.**
+
+Key data-model files and their roles:
+- `ARRunnerCore/.../Models/SportType.swift:6-10` — current flat enum `{running, walking, cycling}`, to be deprecated in favor of composite `WorkoutType`.
+- `ARRunnerCore/.../Models/HUDLayout.swift:6-15` — existing layout struct with `id:String, name:String, slots:[MetricKind?]`; sufficient for custom layouts.
+- `ARRunnerWatch/Workout/HealthKitWorkoutSubstrate.swift:200-201` — currently hardcodes `locationType = .outdoor`; must change to derive from `WorkoutType.location`.
+- `ARRunnerWatch/Workout/HealthKitWorkoutSubstrate.swift:495-500` — `activityType(for:)` maps `SportType` → `HKWorkoutActivityType`; extend for new activities.
+- `ARRunnerCore/.../Messaging/WCMessage.swift:28` — schemaVersion 5; bumps to 6 for new workout-type shape + layout sync payloads.
+- `ARRunnerCore/.../Strava/TCXWorkoutData.swift:25-27` — TCX sport string; needs mapping for walk ("Other") and bike ("Biking").
+
+**Rationale:** HealthKit's own model is `activityType + locationType`. Mirroring that factoring in Core means the HealthKit mapping is trivial (`ActivityKind` → `HKWorkoutActivityType`, `LocationKind` → `HKWorkoutSessionLocationType`), and the model scales if we add swimming/hiking without enum explosion.
+
+**Phasing insight:** Workout types (Phase 1) can ship independently of custom layouts (Phase 2). Custom layouts are blocked on Weiss's feasibility study re: dynamic vs. pre-baked device slots.
+
+**Migration pattern:** Dual-key JSON emission (both `sport` and `workoutType` in v0.6.0 payloads) handles mixed-version watch/phone pairs gracefully; drop legacy key in v0.7.
+
 ### 2026-06-17 — Strava OAuth 401 diagnosis
 
 - The user-facing “Couldn't complete Strava sign-in (HTTP 401)” string comes only from `SettingsViewModel.userMessage(for:)` mapping `StravaOAuthError.tokenExchangeFailed`, so this error identifies the initial OAuth code-to-token exchange, not TCX upload.
 - The iOS app posts the auth `code` plus `StravaConfig.clientID` to `https://strava-connect.ar-runner.app/token` in `ARRunnerPhone/Strava/StravaOAuthService.swift`; the Cloudflare Worker then forwards to `https://www.strava.com/oauth/token` with `client_id`, Worker-held `STRAVA_CLIENT_SECRET`, `code`, and `grant_type=authorization_code`.
 - `ARRunnerPhone/Strava/StravaConfig.swift` ships only the public client ID. It resolves from runtime env, then Info.plist key `StravaClientID`, then placeholder. Info.plist gets `StravaClientID: $(STRAVA_CLIENT_ID)` from `project.yml`; `Config/Strava.xcconfig` is gitignored and included indirectly by generated `Config/Signing.xcconfig`.
 - Most likely bench failure class: the app’s `STRAVA_CLIENT_ID` and the Worker’s `STRAVA_CLIENT_SECRET` are not the same Strava API application, or the Worker secret is absent/stale. Redirect domain still matters, but a successful return with a code makes it less likely than token credential mismatch.
+
+---
+
+## Session 2026-06-17: v0.6.x Architecture Planning
+
+**Input:** 5-agent parallel planning fan-out (Killian, Laughlin, Weiss, Amber, Richards) for two features: multi-sport (outdoor/indoor × running/walking/cycling) + custom HUD layouts.
+
+**Deliverable:** Comprehensive architecture plan covering composite `WorkoutType` model (activity × location, not flat enum), WCMessage v5→v6 with dual-key backward compat, module touch-point map (Core, Watch, Phone), and phasing (v0.6.0 types+defaults, v0.6.1 custom layouts).
+
+**Key decision:** Activity × Location composite over flat 6-case enum — maps to HealthKit's own model, scales for future sports (swimming/hiking), adds one field but avoids O(activities × locations) enum explosion.
+
+**WCMessage migration:** Dual-key emission (both `sport` and `workoutType` in v0.6.0) handles mixed-version pairs; drop legacy in v0.7.
+
+**29 open questions for jkrilov** across all agents (Richards×6, Killian×8, Amber×6, Weiss×5). Status: COMPLETE, awaiting review + sign-off.
+
+---
+
+## Session 2026-06-17: v0.6.0 Core Foundation — IMPLEMENTED
+
+**Branch:** `feat/0.6.0-core-foundation` · **Tests:** `cd ARRunnerCore && swift test` GREEN (259 executed, 1 skipped, 0 failures, Swift 6.0.3 Linux).
+
+### Learnings
+
+- `swift` is NOT on PATH on the Windows bench. Run Core tests via Docker Linux (matches CI):
+  `docker run --rm -v "${PWD}:/work:ro" swift:6.0 bash -c "cp -r /work/ARRunnerCore /build && cd /build && rm -rf .build && swift test"`.
+  Running `swift test` directly against the bind-mounted `/work` crashes swift-frontend (clang module-cache Bus error) — copy sources into the container's own fs first.
+
+### Final model shape (deviation from plan noted)
+
+- `WorkoutType` is a **struct** (`activity: ActivityKind` × `environment: WorkoutEnvironment`), not an enum — `Sendable/Codable/Equatable/Hashable/RawRepresentable/CaseIterable`. `allCases` = the 6 supported combos (incl. indoor walk, approved).
+- **DEVIATION from my plan's dual-key emission:** wire/storage uses a **single** `sport` field carrying `WorkoutType`'s legacy-preserving raw string, NOT both `sport`+`workoutType`. Custom `Codable` encodes outdoor variants as the unchanged `"running"`/`"walking"`/`"cycling"`; indoor combos use new stable strings `"indoor_running"`/`"indoor_walking"`/`"indoor_cycling"`. Decoding an unknown raw value returns `WorkoutType.fallback` (= `.outdoorRun`) instead of throwing, so one bad field never fatals a whole `WCMessage` decode. Trade-off: a v0.5.20 phone can't mirror a NEW indoor type (its flat `SportType` enum throws on the new string) — acceptable since the phone mirror is optional and the watch is the BLE owner.
+- `SportType` (flat enum) **removed**; all Core call sites migrated to `WorkoutType`. Watch/phone shells must migrate `begin(sport:)` + pickers (Laughlin).
+
+### Key public API (downstream build surface)
+
+- `WorkoutType` + `ActivityKind` + `WorkoutEnvironment`; factories `.outdoorRun/.indoorRun/.outdoorWalk/.indoorWalk/.outdoorBike/.indoorBike`, `.fallback`; `isIndoor`, `usesGPS`, `baseActivity`, `displayName`, `rawValue`, `init?(rawValue:)`.
+- `UnitSystem { metric, imperial }` (`Models/UnitSystem.swift`).
+- `MetricKind.speed` (m/s on the wire; cycling).
+- `RunMetricFormatting`: `formatDistance(meters:unitSystem:)`, `formatAveragePace(elapsedSeconds:distanceMeters:unitSystem:)`, `formatSpeed(metersPerSecond:unitSystem:)`, `formatElevation(meters:unitSystem:)` (+ `formatAveragePacePerKilometer` and legacy per-mile/`formatMiles` retained).
+- `HUDLayout.default(for: WorkoutType)` — per-type defaults (bike → `.speed`; indoor → no `.elevation`).
+- `WCMessage` schema **6**: new cases `.defaultWorkoutType(WorkoutType)`, `.unitPreference(UnitSystem)`, decode-only `.unknown` (unrecognized `kind` no longer throws). Layout-catalog payloads deferred to v6.1.
+- `WorkoutSummary.averageSpeedMetersPerSecond: Double?` (additive); `WorkoutController.makeSummary` branches: run/walk → pace, cycling → avg speed.
+- `TCXWorkoutData.tcxSport(for:)` (run→Running, bike→Biking, walk→Other); `ActivityNaming.activityNoun(for:)`/`name(forStart:workoutType:)`.
+
+### File paths
+
+`ARRunnerCore/Sources/ARRunnerCore/Models/{WorkoutType,UnitSystem,WorkoutMetric,WorkoutSummary,WorkoutState,WorkoutSession,HUDLayout}.swift`, `.../Messaging/{WCMessage,WorkoutTickMessage}.swift`, `.../Workout/{WorkoutController,WorkoutHealthSubstrate,InMemoryWorkoutHealthSubstrate,RunMetricFormatting}.swift`, `.../Strava/{TCXWorkoutData,ActivityNaming}.swift`.

@@ -148,6 +148,11 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         if let distance = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning) { types.insert(distance) }
         if let cycling = HKQuantityType.quantityType(forIdentifier: .distanceCycling) { types.insert(cycling) }
         if let energy = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) { types.insert(energy) }
+        // v0.6.0 — cycling surfaces speed + cadence on the HUD instead of
+        // pace. Both are watchOS 10+ identifiers; the deployment target is
+        // 11.0 so they're always present (no `#available` guard needed).
+        if let cyclingSpeed = HKQuantityType.quantityType(forIdentifier: .cyclingSpeed) { types.insert(cyclingSpeed) }
+        if let cyclingCadence = HKQuantityType.quantityType(forIdentifier: .cyclingCadence) { types.insert(cyclingCadence) }
         // rc3 (2026-05-20) — GPS-route fix. `HKWorkoutRouteBuilder
         // .insertRouteData` requires explicit share authorization for
         // the workout-route series type; without it, every insert is
@@ -170,6 +175,10 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         if let distance = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning) { types.insert(distance) }
         if let cycling = HKQuantityType.quantityType(forIdentifier: .distanceCycling) { types.insert(cycling) }
         if let energy = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) { types.insert(energy) }
+        // v0.6.0 — read cycling speed + cadence so the live builder emits
+        // them off the data source during outdoor/indoor bike workouts.
+        if let cyclingSpeed = HKQuantityType.quantityType(forIdentifier: .cyclingSpeed) { types.insert(cyclingSpeed) }
+        if let cyclingCadence = HKQuantityType.quantityType(forIdentifier: .cyclingCadence) { types.insert(cyclingCadence) }
         return types
     }
 
@@ -189,16 +198,17 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
 
     // MARK: - WorkoutHealthSubstrate
 
-    public func begin(sport: SportType, startedAt: Date) async throws {
+    public func begin(sport: WorkoutType, startedAt: Date) async throws {
         // Defensive: HK Error(7) on `beginCollection` is almost always a
         // pre-flight failure (missing entitlement / usage-string / un-granted
         // auth). Re-requesting here is cheap once the user has answered, and
         // surfaces a clean `notAuthorized` if HealthKit is unavailable.
         try await Self.requestAuthorization(healthStore: healthStore)
 
+        let (activityType, locationType) = Self.activityType(for: sport)
         let configuration = HKWorkoutConfiguration()
-        configuration.activityType = Self.activityType(for: sport)
-        configuration.locationType = .outdoor
+        configuration.activityType = activityType
+        configuration.locationType = locationType
 
         #if os(watchOS)
         let session = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
@@ -217,7 +227,18 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         // workout writes to Health without GPS, which is exactly the
         // missing-route bug Joe reported after his 5K (and the most
         // likely reason Strava's auto-importer was rejecting our runs).
-        let routeBuilder = HKWorkoutRouteBuilder(healthStore: healthStore, device: nil)
+        //
+        // v0.6.0 — indoor workouts (treadmill run/walk, stationary bike)
+        // have no meaningful GPS track. Skip the route builder entirely so
+        // we never attach an empty/garbage polyline, and don't spin up
+        // CoreLocation below. The nil-guards in `end()` / `ingest(locations:)`
+        // already handle a nil route builder gracefully.
+        let routeBuilder: HKWorkoutRouteBuilder?
+        if sport.isIndoor {
+            routeBuilder = nil
+        } else {
+            routeBuilder = HKWorkoutRouteBuilder(healthStore: healthStore, device: nil)
+        }
 
         state.withLock { mutable in
             mutable.session = session
@@ -234,11 +255,19 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         // and the manager stays unauthorized — locations are silently
         // dropped and the route polyline is empty. The Info.plist fix
         // and the auth request together unblock the GPS record path.
-        if locationManager.authorizationStatus == .notDetermined {
-            locationManager.requestWhenInUseAuthorization()
+        //
+        // v0.6.0 — only spin CoreLocation up for outdoor (GPS) workouts.
+        // Indoor variants suppress location updates entirely to save power
+        // and avoid an irrelevant authorization prompt mid-treadmill.
+        if !sport.isIndoor {
+            if locationManager.authorizationStatus == .notDetermined {
+                locationManager.requestWhenInUseAuthorization()
+            }
+            locationManager.startUpdatingLocation()
+            Self.routeLog.info("route: begin — auth=\(self.locationManager.authorizationStatus.rawValue, privacy: .public), accuracy=\(self.locationManager.desiredAccuracy, privacy: .public)")
+        } else {
+            Self.routeLog.info("route: begin skipped — indoor workout (\(sport.rawValue, privacy: .public))")
         }
-        locationManager.startUpdatingLocation()
-        Self.routeLog.info("route: begin — auth=\(self.locationManager.authorizationStatus.rawValue, privacy: .public), accuracy=\(self.locationManager.desiredAccuracy, privacy: .public)")
 
         stateContinuation.yield(.preparing)
         session.startActivity(with: startedAt)
@@ -492,12 +521,22 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
 
     // MARK: - Mapping
 
-    private static func activityType(for sport: SportType) -> HKWorkoutActivityType {
-        switch sport {
-        case .running: return .running
-        case .walking: return .walking
-        case .cycling: return .cycling
+    /// Maps a `WorkoutType` onto the HealthKit configuration pair
+    /// (`activityType`, `locationType`). The activity axis selects the
+    /// `HKWorkoutActivityType`; the environment axis selects indoor vs
+    /// outdoor session location so HealthKit/Fitness categorize the workout
+    /// correctly and the watch suppresses GPS for indoor variants.
+    private static func activityType(
+        for sport: WorkoutType
+    ) -> (HKWorkoutActivityType, HKWorkoutSessionLocationType) {
+        let activity: HKWorkoutActivityType
+        switch sport.activity {
+        case .running: activity = .running
+        case .walking: activity = .walking
+        case .cycling: activity = .cycling
         }
+        let location: HKWorkoutSessionLocationType = sport.isIndoor ? .indoor : .outdoor
+        return (activity, location)
     }
 }
 
@@ -573,6 +612,16 @@ extension HealthKitWorkoutSubstrate: HKLiveWorkoutBuilderDelegate {
             return WorkoutMetric(kind: .distance, value: quantity.doubleValue(for: .meter()), unit: "m", timestamp: timestamp)
         case HKQuantityType.quantityType(forIdentifier: .distanceCycling):
             return WorkoutMetric(kind: .distance, value: quantity.doubleValue(for: .meter()), unit: "m", timestamp: timestamp)
+        case HKQuantityType.quantityType(forIdentifier: .cyclingSpeed):
+            // v0.6.0 — cycling ground speed in metres/second. Surfaced as
+            // `MetricKind.speed`; `RunMetricFormatting.formatSpeed` renders
+            // it as km/h or mph per the active unit system.
+            let unit = HKUnit.meter().unitDivided(by: .second())
+            return WorkoutMetric(kind: .speed, value: quantity.doubleValue(for: unit), unit: "m/s", timestamp: timestamp)
+        case HKQuantityType.quantityType(forIdentifier: .cyclingCadence):
+            // v0.6.0 — pedalling cadence in revolutions/minute (RPM).
+            let unit = HKUnit.count().unitDivided(by: .minute())
+            return WorkoutMetric(kind: .cadence, value: quantity.doubleValue(for: unit), unit: "rpm", timestamp: timestamp)
         case HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned):
             // Route through the Core helper so the mapping contract is
             // exercisable from `ARRunnerCoreTests` without a watchOS host.

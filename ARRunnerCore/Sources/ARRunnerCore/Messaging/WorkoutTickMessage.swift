@@ -19,7 +19,7 @@ import Foundation
 /// mirror should treat this field as an indicative live readout only.
 public struct WorkoutTickMessage: Sendable, Codable, Equatable {
     public let sessionID: UUID
-    public let sport: SportType
+    public let sport: WorkoutType
     public let phase: WorkoutPhase
     public let timestamp: Date
 
@@ -64,7 +64,7 @@ public struct WorkoutTickMessage: Sendable, Codable, Equatable {
 
     public init(
         sessionID: UUID,
-        sport: SportType,
+        sport: WorkoutType,
         phase: WorkoutPhase,
         timestamp: Date,
         startedAt: Date? = nil,

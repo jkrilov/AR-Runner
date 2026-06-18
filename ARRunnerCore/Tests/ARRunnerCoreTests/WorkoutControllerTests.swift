@@ -19,14 +19,14 @@ final class WorkoutControllerTests: XCTestCase {
 
         XCTAssertEqual(phases.map(\.phase), [.preparing, .running])
         let running = try XCTUnwrap(phases.last)
-        XCTAssertEqual(running.sport, .running)
+        XCTAssertEqual(running.sport, .outdoorRun)
         XCTAssertNotNil(running.startedAt)
         XCTAssertFalse(running.glassesConnected)
 
         let recorded = await substrate.recordedCalls
         XCTAssertEqual(recorded.count, 1)
         if case .begin(let sport, _) = recorded[0] {
-            XCTAssertEqual(sport, .running)
+            XCTAssertEqual(sport, .outdoorRun)
         } else {
             XCTFail("Expected begin call, got \(recorded)")
         }
@@ -38,7 +38,7 @@ final class WorkoutControllerTests: XCTestCase {
 
         let state = try await controller.start()
 
-        XCTAssertEqual(state.sport, .running)
+        XCTAssertEqual(state.sport, .outdoorRun)
         XCTAssertEqual(state.phase, .running)
     }
 
@@ -106,7 +106,7 @@ final class WorkoutControllerTests: XCTestCase {
 
         XCTAssertEqual(summary.id, sessionID)
         XCTAssertEqual(summary.healthKitWorkoutID, workoutID, "D9: HealthKit workout UUID is the side-store key")
-        XCTAssertEqual(summary.sport, .running)
+        XCTAssertEqual(summary.sport, .outdoorRun)
         XCTAssertGreaterThan(summary.activeDuration, 0)
         XCTAssertEqual(summary.glassesDisconnectCount, 0)
     }

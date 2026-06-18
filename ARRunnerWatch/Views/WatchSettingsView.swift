@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Joe Krilov
 // SPDX-License-Identifier: Apache-2.0
 
+import ARRunnerCore
 import SwiftUI
 
 /// Watch-side settings surface. v0.5.3 only owns the Action Button mode
@@ -19,16 +20,53 @@ struct WatchSettingsView: View {
     @AppStorage(ActionButtonMode.storageKey, store: ActionButtonMode.sharedDefaults)
     private var actionButtonRaw: String = ActionButtonMode.defaultMode.rawValue
 
+    // v0.6.0 — default workout type, persisted to the shared App Group store
+    // so the Action Button intent and Smart Stack widget read the same value.
+    @AppStorage(WorkoutTypePreference.storageKey, store: WorkoutTypePreference.sharedDefaults)
+    private var defaultWorkoutRaw: String = WorkoutTypePreference.defaultValue.rawValue
+
     private var actionButtonMode: ActionButtonMode {
         ActionButtonMode(rawValue: actionButtonRaw) ?? ActionButtonMode.defaultMode
     }
 
+    private var defaultWorkoutType: WorkoutType {
+        WorkoutType(rawValue: defaultWorkoutRaw) ?? WorkoutTypePreference.defaultValue
+    }
+
     var body: some View {
         Form {
+            defaultWorkoutSection
             actionButtonSection
             aboutSection
         }
         .navigationTitle("Settings")
+    }
+
+    private var defaultWorkoutSection: some View {
+        Section {
+            Picker("Default Workout", selection: Binding(
+                get: { defaultWorkoutType },
+                set: { newValue in
+                    defaultWorkoutRaw = newValue.rawValue
+                    // Mirror to the iPhone so its Settings picker reflects
+                    // the wearer's choice. Best-effort, phone-optional.
+                    Task {
+                        await ARRunnerWatchEnvironment.shared.mirror
+                            .sendDefaultWorkoutType(newValue)
+                    }
+                }
+            )) {
+                ForEach(WorkoutTypePreference.selectable, id: \.rawValue) { type in
+                    Label(type.displayName, systemImage: WorkoutTypePreference.symbolName(for: type))
+                        .tag(type)
+                }
+            }
+        } header: {
+            Text("Workout")
+        } footer: {
+            Text("The workout type a new run starts as — including from the Action Button or Smart Stack.")
+                .font(.caption2)
+        }
     }
 
     private var actionButtonSection: some View {

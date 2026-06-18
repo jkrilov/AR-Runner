@@ -9,7 +9,7 @@ final class WorkoutSessionTests: XCTestCase {
     func testCodableRoundTrip() throws {
         let original = WorkoutSession(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-            sport: .running,
+            sport: .outdoorRun,
             startedAt: Date(timeIntervalSinceReferenceDate: 600),
             status: .running,
             metricStream: [

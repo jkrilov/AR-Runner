@@ -100,6 +100,8 @@ private func formatMetricForResilience(_ metric: WorkoutMetric) -> String {
         return String(Int(metric.value.rounded()))
     case .distance, .elevation:
         return String(format: "%.1f", metric.value)
+    case .speed:
+        return String(format: "%.1f", metric.value)
     case .pace, .duration:
         let total = Int(metric.value.rounded())
         return "\(total / 60):\(String(format: "%02d", total % 60))"
@@ -153,7 +155,7 @@ extension DisconnectResilienceTests {
             metricBridge.cancel()
         }
 
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
         try await glasses.connect()
         try await glasses.selectLayout(id: "balanced-run")
 
@@ -212,7 +214,7 @@ extension DisconnectResilienceTests {
         let (statusCollector, statusTask) = await collectStatusEvents(from: glasses)
         defer { statusTask.cancel() }
 
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
         try await glasses.connect()
 
         // Repeated `simulateDisconnect` while already disconnected must be a
@@ -260,7 +262,7 @@ extension DisconnectResilienceTests {
         let (statusCollector, statusTask) = await collectStatusEvents(from: glasses)
         defer { statusTask.cancel() }
 
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
         try await glasses.connect()
         try await glasses.selectLayout(id: "balanced-run")
 
@@ -338,7 +340,7 @@ extension DisconnectResilienceTests {
         // counter starts fresh from whatever the pre-begin signal traffic
         // accumulated. (Documented surface: counter is global, not
         // session-scoped — see contract-gap finding #G3.)
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
         let postStartPhase = await controller.currentPhase()
         XCTAssertEqual(postStartPhase, .running)
 
@@ -361,7 +363,7 @@ extension DisconnectResilienceTests {
         let glassesBridge = await bridgeGlasses(glasses, into: controller)
         defer { glassesBridge.cancel() }
 
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
         try await glasses.connect()
 
         try await controller.pause()
@@ -380,7 +382,7 @@ extension DisconnectResilienceTests {
 
         // Save → end while paused (decision #5: workout pauses on Finish; Save).
         let summary = try await controller.end()
-        XCTAssertEqual(summary.sport, .running)
+        XCTAssertEqual(summary.sport, .outdoorRun)
         XCTAssertGreaterThanOrEqual(summary.glassesDisconnectCount, 1)
     }
 
@@ -397,7 +399,7 @@ extension DisconnectResilienceTests {
         let glassesBridge = await bridgeGlasses(glasses, into: controller)
         defer { glassesBridge.cancel() }
 
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
         try await glasses.connect()
         try await controller.pause()
 
@@ -406,7 +408,7 @@ extension DisconnectResilienceTests {
         await glasses.simulateDisconnect(reason: .userInitiated)
         let summary = try await endResult
 
-        XCTAssertEqual(summary.sport, .running)
+        XCTAssertEqual(summary.sport, .outdoorRun)
         let finalPhase = await controller.currentPhase()
         XCTAssertEqual(finalPhase, .ended,
                        "Drop racing end() must not leave the controller in a non-terminal phase")
@@ -433,7 +435,7 @@ extension DisconnectResilienceTests {
         let (statusCollector, statusTask) = await collectStatusEvents(from: glasses)
         defer { statusTask.cancel() }
 
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
         try await glasses.connect()
         try await glasses.selectLayout(id: "balanced-run")
 
@@ -500,7 +502,7 @@ extension DisconnectResilienceTests {
         let bridge = await bridgeGlasses(glasses, into: controller)
         defer { bridge.cancel() }
 
-        _ = try await controller.start(activityType: .running)
+        _ = try await controller.start(activityType: .outdoorRun)
         try await glasses.connect()
 
         // Drop the link and then DO NOT manually call `simulateReconnect`.
@@ -566,7 +568,7 @@ extension DisconnectResilienceTests {
         //         alertCount += 1
         //     }
         // }
-        // _ = try await controller.start(activityType: .running)
+        // _ = try await controller.start(activityType: .outdoorRun)
         // try await glasses.connect()
         // await glasses.simulateDisconnect(reason: .linkLoss)
         // _ = await waitUntil { alertCount >= 1 }

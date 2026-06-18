@@ -55,3 +55,13 @@ Audited Joe's report: "When I discard a run on the watch it shouldn't save to Ap
 ## Next Phase
 
 Waiting for Joe's v0.5.19 discard bench confirmation. v0.5.20 should include a chore to fix elease-testflight.yml tag-monotonicity guard (pre-release tags self-collide).
+
+## Learnings
+
+### 2026-06-18 — Amber: v0.6.0 ARRunnerCore test-coverage expansion (tests/0.6.0-coverage)
+- Built on feat/0.6.0-core-foundation tip. Read all of Richards' 6 new test files first; added GAP coverage only (no duplication).
+- **New Core API (was missing):** MetricKind.isValid(for: WorkoutType) + MetricKind.unitLabel(for:in:) in Models/MetricKind+Validity.swift. Framework-free. Encodes the per-type validity matrix the decisions ledger (R1–R11) called for: pace↔speed mutually exclusive per type, elevation outdoor-only, distance absent on indoor bike, cadence rpm(cycling)/spm(run-walk). Richards was assigned this in the plan but it hadn't landed — legitimately missing domain logic, so I added it.
+- 5 new test files / 40 new test methods. Total Core suite 260 → **300 tests GREEN** (1 skipped pre-existing).
+- **Domain bug surfaced (cosmetic):** RunMetricFormatting.formatSpeed(-0.0) renders "-0.0 mph" (printf preserves the sign bit), not "0.0". Documented in test rather than asserting wrong; flag for a future tidy-the-sign decision.
+- **EnergyEstimator cross-sport:** asserted plausibility (non-negative, monotone in HR, unspecified-sex = avg of male/female, heavier male burns more) NOT exact kcal — Keytel is running-validated and biased for walk/cycle. Documented bias in test header.
+- **Tooling gotcha (Windows + Docker):** swift:6.0-jammy with a bind mount over D:\ throws intermittent "Input/output error" on the module cache (.pcm) and even segfaults the frontend on visitNilLiteralExpr. Fix: docker cp the package into the container's own fs and run swift test there (idle sleep container). Bind mount unreliable for SwiftPM builds on this host.

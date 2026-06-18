@@ -46,4 +46,28 @@ public enum ActivityNaming {
         default:      return .night // 21..<24 and 0..<5
         }
     }
+
+    /// The Strava-style activity noun for an `ActivityKind` — "Run", "Ride",
+    /// "Walk". Used to build names like "Morning Ride" for non-running
+    /// workouts (v0.6.0 multi-type support).
+    public static func activityNoun(for activity: ActivityKind) -> String {
+        switch activity {
+        case .running: return "Run"
+        case .cycling: return "Ride"
+        case .walking: return "Walk"
+        }
+    }
+
+    /// Strava-style name for a typed workout, e.g. "Morning Ride".
+    public static func name(
+        forStart startDate: Date,
+        workoutType: WorkoutType,
+        calendar: Calendar = .current
+    ) -> String {
+        name(
+            forStart: startDate,
+            sport: activityNoun(for: workoutType.activity),
+            calendar: calendar
+        )
+    }
 }

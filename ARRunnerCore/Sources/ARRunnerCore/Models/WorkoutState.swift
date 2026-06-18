@@ -23,7 +23,7 @@ public enum WorkoutPhase: String, Sendable, Codable, Equatable, CaseIterable {
 /// and will carry cycling/walking values when those surfaces ship in v1.
 public struct WorkoutState: Sendable, Codable, Equatable {
     public let sessionID: UUID
-    public let sport: SportType
+    public let sport: WorkoutType
     public let phase: WorkoutPhase
     public let startedAt: Date?
     public let endedAt: Date?
@@ -33,7 +33,7 @@ public struct WorkoutState: Sendable, Codable, Equatable {
 
     public init(
         sessionID: UUID,
-        sport: SportType,
+        sport: WorkoutType,
         phase: WorkoutPhase,
         startedAt: Date?,
         endedAt: Date?,

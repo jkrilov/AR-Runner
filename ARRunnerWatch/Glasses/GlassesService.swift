@@ -16,6 +16,11 @@ actor GlassesService {
     private(set) var activeLayout: HUDLayout?
     private var throttle: HUDFieldThrottle
     private let now: @Sendable () -> Date
+    /// Display context for unit-aware field formatting. Set by the workout
+    /// pipeline at start (and whenever the unit preference changes) so the
+    /// glasses' field strings match the watch UI's metric/imperial choice.
+    private var unitSystem: UnitSystem = .metric
+    private var activity: ActivityKind = .running
 
     init(
         transport: any GlassesFrameTransport,
@@ -25,6 +30,14 @@ actor GlassesService {
         self.transport = transport
         self.throttle = throttle
         self.now = now
+    }
+
+    /// Update the unit system + activity used to format per-field HUD values.
+    /// Called on workout start and on unit-preference changes so the glasses
+    /// never drift from the wrist display (km/h vs mph, min/km vs min/mi).
+    func configure(unitSystem: UnitSystem, activity: ActivityKind) {
+        self.unitSystem = unitSystem
+        self.activity = activity
     }
 
     var connectionState: GlassesConnectionState {
@@ -80,7 +93,7 @@ actor GlassesService {
         let update = HUDFieldUpdate(
             layoutID: activeLayoutID,
             fieldIndex: fieldIndex,
-            value: Self.format(metric)
+            value: format(metric)
         )
         try? await transport.updateField(update)
     }
@@ -113,28 +126,39 @@ actor GlassesService {
     }
 
     /// Glanceable formatter for the HUD. Lives here so the watch UI's
-    /// SwiftUI formatters and the glasses' field strings never drift.
-    private static func format(_ metric: WorkoutMetric) -> String {
+    /// SwiftUI formatters and the glasses' field strings never drift —
+    /// every metric is rendered through the shared `RunMetricFormatting`
+    /// (and `RunningHUDFrame`) Core helpers using the active `unitSystem`
+    /// and `activity`, so km/h↔mph, min/km↔min/mi, km↔mi and m↔ft all
+    /// follow the user's measurement-system choice.
+    private func format(_ metric: WorkoutMetric) -> String {
         switch metric.kind {
         case .heartRate:
-            return String(Int(metric.value.rounded()))
+            return RunningHUDFrame.formatHeartRate(metric.value)
         case .pace:
-            // pace is sec/km — render as M:SS.
-            let total = Int(metric.value.rounded())
-            guard total > 0 else { return "--:--" }
-            return String(format: "%d:%02d", total / 60, total % 60)
+            // pace metric value is sec/km — unit-aware to min/km or min/mi.
+            return RunMetricFormatting.formatPace(
+                secondsPerKilometer: metric.value, unitSystem: unitSystem
+            )
+        case .speed:
+            // speed metric value is m/s — unit-aware to km/h or mph.
+            return RunMetricFormatting.formatSpeed(
+                metersPerSecond: metric.value, unitSystem: unitSystem
+            )
         case .distance:
-            // metres → km, 2dp.
-            return String(format: "%.2f", metric.value / 1000.0)
+            return RunMetricFormatting.formatDistance(
+                meters: metric.value, unitSystem: unitSystem
+            )
         case .duration:
-            let total = Int(metric.value.rounded())
-            return String(format: "%d:%02d", total / 60, total % 60)
+            return RunningHUDFrame.formatElapsed(metric.value)
         case .cadence:
-            return String(Int(metric.value.rounded()))
+            return RunningHUDFrame.formatCadence(metric.value, activity: activity)
         case .elevation:
-            return String(Int(metric.value.rounded()))
+            return RunMetricFormatting.formatElevation(
+                meters: metric.value, unitSystem: unitSystem
+            )
         case .energy:
-            return String(Int(metric.value.rounded()))
+            return String(format: "%.0f kcal", metric.value)
         }
     }
 }

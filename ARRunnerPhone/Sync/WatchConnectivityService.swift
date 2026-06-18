@@ -102,9 +102,57 @@ final class WatchConnectivityService: NSObject, @unchecked Sendable {
 
     static let actionButtonModeContextKey = "actionButtonMode"
 
+    // MARK: - Settings sync (v0.6.0)
+
+    /// Push the user-selected default `WorkoutType` to the paired watch.
+    /// Reachable → immediate `sendMessageData`; otherwise queued via
+    /// `transferUserInfo` so the watch receives it next time it's awake.
+    /// Phone-optional: silent no-op if no watch is paired.
+    func sendDefaultWorkoutType(_ type: WorkoutType) {
+        transmitQueued(.defaultWorkoutType(type))
+    }
+
+    /// Push the user's metric/imperial preference to the paired watch.
+    func sendUnitPreference(_ system: UnitSystem) {
+        transmitQueued(.unitPreference(system))
+    }
+
+    private func transmitQueued(_ message: WCMessage) {
+        #if canImport(WatchConnectivity)
+        guard let session else { return }
+        let payload: Data
+        do {
+            payload = try JSONEncoder().encode(message)
+        } catch {
+            logger.error("encode failed: \(String(describing: error), privacy: .public)")
+            return
+        }
+        if session.isReachable {
+            session.sendMessageData(payload, replyHandler: nil) { [logger] error in
+                logger.debug("settings sync fallthrough: \(String(describing: error), privacy: .public)")
+            }
+        } else {
+            session.transferUserInfo(["wcMessage": payload])
+        }
+        #else
+        _ = message
+        #endif
+    }
+
     fileprivate func ingest(payload: Data) {
         do {
             let message = try JSONDecoder().decode(WCMessage.self, from: payload)
+            // v0.6.0 — persist inbound settings-sync to the shared App Group
+            // store (last-writer-wins) so the phone's Settings pickers and
+            // the local mirror reflect a change made on the watch.
+            switch message {
+            case .defaultWorkoutType(let type):
+                WorkoutTypePreference.store(type)
+            case .unitPreference(let system):
+                UnitPreference.store(system)
+            default:
+                break
+            }
             continuation.yield(message)
         } catch {
             logger.debug("decode failed: \(String(describing: error), privacy: .public)")

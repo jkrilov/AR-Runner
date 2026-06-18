@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Joe Krilov
 // SPDX-License-Identifier: Apache-2.0
 
+import ARRunnerCore
 import SwiftUI
 
 /// Settings tab (v0.5 PR 2). Owns the Strava connection UI and the
@@ -11,6 +12,12 @@ struct SettingsView: View {
     @State private var viewModel: SettingsViewModel
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw: String = AppearanceMode.system.rawValue
     @AppStorage(ActionButtonMode.storageKey) private var actionButtonRaw: String = ActionButtonMode.defaultMode.rawValue
+    // v0.6.0 — default workout type + measurement system, persisted to the
+    // shared App Group store and mirrored to the watch.
+    @AppStorage(WorkoutTypePreference.storageKey, store: WorkoutTypePreference.sharedDefaults)
+    private var defaultWorkoutRaw: String = WorkoutTypePreference.defaultValue.rawValue
+    @AppStorage(UnitPreference.storageKey, store: UnitPreference.sharedDefaults)
+    private var unitRaw: String = UnitPreference.defaultValue.rawValue
 
     init(viewModel: SettingsViewModel? = nil) {
         _viewModel = State(initialValue: viewModel ?? SettingsViewModel())
@@ -19,11 +26,73 @@ struct SettingsView: View {
     var body: some View {
         Form {
             stravaSection
+            workoutSection
+            unitsSection
             appearanceSection
             actionButtonSection
             aboutSection
         }
         .navigationTitle("Settings")
+    }
+
+    // MARK: - Workout
+
+    private var defaultWorkoutType: WorkoutType {
+        WorkoutType(rawValue: defaultWorkoutRaw) ?? WorkoutTypePreference.defaultValue
+    }
+
+    private var workoutSection: some View {
+        Section {
+            Picker("Default Type", selection: Binding(
+                get: { defaultWorkoutType },
+                set: { newValue in
+                    defaultWorkoutRaw = newValue.rawValue
+                    // Mirror to the paired watch so the wearer's default
+                    // stays in sync. Best-effort (no-op if no watch paired).
+                    ARRunnerPhoneEnvironment.shared.mirror
+                        .sendDefaultWorkoutType(newValue)
+                }
+            )) {
+                ForEach(WorkoutTypePreference.selectable, id: \.rawValue) { type in
+                    Label(type.displayName, systemImage: WorkoutTypePreference.symbolName(for: type))
+                        .tag(type)
+                }
+            }
+        } header: {
+            Text("Workout")
+        } footer: {
+            Text("The workout type a new run starts as on the watch.")
+                .font(.caption2)
+        }
+    }
+
+    // MARK: - Units
+
+    private var unitSystem: UnitSystem {
+        UnitSystem(rawValue: unitRaw) ?? UnitPreference.defaultValue
+    }
+
+    private var unitsSection: some View {
+        Section {
+            Picker("Units", selection: Binding(
+                get: { unitSystem },
+                set: { newValue in
+                    unitRaw = newValue.rawValue
+                    ARRunnerPhoneEnvironment.shared.mirror
+                        .sendUnitPreference(newValue)
+                }
+            )) {
+                ForEach(UnitSystem.allCases, id: \.rawValue) { system in
+                    Text(UnitPreference.title(for: system)).tag(system)
+                }
+            }
+            .pickerStyle(.segmented)
+        } header: {
+            Text("Units")
+        } footer: {
+            Text("Distance, pace, and speed display in your chosen measurement system.")
+                .font(.caption2)
+        }
     }
 
     // MARK: - Appearance

@@ -28,7 +28,7 @@ public protocol WorkoutHealthSubstrate: Sendable {
 
     /// Begin the underlying workout collection. Returns once the session has
     /// transitioned to a running-equivalent state (or throws on failure).
-    func begin(sport: SportType, startedAt: Date) async throws
+    func begin(sport: WorkoutType, startedAt: Date) async throws
 
     /// Pause the underlying collection. Idempotent if already paused.
     func pause(at date: Date) async throws

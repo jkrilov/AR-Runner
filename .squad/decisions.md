@@ -268,6 +268,219 @@ No logic changes. CI: all four required checks green.
 
 ---
 
+---
+
+## v0.6.x Planning (2026-06-17) — Multi-Workout Types + Custom HUD Layouts
+
+### Richards — Architecture Plan
+
+**Composite WorkoutType model recommended** (activity × location, not flat enum):
+
+```swift
+public enum ActivityKind: String, Sendable, Codable, CaseIterable {
+    case running, walking, cycling
+}
+public enum LocationKind: String, Sendable, Codable, CaseIterable {
+    case outdoor, indoor
+}
+public struct WorkoutType: Sendable, Codable, Equatable, Hashable {
+    public let activity: ActivityKind
+    public let location: LocationKind
+    // Convenience factories: .outdoorRun, .indoorRun, .outdoorWalk, .outdoorBike, .indoorBike
+}
+```
+
+**Data model changes:**
+- `SportType` deprecated; bridge via `toWorkoutType()` for one release cycle.
+- New `WorkoutLayoutDefaults: Codable` maps `WorkoutType → HUDLayout.id`.
+- Side-store `ARWorkoutMetadata` already carries `layoutID` — no schema change.
+- WCMessage schemaVersion: 5 → 6; `WorkoutTickMessage` accepts both `sport: "running"` (legacy) and `workoutType: {activity, location}` (new) for mixed-version compat.
+
+**Phasing:**
+- **Phase 1 (v0.6.0):** Data model, watch/phone type picker, HealthKit mapping for indoor/outdoor, Strava TCX sport-string mapping. No custom layouts yet.
+- **Phase 2 (v0.6.1):** Phone layout editor UI (depends on Weiss feasibility).
+
+**Open questions for jkrilov:**
+- Indoor walking in scope (6 types) or just 5?
+- CloudKit sync for custom layouts in v0.6, or local UserDefaults + WCSession sufficient?
+- Default-layout inheritance semantics?
+
+---
+
+### Laughlin — watchOS + HealthKit Implementation (v0.6.0)
+
+**Recommended decisions (WD-1 through WD-10):**
+
+1. **SportType enum:** Add `.indoorRun`, `.indoorWalk`, `.indoorBike` cases; keep outdoor variants as-is.
+2. **HealthKit locationType:** `sport.isIndoor ? .indoor : .outdoor`; suppress GPS/routeBuilder for indoor.
+3. **MetricKind.speed:** Add `case speed` for cycling (m/s → km/h or mph formatting).
+4. **WorkoutSummary:** Add optional `averageSpeedMetersPerSecond: Double?` for cycling; branch on sport in `makeSummary`.
+5. **WorkoutView:** Pre-workout type selector row + scrollable List picker (5 items); state machine prevents mid-workout changes.
+6. **Default type preference:** `Shared/Settings/WorkoutTypePreference.swift` (App Group UserDefaults, key `"defaultWorkoutType"`).
+7. **Action Button:** Expand `ARRunnerWorkoutStyleEnum` to 5 cases; `perform()` carries sport through app-group flag or preference.
+8. **HealthKit cycling cadence:** Add `.cyclingCadence` to authorized types in `sharedTypes` and `readTypes`.
+9. **WCMessage v6:** New case `defaultWorkoutType(SportType)` for phone → watch sync.
+10. **Files to touch:** SportType.swift (add cases), WorkoutMetric.swift (add .speed), WorkoutSummary.swift (add speed field), WorkoutController.swift (branch makeSummary), WCMessage.swift (schema v6), HealthKitWorkoutSubstrate.swift (locationType gate, cycling cadence), WorkoutView.swift (type picker), ActionButtonIntent.swift (enum expansion), WorkoutTypePreference.swift (new).
+
+---
+
+### Killian — UX Plan
+
+**Workout-type selection (watch pre-workout):**
+- Flat list of 5 items (Outdoor Run, Outdoor Walk, Outdoor Bike, Indoor Run, Indoor Bike).
+- Tappable row with chevron → crown-scrollable picker → checkmark on current.
+- 2 taps to select non-default type.
+- Dynamic navigation title: "Outdoor Run", "Outdoor Walk", etc.
+
+**Default type discovery:**
+- Persisted via App Group UserDefaults (same pattern as Action Button mode).
+- Watch Settings: gear icon → "Default Workout" picker.
+- Phone Settings: new "Workout" section → "Default Type" picker.
+- WCSession mirrors phone → watch.
+
+**Action Button & Smart Stack:**
+- Action Button: 5 types in system Settings picker; independent of app default.
+- Smart Stack widget: type-aware (shows default type name + icon, not hardcoded "Run").
+
+**Custom layout editor UX (phone, v0.6.1):**
+- Settings → new "Glasses Layouts" section (not a new tab yet).
+- System layouts non-editable; custom editable + swipe-to-delete.
+- Per-workout-type default layout assignment rows.
+- 4-slot editor (6-slot deferred to v0.7): tap slot → metric picker → save → assign to sport.
+- HUD preview: black rectangle (304×256) with amber text, correct lens-flip coords, synthetic values.
+- Layout sync watch ↔ phone (WCMessage), applied at next workout start, queued if glasses offline.
+
+**Default layouts per type (v0.6.0):**
+
+| Type | Slots | Rationale |
+|---|---|---|
+| Outdoor Run | pace, heartRate, distance, duration | Current balanced run |
+| Outdoor Walk | pace, heartRate, distance, duration | Same structure |
+| Outdoor Bike | speed, heartRate, distance, duration | Speed ≠ pace for cycling |
+| Indoor Run | pace, heartRate, cadence, duration | No GPS; cadence for form signal |
+| Indoor Bike | cadence, heartRate, duration, energy | No GPS; energy replaces distance |
+
+**Open questions for jkrilov:**
+- Q1: Flat list vs. 3-item + toggle? (Recommend flat)
+- Q2: Smart Stack widget type-aware? (Recommend yes)
+- Q3: Layout editor 4-slot only (v0.6.1) or 6-slot from start?
+- Q4: MetricKind.speed in v0.6.0 or defer to v0.6.1?
+- Q5: Indoor distance hide or show pedometer estimate?
+- Q6: Layouts in Settings section or dedicated tab?
+- Q7: Action Button all 5 types or default only?
+- Q8: Layout name required or auto-generated?
+
+---
+
+### Amber — Fitness-Domain Correctness Plan
+
+**Per-type metric validity matrix:**
+- Pace (min/km) ✅ for run/walk; ❌ wrong for cycling (speed in km/h required instead).
+- Pace formatter: currently miles-only, needs km/h speed path.
+- Elevation: ✅ outdoor; ❌ meaningless indoors (barometric noise).
+- Indoor cycling distance: ⚠️ absent without Bluetooth sensor.
+- Cadence: semantics differ (steps/min for running, RPM for cycling); formatter must branch.
+
+**11 correctness risks identified (R1–R11):**
+- R1: No `.speed` MetricKind (blocker for cycling).
+- R2: Pace formatter miles-only, no km/h path.
+- R3: GlassesService pace formatter assumes sec/km for all sports.
+- R4: WorkoutController cadence var names "steps/min" even for cycling.
+- R5: WorkoutViewModel pace computation carries running semantics (paceSecondsPerKilometer for all).
+- R6: HealthKit substrate never emits cadence or elevation samples.
+- R7: All HUDLayout presets named `*Run`, include `.pace` (no cycling default).
+- R8: EnergyEstimator Keytel formula validated for running; may over-estimate for cycling/walking.
+- R9: SportType has no indoor/outdoor distinction (WCMessage schema bump needed).
+- R10: TCX sport field defaults to "Running" for all workouts.
+- R11: RunningHUDPreset name + tests are running-specific.
+
+**Recommended test strategy:**
+- `SportTypeExtendedTests.swift` — Codable round-trip, `isIndoor` computed property, `requiresGPS`.
+- `MetricValidityTests.swift` — cycling rejects pace, elevation invalid indoors, cadence unit per sport.
+- `MetricFormattingExtendedTests.swift` — speed formatter (25 km/h → "25.0 km/h"), pace km variant.
+- `HUDLayoutDefaultTests.swift` — per-type defaults all contain correct metrics, no duplicates.
+- `MetricLayoutValidationTests.swift` — invalid metric/sport combos detected; graceful "--" rendering.
+- `EnergyEstimatorCrossSportTests.swift` — walking/cycling kcal ranges plausible.
+- `WCMessageSchemaVersionTests.swift` — old sport enum decodes without crash, unknown sport falls back safely.
+- Device bench: indoor distance, cadence sensor, elevation indoors, energy reconciliation.
+
+**Action assignments:**
+- Richards: Add `.speed` to MetricKind, `formatSpeedKilometersPerHour`, `formatAveragePacePerKilometer`.
+- Richards: Add `MetricKind.isValid(for: SportType)` validator.
+- Richards: Add indoor/outdoor to SportType (pending Q3 answer from jkrilov: flat enum or composite).
+- Richards: Expand sport-type in TCX encoder.
+- Laughlin: Fix WorkoutViewModel pace computation to branch on sport.
+- Laughlin: HealthKit substrate add cadence + speed type mappings.
+- Laughlin: Phone layout picker validate metric/sport compatibility on save.
+- Amber: Write all Core unit tests (post-model changes).
+- Amber: Device bench tests (indoor distance, cadence sensor, etc.).
+
+**Open questions for jkrilov:**
+- Q1: Indoor walk in scope?
+- Q2: Units (km vs. mi): always metric, always imperial, or locale-driven?
+- Q3: Indoor/outdoor model: flat enum (A) or composite (B)?
+- Q4: Cycling cadence on Apple Watch SE without sensor: always show with "--" or only if sensor detected?
+- Q5: EnergyEstimator formula: accept Keytel as-is or add activity-specific scaling?
+- Q6: TCX walking sport string: "Other" (standard) or non-standard "Walking"?
+
+---
+
+### Weiss — Custom Layouts Feasibility + Design
+
+**Feasibility verdict: Constrained-custom via parameterized raw `txt` rendering.**
+
+Why NOT layoutSave: The command exists but requires `cfgWrite` + font/icon uploads (cf. icon spike), loses access to preloaded fonts 1–5 and stock icons, and burns 3MB flash pool with no automatic cleanup. Wrong for v0.6.x.
+
+Why raw `txt` works: `RunningHUDFrame.frames(for:)` already renders any string at any (x, y, font) on Engo 2; bench-validated rc16 coordinates; wraps in `holdFlush` for atomic commits; called via `GlassesFrameTransport.sendCommands`.
+
+**Recommended approach:**
+- Fixed-slot grid model: compile-time geometry constants extracted to `HUDGridDefinition` (new type, Core-resident, NOT Codable).
+- Four slots: x=243/y=240 (line 1 left), x=83/y=240 (line 1 right), x=243/y=170 (line 2), x=243/y=77 (line 3) — all from bench-validated rc16.
+- `HUDLayout` (existing type) unchanged: `id, name, slots: [MetricKind?]`. Slot index → grid geometry lookup.
+- `RunningHUDFrame.frames(for metricValues: [MetricKind: String], layout: HUDLayout, grid: HUDGridDefinition)` new signature; backward compatible via convenience wrapper.
+- Geometry stays in code (validated in unit tests) — not user-editable — to prevent coordinate regression class of bugs.
+
+**Per-workout-type default layouts (curated, code-defined):**
+
+| Type | Slots | Rationale |
+|---|---|---|
+| Outdoor Run | pace, heartRate, distance, duration | Current balanced |
+| Indoor Run | pace, heartRate, cadence, duration | No GPS; cadence signals form |
+| Outdoor Walk | pace, duration, distance, heartRate | Slower pace focus |
+| Outdoor Bike | pace, cadence, distance, duration | Speed + cadence core (but needs `.speed` MetricKind first) |
+| Indoor Bike | cadence, heartRate, duration, energy | No GPS; energy signals burn |
+
+**Watch applies defaults at workout start:** `WorkoutViewModel` looks up `WorkoutLayoutDefaults.typeToLayoutID[workoutType]` → resolves `HUDLayout` → `GlassesService.selectLayout(layout:grid:)`.
+
+**Sync path (phone → watch):** `WCMessage.layoutCatalog([HUDLayout])` + `layoutDefaults(WorkoutLayoutDefaults)` (per Richards' WCMessage v6 plan).
+
+**Two pre-existing bugs in dormant curated path (DO NOT SHIP):**
+- Bug 1: `widgetUpdate(0x3A)` is phantom (not in spec). Sending it → 0xE2 protocol error.
+- Bug 2: `displayLayout(0x62)` payload wrong — missing text_string. Correct primitive is `layoutClearAndDisplay(0x69)`.
+- These only matter if curated path activates (Config-Generator bake). Feature 2 uses raw txt, bypasses these bugs.
+
+**Phasing:**
+- **v0.6.0:** Per-workout-type default factories (code-defined presets), `HUDGridDefinition` geometry extraction, parameterized rendering, WCMessage v6 layout/defaults cases. No phone editor. Can land with Phase 1 (types).
+- **v0.6.1:** Phone layout editor UI (slot metric picker), constrained-custom UX.
+- **v1+:** Freeform positioning, `layoutSave` dynamic upload, custom icons.
+
+**Constraints:**
+- Display: 304 × 256 px, 15-level grayscale (no color).
+- Font heights: F1=24, F2=38, F3=64, F4=75, F5=82 px.
+- Max lines (F3): 3; (F2): 4.
+- Practical 4-slot grid matches rc16 bench; 6-slot (F2) possible but tight.
+- BLE payload ~280 bytes/tick for 4 slots — well within bandwidth.
+- Non-standard metric assignments (e.g., cadence) have no preloaded icon; render text-only (acceptable for v0.6.x).
+
+**Open questions for jkrilov:**
+- Q1: Constrained-custom (fixed grid, user picks metrics per slot) acceptable for v1 of editor?
+- Q2: How many grid definitions? (4-slot standard + 2-slot minimal + 6-slot training, or just 4-slot?)
+- Q3: Icons for non-standard assignments? (text-only preferred for v0.6.x)
+- Q4: Metric availability per sport — editor gray-out unavailable metrics, watch render "--"?
+- Q5: CloudKit sync for layouts in v0.6.x, or local+WCSession only?
+
+---
+
 ## Governance
 
 - Decisions inbox: drop files in `.squad/decisions/inbox/{agent}-{slug}.md`; Scribe merges.

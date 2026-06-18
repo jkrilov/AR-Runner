@@ -4,7 +4,7 @@
 import Foundation
 
 public enum LifecycleEvent: Sendable, Codable, Equatable {
-    case started(SportType)
+    case started(WorkoutType)
     case paused
     case resumed
     case ended
@@ -25,7 +25,20 @@ public enum WCMessage: Sendable, Codable, Equatable {
     ///      so v5 ↔ v4/v3 peers keep working in both directions — older
     ///      watch builds simply don't populate them and the phone treats
     ///      that as "no map yet".
-    public static let currentSchemaVersion = 5
+    /// v6 — v0.6.0 multi-workout-type foundation. Three changes, all
+    ///      backward-compatible:
+    ///      1. `LifecycleEvent.started` / `WorkoutTickMessage.sport` now carry
+    ///         the orthogonal `WorkoutType`, which encodes the three legacy
+    ///         outdoor variants as the unchanged raw strings "running" /
+    ///         "walking" / "cycling" — so a v0.5.20 peer's `sport:"running"`
+    ///         still decodes, and an unknown sport degrades to `.outdoorRun`
+    ///         rather than fataling the decode.
+    ///      2. New settings-sync cases `defaultWorkoutType` and
+    ///         `unitPreference` (phone ↔ watch).
+    ///      3. Unrecognized message `kind`s decode to `.unknown` instead of
+    ///         throwing, so a future peer's new case can't strand the link.
+    ///      Layout catalog/defaults payloads are deferred to v6.1.
+    public static let currentSchemaVersion = 6
 
     case layoutConfig(HUDLayout)
     case workoutTick(WorkoutMetric)
@@ -34,6 +47,15 @@ public enum WCMessage: Sendable, Codable, Equatable {
     /// Glasses battery percentage (0–100) as reported by the standard
     /// Battery Service notification on the watch's BLE link.
     case glassesBattery(level: Int)
+    /// v6 — phone → watch (or watch → phone) sync of the user's preferred
+    /// default workout type.
+    case defaultWorkoutType(WorkoutType)
+    /// v6 — phone ↔ watch sync of the user's metric/imperial preference.
+    case unitPreference(UnitSystem)
+    /// Decode-only fallback for an unrecognized message `kind` from a
+    /// newer/older peer on the same major schema. Never produced by an
+    /// encoder under normal operation; receivers treat it as "ignore".
+    case unknown
 
     public var schemaVersion: Int {
         Self.currentSchemaVersion
@@ -47,6 +69,8 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case lifecycleEvent
         case snapshot
         case batteryLevel
+        case workoutType
+        case unitSystem
     }
 
     private enum Kind: String, Codable {
@@ -55,6 +79,8 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case workoutLifecycle
         case workoutSnapshot
         case glassesBattery
+        case defaultWorkoutType
+        case unitPreference
     }
 
     public init(from decoder: Decoder) throws {
@@ -68,7 +94,16 @@ public enum WCMessage: Sendable, Codable, Equatable {
             throw WCMessageCodingError.unsupportedSchemaVersion(schemaVersion)
         }
 
-        switch try container.decode(Kind.self, forKey: .kind) {
+        // Decode the discriminator leniently: an unrecognized `kind` from a
+        // peer on the same major schema degrades to `.unknown` instead of
+        // throwing, so one new case can't strand the whole link.
+        let rawKind = try container.decode(String.self, forKey: .kind)
+        guard let kind = Kind(rawValue: rawKind) else {
+            self = .unknown
+            return
+        }
+
+        switch kind {
         case .layoutConfig:
             self = .layoutConfig(try container.decode(HUDLayout.self, forKey: .layout))
         case .workoutTick:
@@ -79,6 +114,10 @@ public enum WCMessage: Sendable, Codable, Equatable {
             self = .workoutSnapshot(try container.decode(WorkoutTickMessage.self, forKey: .snapshot))
         case .glassesBattery:
             self = .glassesBattery(level: try container.decode(Int.self, forKey: .batteryLevel))
+        case .defaultWorkoutType:
+            self = .defaultWorkoutType(try container.decode(WorkoutType.self, forKey: .workoutType))
+        case .unitPreference:
+            self = .unitPreference(try container.decode(UnitSystem.self, forKey: .unitSystem))
         }
     }
 
@@ -102,6 +141,17 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case .glassesBattery(let level):
             try container.encode(Kind.glassesBattery, forKey: .kind)
             try container.encode(level, forKey: .batteryLevel)
+        case .defaultWorkoutType(let type):
+            try container.encode(Kind.defaultWorkoutType, forKey: .kind)
+            try container.encode(type, forKey: .workoutType)
+        case .unitPreference(let system):
+            try container.encode(Kind.unitPreference, forKey: .kind)
+            try container.encode(system, forKey: .unitSystem)
+        case .unknown:
+            // A decode-only sentinel. Encode a stable, self-describing marker
+            // so a round-trip of `.unknown` stays `.unknown` rather than
+            // throwing; peers ignore it.
+            try container.encode("unknown", forKey: .kind)
         }
     }
 }

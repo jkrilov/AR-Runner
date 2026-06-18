@@ -85,3 +85,47 @@ Release-guard monotonicity fix validated end-to-end. Tag `v0.5.20-1` auto-trigge
 **Skill updated:** `activelook-ble-adapter-pitfalls` — new "View-model: observer tasks are TRANSPORT-scoped, not workout-scoped (rc3)" section.
 
 ---
+
+## Learnings — 2026-06-18 (v0.6.0 per-type default HUD layouts + unit-aware rendering)
+
+**Task:** Wire `HUDLayout.default(for: WorkoutType)` into the live glasses HUD on the
+production raw-`txt` path, make field formatting unit-aware, and drive slot→metric
+placement from the active layout. Branch `feat/0.6.0-hud-defaults`.
+
+**The production HUD is NOT the GlassesService.apply fan-out.** The live HUD is painted
+by `WorkoutViewModel.pushHUDFrameIfConnected` → `RunningHUDFrame.payload`/`frames(for:)`
+→ `transport.sendCommands`. `GlassesService.apply(metric:)` is **dormant in production**
+because `attachGlasses` deliberately skips `selectLayout` (the curated catalog only ships
+placeholder device IDs — rc3 bench freeze). I still made `GlassesService.format`
+unit-aware (task item 2) but the *real* per-type wiring had to go into the
+`pushHUDFrameIfConnected` path. Future-me: when asked to change "the HUD", trace
+`sendCommands`, not just `GlassesService`.
+
+**Reconnect re-applies layout for free.** `attachGlasses`'s connection-state task calls
+`pushHUDConnectScreenIfConnected` on `.connected`, which (if a workout is running) calls
+`pushHUDFrameIfConnected`. Because that method now recomputes `HUDLayout.default(for: sport)`
+every call, mid-workout (re)connect automatically paints the correct per-type layout — no
+separate reconnect plumbing needed. The adapter's `completeConnectionIfReady` re-apply via
+`activeLayoutDeviceID` stays a no-op (that ID is only set by the dormant `selectLayout(id:)`).
+
+**Geometry extraction = HUDGridDefinition, centre-based icon model.** Extracted the rc16
+anchors into `HUDGridDefinition.standard4` (NOT Codable — geometry is a code constant).
+Key trick: position icons from `iconWearerLeft` + the line's `iconWearerCenterY`, then derive
+the framebuffer top-left per icon size (`x_fb = 303 − wearerLeft − w`,
+`y_fb = 255 − (centerY − h/2) − h`). This reproduces the rc16 chrono(40×40)/heart/distance/
+pace(28×28) positions within ±1 px AND adapts when a different-sized icon lands in a slot.
+
+**Slot-ordering pitfall to flag at bench.** Following the task literally (layout slot index →
+grid slot index) moves Outdoor Run's pace into slot 0 (font 2, small) and duration into slot 3
+(font 3, large) — i.e. pace is no longer the visually dominant bottom-line metric it was in
+rc16. Faithful to spec, but a visual-hierarchy regression risk. Documented in the decision
+packet for Joe to bench; the fix (if wanted) is reordering the default-layout metrics or
+reassigning which grid slots get font 3 — geometry stays put.
+
+**Bench constraint:** No Swift toolchain on the Windows bench, so `swift test` could not be
+run locally this session; relied on careful back-compat (kept legacy `frames(for:)` +
+`payload(...)`, added optional/overload APIs only) and CI. Added `HUDGridRenderingTests.swift`.
+
+**Decision filed:** `.squad/decisions/inbox/weiss-0.6-hud-defaults.md`.
+
+---
