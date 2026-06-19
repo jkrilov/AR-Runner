@@ -29,6 +29,35 @@ final class HistoryViewModel {
         case failed(message: String?)
     }
 
+    /// Date-range filter for the History list. Raw value is the look-back
+    /// window in days; `.unlimited` (0) disables the lower bound entirely.
+    enum DateRangeFilter: Int, CaseIterable, Sendable, Identifiable {
+        case days30 = 30
+        case days60 = 60
+        case days90 = 90
+        case days365 = 365
+        case unlimited = 0
+
+        var id: Int { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .days30:    return "Last 30 days"
+            case .days60:    return "Last 60 days"
+            case .days90:    return "Last 90 days"
+            case .days365:   return "Last year"
+            case .unlimited: return "All time"
+            }
+        }
+
+        /// Query lower bound for this range, or `nil` for `.unlimited`. Pure so
+        /// it can be unit-tested without a clock or HealthKit.
+        func startDate(from reference: Date, calendar: Calendar = .current) -> Date? {
+            guard self != .unlimited else { return nil }
+            return calendar.date(byAdding: .day, value: -rawValue, to: reference)
+        }
+    }
+
     struct Row: Sendable, Identifiable, Equatable {
         let id: UUID
         let startDate: Date
@@ -41,6 +70,10 @@ final class HistoryViewModel {
     private(set) var isLoading: Bool = false
     private(set) var lastErrorMessage: String?
     private(set) var hasHealthKit: Bool
+
+    /// Currently-selected date-range filter. Defaults to the last 30 days.
+    /// Settable so the History picker can bind to it; the view reloads on change.
+    var selectedRange: DateRangeFilter = .days30
 
     private let queue: StravaUploadQueue
     private let tokenStore: StravaTokenStore
@@ -165,11 +198,21 @@ final class HistoryViewModel {
     }
 
     private func fetchRunningWorkouts(healthStore: HKHealthStore) async throws -> [HKWorkout] {
-        try await withCheckedThrowingContinuation { continuation in
+        // Compute the lower bound on the main actor before crossing into the
+        // off-actor query continuation (which must not touch `selectedRange`).
+        let rangeStart = selectedRange.startDate(from: Date())
+        return try await withCheckedThrowingContinuation { continuation in
             // Source filter is applied in-memory below — HK's NSPredicate
             // string-based source filter is fragile across iOS versions, and
             // 200 running workouts is a trivial post-filter.
-            let predicate = HKQuery.predicateForWorkouts(with: .running)
+            var predicates: [NSPredicate] = [HKQuery.predicateForWorkouts(with: .running)]
+            if let rangeStart {
+                predicates.append(HKQuery.predicateForSamples(
+                    withStart: rangeStart, end: nil, options: .strictStartDate))
+            }
+            let predicate = predicates.count == 1
+                ? predicates[0]
+                : NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
             let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
             let q = HKSampleQuery(
                 sampleType: HKObjectType.workoutType(),

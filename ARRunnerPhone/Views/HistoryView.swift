@@ -14,6 +14,7 @@ struct HistoryView: View {
     }
 
     var body: some View {
+        @Bindable var viewModel = viewModel
         List {
             if let message = viewModel.lastErrorMessage {
                 Text(message)
@@ -21,7 +22,7 @@ struct HistoryView: View {
                     .foregroundStyle(.red)
             }
             if viewModel.rows.isEmpty && !viewModel.isLoading {
-                Text("No runs yet. Recorded workouts will appear here.")
+                Text("No runs in this range. Recorded workouts will appear here.")
                     .foregroundStyle(.secondary)
             }
             ForEach(viewModel.rows) { row in
@@ -29,6 +30,16 @@ struct HistoryView: View {
             }
         }
         .navigationTitle("History")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Picker("Date range", selection: $viewModel.selectedRange) {
+                    ForEach(HistoryViewModel.DateRangeFilter.allCases) { range in
+                        Text(range.displayName).tag(range)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+        }
         .overlay {
             if viewModel.isLoading && viewModel.rows.isEmpty {
                 ProgressView()
@@ -39,6 +50,9 @@ struct HistoryView: View {
         }
         .task {
             await viewModel.loadWorkouts()
+        }
+        .onChange(of: viewModel.selectedRange) {
+            Task { await viewModel.loadWorkouts() }
         }
     }
 

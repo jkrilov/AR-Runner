@@ -1,6 +1,6 @@
 # AR-Runner Architecture
 
-**Current as of v0.6.2.** For user-facing features see
+**Current as of v0.6.3.** For user-facing features see
 [`../README.md`](../README.md). For build/CI ops see
 [`dev/`](./dev/).
 

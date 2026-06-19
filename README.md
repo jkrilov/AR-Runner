@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" />
-  <img src="https://img.shields.io/badge/status-v0.6.2%20(TestFlight%20beta)-brightgreen.svg" alt="Status" />
+  <img src="https://img.shields.io/badge/status-v0.6.3%20(TestFlight%20beta)-brightgreen.svg" alt="Status" />
 </p>
 
 A running app for **Apple Watch** that drives a live heads-up display on
@@ -44,6 +44,9 @@ The watch is the primary device. The phone is optional.
   the Health app, with a GPS route, just like the built-in Workout app.
 - **Strava integration** — connect your account once and finished runs upload
   automatically (including the route).
+- **Run history with date filter** — browse past runs in the iPhone app,
+  filtered to the last 30 days by default (or 60, 90, 365 days, or all time),
+  with per-run Strava upload status and manual upload/retry.
 - **Action Button support** *(Apple Watch Ultra)* — start a workout, mark
   splits, and pause or resume without touching the screen.
 - **Smart Stack widget** — launch straight into a run from your watch face's
