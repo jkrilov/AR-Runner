@@ -64,7 +64,11 @@ wrangler secret put STRAVA_CLIENT_SECRET
 wrangler deploy
 ```
 
-The route `strava-connect.ar-runner.app/*` is configured in `wrangler.toml`.
+The hostname `strava-connect.ar-runner.app` is bound as a **Custom Domain**
+in `wrangler.toml` (`custom_domain = true`). Cloudflare creates and manages the
+proxied DNS record, so `wrangler deploy` (re)provisions DNS automatically — the
+host cannot be silently orphaned the way a plain pattern route can if the
+worker or its DNS record is removed.
 
 ## Local dev
 
