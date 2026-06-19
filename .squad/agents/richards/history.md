@@ -110,3 +110,36 @@ Full plan covering API app setup, OAuth analysis (Option A=phone+share recommend
 3. **Scope estimates need per-file enumeration** — round numbers lie by 2x; 200–500 LOC estimate was actually 850 LOC.
 4. **`client_secret` on watch is right for personal-tier app** — secret rotates easily, attacker payoff near-zero, alternative (server proxy) adds runtime dependency.
 5. **TCX deserves closer look** — FIT wins (developer fields, training-effect) are fields we don't capture; TCX has all we need, zero deps.
+
+## Learnings — Custom HUD Layout Persistence + Sync Architecture (2026-06-19)
+
+Planned persistence + watch↔phone sync for the deferred 0.6.1 phone custom-HUD
+editor, building on v6 messaging + settings-sync (0.6.0–0.6.2). Proposed
+`HUDLayoutCatalog` (custom layouts only) + `WorkoutLayoutDefaults`
+(WorkoutType.rawValue → HUDLayout.id), App-Group-backed via a new
+`HUDLayoutStore` mirroring `WorkoutTypePreference`/`UnitPreference`, plus a pure
+Core `HUDLayoutResolver` and additive WCMessage cases.
+
+**Architect learnings:**
+1. **A single global wire `schemaVersion` makes a version bump a footgun.** The
+   envelope stamps `currentSchemaVersion` on EVERY encode and rejects any peer
+   stamping a higher version wholesale — so bumping 6→7 for a phone-only feature
+   would regress the watch→phone live mirror for the whole upgrade window. The
+   right move is additive-within-major, leaning on the v6 `.unknown` lenient
+   decode that was built for exactly this. "v6.1" is a doc label, not a wire bump.
+2. **Verify the apply path before assuming the hard part.** The live HUD renders
+   arbitrary slots over raw-txt (`RunningHUDFrame` + grid) and bypasses the
+   device-side curated `selectLayout`/`CuratedLayoutCatalog.deviceID`
+   registration — so custom layouts need NO glasses-flash upload. The whole
+   feature reduces to "swap which HUDLayout feeds the existing renderer"
+   (`WorkoutViewModel.swift:809`). Confirmed Weiss's constrained-custom verdict.
+3. **Persistence + sync can ship before the UI and stay provably inert.** Empty
+   App-Group blobs resolve to `HUDLayout.default(for:)` — byte-identical to
+   today — so Phase A lands behind no flag and breaks nobody, decoupling
+   Richards/Laughlin plumbing from the Killian/Weiss editor UI.
+4. **Namespace user-generated ids ("custom-<uuid>") away from built-in ids** so
+   the resolver's disjointness assumption holds and dangling assignments degrade
+   to built-ins instead of colliding.
+5. **`updateApplicationContext` has ONE slot per key** — the existing code
+   multiplexes `"wcMessage"`; syncing two new state blobs needs distinct context
+   keys (or queued `transferUserInfo`) or they silently clobber each other.

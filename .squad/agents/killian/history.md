@@ -138,3 +138,41 @@ Final touch: 10 files, 21 net lines removed, 186/186 still green. Wrote skill `s
 **Release infrastructure impact:** This is the first v0.5.x pre-release in project history to traverse the tag-push path cleanly. All prior releases (v0.5.5–v0.5.19) required `workflow_dispatch` workaround. The fix works. All future pre-releases will auto-trigger reliably.
 
 **What this unblocks:** Streamlined release cadence. No more manual workflow_dispatch fallback. Next pre-release will reconfirm the pattern; by then we'll have high confidence that the release path is robust.
+
+---
+
+## 2026-06-19 — Custom HUD Layout Editor UX (Phone), v1 buildable plan
+
+### Learnings
+
+- The 0.6.0–0.6.2 foundation is further along than my v0.6.1 sketch assumed.
+  **Already shipped:** `HUDLayout` Codable model with optional slots
+  (HUDLayout.swift:6), 6 code-defined per-type defaults `default(for:)`
+  (HUDLayout.swift:51), `MetricKind.isValid(for:)` + `unitLabel(for:in:)`
+  validity matrix (MetricKind+Validity.swift:33/58), the single bench-validated
+  `HUDGridDefinition.standard4` 4-slot grid (HUDGridDefinition.swift:76), and a
+  parameterized live render path the watch already drives
+  (WorkoutViewModel.swift:809).
+- **Still missing (the editor's real dependencies):** (1) the watch hard-codes
+  `HUDLayout.default(for: sport)` — there is no per-type *assignment* lookup
+  yet; (2) `WorkoutLayoutDefaults` (type→layoutID) store was planned but not
+  built; (3) multi-layout sync is **deferred** — only `WCMessage.layoutConfig`
+  shipped; `layoutCatalog`/`layoutDefaults` are explicitly punted to v6.1
+  (WCMessage.swift:40). The editor UI is genuinely blocked on Richards' sync +
+  the watch assignment-lookup swap.
+- **Slot-count decision:** ship a FIXED 4-cell grid matching `standard4` and
+  allow empty (`nil`) slots, rather than a variable 2–6 count. Gives the "fewer
+  metrics" UX without a second `HUDGridDefinition` (Weiss flagged 6-slot as
+  tight). Cleaner v1, no new geometry to bench-validate.
+- **Validity = warn, not block.** Because one custom layout can be assigned to
+  multiple workout types, edit-time hard validation is the wrong model; warn
+  inline and let the watch render `--` for invalid/missing metrics.
+- **Preview:** downgraded my earlier "correct lens-flip coords" ask to an
+  *approximate* amber 304×256 static preview for v1 — pixel-exactness is
+  high-risk, low-value before glasses-connected preview exists.
+- Phone Settings extension pattern is settled: add a disclosure row + use
+  `ARRunnerPhoneEnvironment.shared.mirror.sendX` for watch mirroring
+  (SettingsView.swift:52/81/129).
+- Plan written to `.squad/decisions/inbox/killian-custom-hud-ux.md`; open
+  questions Q1–Q8 routed to jkrilov. Coordinated asks logged for Weiss
+  (renderability) and Richards (sync/store).
