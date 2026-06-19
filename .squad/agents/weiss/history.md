@@ -140,3 +140,42 @@ run locally this session; relied on careful back-compat (kept legacy `frames(for
 **Decision filed:** `.squad/decisions/inbox/weiss-0.6-hud-defaults.md`.
 
 ---
+
+## Learnings
+
+### 2026-06-19 — Phone custom HUD layout editor (planning)
+
+- **`HUDLayout` is already the right wire/persistence unit** for custom
+  layouts — `Codable`/`Identifiable`, `slots:[MetricKind?]`. A custom layout
+  is just a `HUDLayout` with a UUID `id`; system presets keep stable
+  `"default-…"` ids and stay code-only (`HUDLayout.default(for:)`). Do NOT
+  persist system presets — they evolve without migration.
+- **Render path is already fully parameterized** (`metricStrings` →
+  `frames(metricStrings:layout:grid:)` + `orderedSlotStrings` for throttle).
+  The ONLY seam to change for custom layouts is the two hardcoded lines in
+  `WorkoutViewModel.pushHUDFrameIfConnected` (`:809-810`).
+- **Invalid-metric `--` coercion must happen at the LAYOUT level**, not via
+  nil samples: `metricStrings` can fabricate a value for an invalid metric
+  (e.g. pace from distance/elapsed on a bike). Plan adds
+  `HUDLayout.validated(for: WorkoutType)` (nils out `!isValid(for:)` slots,
+  preserves indices) applied at save AND apply. `MetricKind.isValid(for:)`
+  already exists (`MetricKind+Validity.swift:33`).
+- **Line 1 is shared by slots 0 & 1** in `standard4`. Slot 1 (right, x=83)
+  has only ~4 font-2 glyphs of budget before overrunning slot 0 — the key
+  rendering risk for a freely-assignable editor. No clip primitive on Engo 2,
+  so it's an authoring constraint (editor width-warning via
+  `ALookFontMetrics.width(of:fontSize:)`), not a render guard. → bench spike.
+- **`WorkoutLayoutDefaults` does NOT exist yet** (only in the 0.6.0 plan).
+  Side-store `ARWorkoutMetadata.layoutID` already exists — record the
+  *resolved* id at save, no schema change.
+- **WCMessage layoutCatalog/layoutDefaults still deferred** at v6; needs a v7
+  additive bump. Lenient `.unknown` decode (`WCMessage.swift:101`) means v6
+  peers degrade safely. Richards owns the envelope; I own the value-type
+  shapes + render semantics.
+- **Stay on the raw-`txt` path** — the editor must NOT route through the
+  dormant `selectLayout(id:)` curated channel (`RunningHUDPreset` /
+  `CuratedLayoutCatalog`), even post-PR#120.
+
+**Decision filed:** `.squad/decisions/inbox/weiss-custom-hud-plan.md`.
+
+---

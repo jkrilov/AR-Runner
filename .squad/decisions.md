@@ -137,139 +137,7 @@ public actor WorkoutController {
 
 ---
 
-## Recent Decisions (Earlier Batch: 2026-05-12 — 2026-05-25)
-
-### 2026-05-20 — Copilot directive: Strava Path B scope locked
-From user direct input. Path B (direct Strava OAuth + TCX upload) promoted v0.6→v0.5. Three-PR sequence: Amber (TCX encoder) → Laughlin (OAuth + tokens) → Laughlin (uploader + queue).
-
-### 2026-05-20 — Richards: TCX Encoder Architecture
-**Format locked: TCX 2.0** (zero deps, best fidelity-to-complexity). Pure-Swift encoder, locale-safe double formatting (`en_US_POSIX`), XML-escaped text. Delivered `ARRunnerCore/Strava/{TCXEncoder,TCXWorkoutData,ActivityNaming}.swift` + tests. All 215 Core tests pass.
-
-### 2026-05-20 — Laughlin: Strava OAuth + Token Store (v0.5.3)
-Phone-side OAuth/token plumbing: `StravaOAuthService` (mobile auth flow with dual-path: Strava app + web fallback), `StravaTokenStore` (keychain + WCSession mirror), Settings tab UI. 39/39 ARRunnerPhoneTests pass.
-
-### 2026-05-21 — Laughlin: Strava API Compliance (v0.5.4)
-Button copy locked to exact "Connect with Strava" string, 48pt height requirement, deauth server-side per API agreement. Token-exchange `client_id` fix (was missing from OAuth code exchange). 39/39 tests pass.
-
-### 2026-05-21 — Laughlin: Appearance Settings (Light/Dark/System)
-`AppearanceMode` enum (`.system / .light / .dark`), @AppStorage persistence (`"appearanceMode"` key), segmented picker in Settings. `.system` → `colorScheme: nil` (device setting). 39/39 tests pass.
-
-### 2026-05-22 — Laughlin: Apple Watch Action Button Support (v0.5.5)
-`ActionButtonMode` enum (off/splits/pauseResume/toggleHUD), `ActionButtonIntent` AppIntent (initial registration), `ActionButtonCoordinator` dispatcher. Process isolation via App Group `PendingActionButtonPressStore`. Haptics on split/pause/HUD toggle. 215 Core tests pass.
-
-### 2026-05-22 → 2026-05-23 — Laughlin: Action Button Surface Correction (v0.5.6)
-v0.5.4 bugs: (1) AppShortcutsProvider → wrong picker (Shortcut not Workout). (2) Process isolation — `ActionButtonIntent.perform()` runs in system process, not host. **Fix:** switched to `StartWorkoutIntent` protocol conformance — only surface that populates Settings → Action Button → Workout → App. Cross-process flag pattern preserved + re-validated. Build green.
-
-### 2026-05-23 — Laughlin: Live Route Map Polish (v0.5.17)
-Watch map is view-only (Digital Crown reserved for TabView). Phone auto-recenter after 5s pan inactivity. Post-run map persists through `.ending`/`.ended`. Splits track `CLLocationCoordinate2D?` under `#if canImport(CoreLocation)`. Phone split markers deferred to v0.6.
-
-### 2026-05-20 — Richards: Strava API Architecture Plan
-Full architecture covering app setup, OAuth options (phone+share recommended; RFC 8628 device-grant not supported by Strava), TCX format, token storage (keychain on watch/phone + Worker proxy). Five architectural decisions locked (D-Strava-1..5). ~850 LOC across 6 files.
-
-### 2026-05-21 — Richards: Cloudflare Worker Source (infrastructure/auth-worker)
-Reconstructed Worker source (previously deployed-but-untracked). `wrangler.toml` (`strava-connect.ar-runner.app` custom domain), `src/index.js` (route table, CORS, 400/404/405/500 error envelopes), three endpoints (/token, /refresh, /deauthorize). **Standing rule:** deployed Workers must land source in git (same PR). `/refresh` is load-bearing for 6h token lifecycle.
-
-### 2026-05-20 — Amber: v0.5 PR 1 — TCX Encoder
-Built TCX 2.0 encoder per D-Strava-2. Pure Foundation, zero deps, Swift 6 strict-concurrency clean. Determinism pinned via byte-equality test (Strava idempotency contract). Locale-safe formatting validated. 215 total tests pass.
-
-### 2026-05-20 — Amber: v0.5 PR 2 — Strava Uploader + Queue + History
-`StravaUploadService` (wire-level), `StravaUploadQueue` (actor-based, Documents/ persistence, 30–900s exponential backoff, 429→queue-pause), `WorkoutTCXBridge` (pure merge over local value types), `AutoUploadCoordinator` (WCMessage listener). 38 phone tests, all pass. HK source-filter in-memory. Auto-trigger on WC + 3s settle.
-
-### 2026-05-20 — Amber: rc2 QA Scenarios (post-rc1 bench feedback)
-Five bench-return items: (A) route recording auth + HKSeriesType.workoutRoute() scope, (B) Strava ingestion (pending Richards diagnosis), (C) 3-line finish-screen reflow, (D) discard-gating data-integrity, (E) phone mirror start-time + WC v3→v4 compat. Severity-first bench order. Terminal-path-data-leak-qa skill extracted.
-
 ---
-
-## Recent Decisions (Latest: 2026-05-27)
-
-### 2026-05-26 — Laughlin: Release Guard Fix (v0.5.20 chore)
-**Status:** SHIPPED — tag-push smoke test validated end-to-end.
-
-**Background:** v0.5.19 shipped via `workflow_dispatch` fallback due to two interacting bugs in `release-testflight.yml`:
-1. **Self-collision:** `git tag --list 'v*'` includes the trigger tag, so tag-push triggering the workflow sees its own tag in the candidate list and self-rejects as duplicate.
-2. **SemVer misordering:** GNU `sort -V` incorrectly places `0.5.19-1` after `0.5.19` (SemVer 2.0 says pre-release comes before release).
-
-**Fix design:** Inline `semver_gt` bash function (~30 lines, self-testing with 11 fixtures on every CI run), trigger-tag exclusion via `grep -vFx`, highest-tag selection by reduction. Updated misleading comment.
-
-**Validation:** PR #117 (merge `13c8f7a`), tag `v0.5.20-1` pushed, `release-testflight.yml` run 26511705252 passed monotonicity guard on first try. Version 0.5.20 build 50 shipped to TestFlight.
-
-**Outcome:** First v0.5.x pre-release to traverse tag-push cleanly. All future pre-release tag-pushes will auto-trigger without `workflow_dispatch` workaround.
-
----
-
-### 2026-05-26 — Amber: Terminal-Path Data-Leak Audit — v0.5.18
-**Status:** Code paths correct; UX message bug identified.
-
-Joe reported: "When I discard a run on the watch it shouldn't save to Apple Fitness."
-
-**Findings:** Code is correct. `WorkoutHealthSubstrate.discard()` calls `builder.discardWorkout()` exclusively. Tests pass and are untouched since rc2. **But a critical UX message misleads users.**
-
-**The actual bug:** `ARRunnerWatch/Views/WorkoutView.swift:117` says "Discard removes it from this view (it remains in Health and can be deleted there)." This text was written in v0.2 when discard didn't work. The rc2 fix changed the code but never updated the message.
-
-**Decision:** Fix the message to "Discard permanently removes it — nothing is saved to Health or Strava."
-
-**Bench check for Joe:** (1) Run 30s, (2) Tap Finish → Discard, (3) Open Health app → verify NO NEW WORKOUT, (4) Check Strava → verify NO UPLOAD.
-
----
-
-### 2026-05-26 — Laughlin: Discard Regression Investigation — v0.5.18
-**Status:** No code regression. The bug is the dialog message.
-
-Full investigation of the discard path from v0.4.0 (rc2) through v0.5.18 confirms the rc2 fix is intact. `WorkoutController.discard()` calls `substrate.discard(at:)`, never `substrate.end(at:)`. `WorkoutDiscardTerminalPathTests` covers all invariants.
-
-**The bug is the misleading confirmation dialog at `WorkoutView.swift:117`.** Current message contradicts actual behavior.
-
-**Decision:** (1) Update `WorkoutView.swift:117` message text. (2) Update stale doc-comment on `.cancelled` enum case in `WorkoutViewModel.swift:41`. (3) No logic changes required.
-
----
-
-### 2026-05-26 — Laughlin: Decision Packet — v0.5.19 Discard Dialog Fix
-**Status:** SHIPPED (PR #116 merged, dispatched to TestFlight).
-
-**Fix deployed:** PR #116 (`fix/discard-dialog-message`, merged squash → `25ee63a`):
-1. `ARRunnerWatch/Views/WorkoutView.swift:117` — replaced misleading message.
-2. `ARRunnerWatch/Workout/WorkoutViewModel.swift:41` — updated stale doc-comment on `.cancelled` case.
-3. `VERSION + project.yml` — `0.5.18`(48) → `0.5.19`(49) per bundled-bump convention.
-
-No logic changes. CI: all four required checks green.
-
-**TestFlight workflow note:** The pre-release tag push triggered `release-testflight.yml` and failed the monotonicity guard. Root cause: guard runs `git tag --list 'v*' | sort -V | tail -n 1`, which includes the trigger tag itself, so `LATEST_TAG` always equals `RAW_VERSION` on a fresh tag push. Recovered by deleting `v0.5.19-1` from origin and re-dispatching via `workflow_dispatch` with `version=0.5.19`.
-
-**Recommend a v0.5.20 chore PR:** Fix the guard step to exclude the trigger tag from its own monotonicity calculation (e.g. `git tag --list 'v*' | grep -vFx "v${RAW_VERSION}"`) AND switch the sort-order comparison to semver-correct ordering (pre-release suffix < bare release).
-
----
-
-### 2026-05-26T17:00:37-04:00: User Directive — Code-Writing Agents on Opus 4.7+
-**By:** Joe Krilov (via Copilot)  
-**What:** Any agent editing/writing code (Laughlin, Weiss, Amber, Richards on code-review) MUST run `claude-opus-4.7-1m-internal` or better. The `.squad/config.json` agentModelOverrides already pin these four — the coordinator must honor Layer 0 of the model-selection hierarchy and NOT fall through to task-aware auto-selection (Sonnet) for these agents, even on investigation-only work.  
-**Why:** User request — Joe wants code-touching agents at maximum capability. Captured for team memory and to enforce config compliance on every spawn.
-
----
-
-## Current Version: v0.5.20
-
-**Shipped 2026-05-27.** Release guard chore (monotonicity bugs fixed), tag-push smoke test validated end-to-end. Build 50, TestFlight processing.
-
-### v0.5 Scope (delivered 2026-05-20 — 2026-05-23)
-- Strava OAuth connect button on phone (mobile auth flow)
-- Token exchange via Cloudflare Worker (`strava-connect.ar-runner.app`)
-- TCX encoder (pure Swift, zero deps)
-- Upload queue with exponential backoff
-- Appearance mode (Light/Dark/System)
-- Apple Watch Action Button support (splits, pause/resume, HUD toggle)
-- Live route map (watch view-only, phone pan/zoom + auto-recenter)
-
-### Backlog (not yet scheduled)
-- Battery level from glasses → phone display (BLE 0x180F, 30s notify)
-- HR zone brightness on HUD (deferred to v0.4.1)
-- Gesture-driven layout switch (Weiss needs bench time)
-- Phone split markers on map (split lat/lon over WC, v0.6)
-- App Attest (issue #80)
-
----
-
----
-
 
 ## Recent Decisions (2026-06-18)
 
@@ -569,6 +437,175 @@ Why raw `txt` works: `RunningHUDFrame.frames(for:)` already renders any string a
 6. **Action Button enum keeps legacy raw value.** `ARRunnerWorkoutStyleEnum` expanded to all 6 `WorkoutType` cases, but the original case retains raw value `"run"` so existing Action Button assignments survive. `perform()` writes `WorkoutTypePreference.current` before signaling start.
 
 **Caveats / unverified:** App-target compilation (watchOS + iOS) is **CI-only** — no Xcode on the Windows bench. AppEnum `caseDisplayRepresentations`, SwiftUI `Picker` `.tag(WorkoutType)` matching, and the `NavigationLink` type-picker push are all compile-pending CI on PR #121. Core was not modified, so no local `swift test` was required.
+
+---
+
+---
+
+## Recent Decisions (2026-06-18)
+
+### 2026-06-18 — Laughlin: Strava Upload Autonomous Scheduling Fix (v0.6.2)
+
+**Status:** SHIPPED — PR #125 merged (d01b033), tag v0.6.2-1.
+
+**The problem (confirmed in field):** v0.6.1 lacked autonomous re-scheduling of queued uploads. The `StravaUploadQueue` persisted entries as `.uploading` BEFORE the upload completed, but if the upload succeeded or the app backgrounded mid-operation, the entry was never re-driven while the app stayed open. Result: a 3.25mi run stuck showing "uploading" forever even when the app was foregrounded, even though the upload had completed on the server (Strava confirmed receipt, no duplicate).
+
+**Root cause:** `StravaUploadQueue.pickNext()` only selected `.pending` entries. Entries stuck in `.uploading` were unreachable by the queue's re-drive loop — no watchdog, no autonomous re-attempt trigger, no visibility into the stuck state.
+
+**Fix — four parts:**
+1. **Autonomous self-rescheduling drain.** `process()` now computes `nextDueDate` based on backoff and success state, arms exactly one follow-up `Task` via `scheduleNextDrain()`, cancels+replaces on each pass, and cancels in `deinit`. Pattern: `[async Task] private var drainTask`, store + cancel on every entry transition.
+2. **Upload watchdog.** New 120s timeout on `.uploading` state. If the URLSession upload doesn't call back within 120s, a timer fires, transitions to `.pending`, and the next `process()` cycle re-attempts.
+3. **Reconcile orphaned entries.** `StravaUploadQueue.reclaimOrphans()` (pure, unit-tested) rewrites any persisted `.uploading` → `.pending` at init (consumes no retry budget). Idempotency via `external_id` (HKWorkout UUID) → Strava 409 on duplicate → accepted as success.
+4. **Visible status/error in History UI.** New `.processing` state visible in the UI. History row shows "Uploading…", "Retrying…", "Failed: <error>", or the success timestamp. Users see the state without guessing.
+
+**State-machine invariant (enforced):** `pickNext()` selects both `.pending` and `.processing`. No persisted state is unreachable. Queue files persisted before v0.6.1 decode without a reset via optional `confirmPollCount: Int? = nil`.
+
+**Version:** MARKETING_VERSION 0.6.0 → 0.6.2, CURRENT_PROJECT_VERSION 51 → 53, VERSION 0.6.2. README + architecture + copilot-instructions bumped (bundled-bump convention).
+
+**Validation:** StravaUploadQueueTests cover orphan reclaim, process-to-completion, confirmation polling, 409 duplicate handling, and re-enqueue no-ops. Core tests: 218 executed, all pass.
+
+---
+
+## Recent Decisions (0.6.x HUD Planning: 2026-06-19) — CONSOLIDATED
+
+### 2026-06-19 — Weiss: Custom HUD Layout Editor — Glasses Rendering + Data-Model Plan
+
+**Agent:** Weiss (AR Integration)  
+**Status:** PLANNING ONLY — no code changes. Builds on constrained-custom feasibility verdict from earlier planning (decisions.md §"Weiss — Custom Layouts Feasibility").
+
+**Scope:** Establishes the Core data types for custom layouts + the watch apply path.
+
+**Key Recommendations:**
+1. Custom layouts encoded via reused `HUDLayout` (Codable, already carries `[MetricKind?]`). New type `HUDLayoutCatalog` wraps the catalog of user-created customs (system presets are code-only, not stored). `WorkoutLayoutDefaults` maps `WorkoutType → HUDLayout.id`.
+2. Slot→geometry stays an index lookup into `HUDGridDefinition` (no geometry in the payload). Editor is constrained to `standard4` only (4 fixed slots), avoiding coordinate-regression risk class.
+3. Watch apply: swap hardcoded `HUDLayout.default(for: sport)` + `HUDGridDefinition.standard4` with a resolver chain: `layoutDefaults.layoutID(for: type)` → `catalog.layout(id:)` → else `HUDLayout.default(for: type)`. Everything downstream (render, throttle, fonts) **unchanged**.
+4. `HUDLayout.validated(for: WorkoutType)` sanitizes a custom layout at apply time — invalid metrics for the active type become `nil` (renders `--`), preventing crashes + incorrect derivations.
+5. **Slot 1 (secondary line-1-right) overflow risk:** budget ≈4 font-2 glyphs. Editor must warn (not hard-block) when an assignment exceeds the threshold, computed via `ALookFontMetrics.width(of:fontSize:)`. Mitigation: guidance + worst-case bench spike (0.5 day) to lock the threshold.
+6. **WCMessage schema bump to 7** for new `.layoutCatalog(HUDLayoutCatalog)` + `.layoutDefaults(WorkoutLayoutDefaults)` cases (additive; lenient decode already in place so v6 peers gracefully ignore). Schema stays lenient and forward-compatible.
+
+**Effort:** Core types + validated + v7 + tests ≈1.5 days (S/M). Watch resolver + tests ≈1 day (S). Phone UI (Killian) ≈3–4 days (L).
+
+**Risks:** R1 (medium) line-1-right overflow — mitigate with editor warning + bench spike. R2–R4 (low): text-only metrics, `--` density, v6 watch ignores catalog.
+
+**Open questions deferred to jkrilov:**
+- OQ1: 4-slot only (recommend yes)?
+- OQ2: Soft warn vs hard-block on slot-1 overflow?
+- OQ3: Custom-icon support confirmed deferred?
+- OQ4: Per-type default fallback semantics confirmed?
+- OQ5: CloudKit sync (App-Group + WCMessage only in v1)?
+- OQ6: Global or per-type-scoped custom layouts?
+
+---
+
+### 2026-06-19 — Richards: Custom HUD Layout Persistence + Watch↔Phone Sync Architecture
+
+**Agent:** Richards (Lead/Architect)  
+**Status:** PLANNING ONLY — no code. Targets v0.6.1 phone editor (Phase B). Builds on v0.6.0 Core foundation.
+
+**Scope:** Wire protocol, persistence layer, and watch-side resolution for custom layouts.
+
+**Key Recommendations:**
+1. **Two new Core Codable types** (versioned independently of WCMessage):
+   - `HUDLayoutCatalog(schemaVersion, custom: [HUDLayout])` — stores user layouts only; system presets are code.
+   - `WorkoutLayoutDefaults(schemaVersion, assignments: [String: String])` — maps WorkoutType raw key → chosen HUDLayout.id.
+   Keys are `WorkoutType.rawValue` (legacy-preserving strings) to stay stable on the wire.
+
+2. **Messaging — additive within WCMessage v6, NOT a bump to v7.** Add two cases:
+   - `case layoutCatalog(HUDLayoutCatalog)` (phone → watch state, latest-only)
+   - `case layoutDefaults(WorkoutLayoutDefaults)`
+   Stamp `currentSchemaVersion` remains **6** (envelope structure unchanged; only new optional keys populated). Backward-compat: v7 watch's catalog → old v6 phone gets `schemaVersion: 6, kind: "layoutCatalog"` → phone decodes as `.unknown` → silently ignored. No regression of the live mirror.
+
+3. **Persistence:** App Group `UserDefaults` suite, keys `"hudLayoutCatalog"` / `"workoutLayoutDefaults"`, holding JSON `Data`. New `Shared/Settings/HUDLayoutStore.swift` wraps it. Max-layout cap (propose **16**) keeps the blob a few KB — well within `applicationContext` limits. If ever outgrows, swap backing to a JSON file behind the same API.
+
+4. **Sync semantics:**
+   - Full-catalog replace (not incremental — complexity not worth it).
+   - Phone-authoritative (editing phone-only in 0.6.1).
+   - Watch persistence: on receipt, decode and write via `HUDLayoutStore` to the App Group, so next workout resolves customs with **no phone present**.
+   - Transport: reachable → immediate `sendMessageData` (snappy). Not reachable → `updateApplicationContext` OR two ordered `transferUserInfo` messages (catalog + defaults on cold reconcile).
+
+5. **Resolution at workout start:** Pure, Linux-testable Core resolver:
+   ```swift
+   public enum HUDLayoutResolver {
+       public static func activeLayout(for type: WorkoutType,
+           defaults: WorkoutLayoutDefaults, catalog: HUDLayoutCatalog) -> HUDLayout
+   }
+   ```
+   Watch `WorkoutViewModel` replaces its hardcoded `HUDLayout.default(for: sport)` with a call to the resolver. Dangling-reference safety: if an assignment points to a deleted/missing id, resolver falls through to the built-in default — no crash.
+
+6. **Phasing & dependencies:**
+   - **Phase A — Persistence + Sync (can land BEFORE editor UI):** Core types + resolver + additive WCMessage cases + store + watch persistence + watch resolution swap + phone send/reconcile. Fully shippable and **inert for users with no custom layouts** (resolver returns built-ins). No dependency on editor. Owners: Richards (Core/messaging) + Laughlin (watch/phone plumbing).
+   - **Phase B — Phone editor UI (depends on A):** Killian (UX) + Weiss (validation) + Laughlin (phone impl).
+
+7. **Open questions for jkrilov:**
+   - Q1: CloudKit in 0.6.1 (recommend no, local + WCSession only)?
+   - Q2: Max custom layouts cap (propose 16)?
+   - Q3: Confirm 4-slot only in 0.6.1?
+   - Q4: One-directional sync (phone→watch) acceptable for 0.6.1?
+   - Q5: Prune orphaned assignments on delete?
+   - Q6: Confirm additive-within-v6 over v7 bump?
+
+---
+
+### 2026-06-19 — Killian: Phone Custom HUD Layout Editor UX (Phone) — Buildable v1 Plan
+
+**Agent:** Killian (UX Lead)  
+**Status:** PLANNING ONLY — no code. Refined from earlier sketch now that foundation shipped in 0.6.0–0.6.2. Coordinated with Weiss (renderability) and Richards (sync).
+
+**Scope:** Phone Settings editor UI, 4-slot grid, metric picker, per-type default assignment.
+
+**Navigation:**
+- Settings → "Glasses Layouts" disclosure row (new section between Workout and Units).
+- Screen hierarchy: Settings → Glasses Layouts (list) → Layout Editor (CRUD one custom) → Metric Picker (modal sheet).
+
+**Glasses Layouts list screen (3 sections):**
+1. **Presets (read-only):** 3 curated presets (`HUDLayout.curatedPresets()`), rows show slot summary. Tap → read-only detail + "Duplicate" button. System badge. No delete.
+2. **My Layouts (custom):** Tap → Layout Editor. Swipe-to-delete with confirm if assigned. `+` toolbar creates new custom (seeded by duplicating current default for user's default type).
+3. **Defaults per workout type:** 6 rows (one per `WorkoutType.allCases`), each showing type + assigned layout name. Tap → picker of {presets ∪ custom layouts valid for that type}. Invalid-metric layouts still selectable but show warning (see validation below).
+4. **Empty-state / first-run:** Explain feature + "New Layout" CTA. Until user assigns, all types read "Default (preset name)" — byte-identical to today.
+
+**Layout editor screen:**
+- Fixed 4-slot grid matching `HUDGridDefinition.standard4` exactly. Render as 2×2 visual grid: top-left (slot 0, primary, font 2), top-right (slot 1, secondary, font 2), bottom-left (slot 2, font 3), bottom-right (slot 3, font 3).
+- Empty slots allowed (`nil`). No variable 2–6 count in v1.
+- Tap-slot → modal metric picker. All 8 `MetricKind`s, grouped Valid/Unavailable for layout's context. Selecting assigns; "Clear slot" empties. **Prevent duplicate metrics in two slots.**
+- **Naming:** text field + auto-generate from filled slots (e.g. "Pace · HR · Dist"). Auto-name never blocks.
+- **Validity = warn, not block (v1).** A custom layout is not tied to one type (can be assigned to several), so hard validity can't be enforced at edit time. For each slot with an invalid metric for any *assigned* type, show inline caption ("Speed isn't shown for runs — appears as `--`"). Editor grey-out uses `MetricKind.isValid(for:)`. Watch already renders invalid/missing as `--`, so assignment is allowed.
+
+**Preview:**
+- Inline amber-panel approximation, 304×256 aspect, amber-on-black (15-level grayscale).
+- Synthetic sample values (pace 5:30/km, HR 152 bpm, dist 4.2 km, time 23:18) formatted via real `unitLabel(for:in:)` so units track user's metric/imperial setting.
+- Approximate font-size hierarchy, correct metric order, correct unit labels, correct empty-slot blanks. **Deferred (v0.7+):** pixel-exact lens-flip coords, real font glyph metrics, live "push to glasses now."
+
+**Apply semantics:**
+- Changes apply at **NEXT workout, never mid-run.** Watch reads layout once at start; editing mid-run doesn't reflow live HUD.
+- Footer message: "Changes apply to your next workout." If workout active, "Your current run keeps its layout — this applies next time."
+- **Richards dependency:** persist customs + assignment in App Group store; sync via deferred `WCMessage.layoutCatalog` + `layoutDefaults` cases (not shipped yet). Mirror call via `sendX` pattern.
+
+**v1 scope (minimum lovable):**
+- Glasses Layouts entry + list (presets, custom CRUD).
+- 4-slot editor, empty-slot support, tap→metric-picker, no-duplicate rule, auto-name + override.
+- Per-type default assignment (6 rows).
+- Validity = warn (not block).
+- Static synthetic-value amber preview (approximate).
+- Apply-at-next-workout + sync via new v6.x cases (Richards dependency).
+
+**Deferred (v0.7+):**
+- Variable slot counts / 2-slot + 6-slot grids.
+- Freeform metric positioning, `layoutSave`, custom icons.
+- Pixel-exact lens-flip preview + real font metrics.
+- Live "preview on glasses now."
+- CloudKit cross-device sync.
+- Per-type editing of same layout.
+- Multiple presets beyond curated 3.
+
+**Open questions for jkrilov:**
+- Q1: Fixed 4-cell grid (recommend yes)?
+- Q2: Unlimited custom layouts or cap (e.g. 8)?
+- Q3: Auto-name-with-override (recommend) or require name?
+- Q4: Warn-and-allow (recommend) vs hard-block invalid assignments?
+- Q5: Global layout assignable to multiple types (recommend) or per-type instances?
+- Q6: Approximate static preview (recommend) or pixel-exact lens-flip?
+- Q7: Per-type "Reset to default" + global "Restore all defaults" affordances?
+- Q8: Settings disclosure row (recommend) vs dedicated tab?
 
 ---
 
