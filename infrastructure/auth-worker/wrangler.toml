@@ -10,6 +10,11 @@ name = "strava-connect"
 main = "src/index.js"
 compatibility_date = "2025-05-01"
 
+# Bound as a Custom Domain (not a plain route) so Cloudflare creates and
+# manages the proxied DNS record for the hostname. `wrangler deploy` then
+# (re)provisions DNS automatically, so the host can't be silently orphaned —
+# unlike a plain `{ pattern, zone_name }` route, which requires a separately
+# managed DNS record that disappears if the binding/worker is removed.
 routes = [
-  { pattern = "strava-connect.ar-runner.app/*", zone_name = "ar-runner.app" }
+  { pattern = "strava-connect.ar-runner.app", custom_domain = true }
 ]
