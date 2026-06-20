@@ -27,6 +27,7 @@ struct SettingsView: View {
         Form {
             stravaSection
             workoutSection
+            glassesLayoutsSection
             unitsSection
             appearanceSection
             actionButtonSection
@@ -62,6 +63,23 @@ struct SettingsView: View {
             Text("Workout")
         } footer: {
             Text("The workout type a new run starts as on the watch.")
+                .font(.caption2)
+        }
+    }
+
+    // MARK: - Glasses Layouts
+
+    private var glassesLayoutsSection: some View {
+        Section {
+            NavigationLink {
+                GlassesLayoutsView()
+            } label: {
+                Label("Glasses Layouts", systemImage: "rectangle.on.rectangle.angled")
+            }
+        } header: {
+            Text("Glasses")
+        } footer: {
+            Text("Customize which metrics show on your ActiveLook glasses for each workout type.")
                 .font(.caption2)
         }
     }

@@ -3,7 +3,7 @@
 
 import Foundation
 
-public enum MetricKind: String, Sendable, Codable, CaseIterable, Equatable {
+public enum MetricKind: String, Sendable, Codable, CaseIterable, Equatable, Hashable {
     case heartRate
     case pace
     case distance

@@ -3,7 +3,7 @@
 
 import Foundation
 
-public struct HUDLayout: Sendable, Codable, Identifiable, Equatable {
+public struct HUDLayout: Sendable, Codable, Identifiable, Equatable, Hashable {
     public let id: String
     public let name: String
     public let slots: [MetricKind?]

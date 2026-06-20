@@ -4,7 +4,7 @@
 
 AR-Runner is a **running app for Apple Watch** that drives a heads-up display
 on **ActiveLook AR glasses** (Engo 2). Currently shipping on TestFlight at
-**v0.6.3**. See `README.md` for the user-facing feature list.
+**v0.6.4**. See `README.md` for the user-facing feature list.
 
 ## Repository layout
 

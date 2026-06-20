@@ -122,3 +122,34 @@ User reported the 3.25 mi run STILL stuck on "uploading" in v0.6.1 — foregroun
 2. **`CheckedContinuation` with no timeout is a latent hang.** Always race a bridged continuation against a timeout and guarantee exactly-once resume.
 3. **Don't drop orphaned async results — reconcile them.** A completion with no in-process waiter still carries truth (`taskDescription` = externalID); route it back into the state machine.
 4. **An actor's fire-and-forget scheduler Task must re-enter via `await self?.method()` and be cancelled in `deinit`** so it can't outlive the instance (critical for test hygiene — a real-`Task.sleep` drain would otherwise hit the stub transport after the test ended).
+
+## Custom HUD Phase B — phone editor + per-type defaults (v0.6.4, 2026-06-19)
+
+Built the phone UI on Phase A's inert backend: `HUDLayoutStore` (App Group),
+`HUDLayoutResolver`, and the v6 `WCMessage.layoutCatalog`/`.layoutDefaults`
+sync cases (first real caller). Three screens under
+`ARRunnerPhone/Views/GlassesLayouts/`: list (presets/custom/per-type),
+4-slot editor with metric picker + static amber preview, metric-picker sheet.
+Pure logic lives in `static` methods on `HUDLayoutsViewModel` (auto-name,
+unique-name, cap, dedup slot-build, assignment updates, validity warning).
+
+### Learnings
+1. **Keep view-model pure logic SwiftUI-free and `static`.** Auto-naming,
+   cap, dedup, assignment edits as `static` funcs made them unit-testable
+   without a `WCSession` or App Group, and let the Core preview helper carry
+   the Linux-tested width/sample logic. The VM file imports only
+   `ARRunnerCore`/`Foundation` — so `remove(atOffsets:)` (a SwiftUI API) is
+   NOT available there; delete via `enumerated().filter` instead.
+2. **Sync behind a one-method protocol for testability.** `HUDLayoutSyncing`
+   (conformed by `WatchConnectivityService`) let a `SpySync` assert that
+   mutations push to the watch without a live session.
+3. **Exhaustive `MetricKind` switches are the CI-only trap.** New
+   `sampleValue`/`displayLabel`/`shortLabel` switches cover all 8 cases with
+   no `default:` so a future metric forces a compile error, not a silent gap.
+4. **Width warning is conservative + non-blocking.** Reused
+   `ALookFontMetrics` + the grid's line-1-right anchor (83px) as the budget;
+   left `// TODO(bench): calibrate line-1 width threshold`. Saving never
+   blocks on it.
+5. **Prune dangling assignments on delete.** Deleting a custom layout strips
+   any per-type assignment referencing it (resolver would fall back anyway,
+   but it keeps the synced blob tidy) and syncs both catalog + defaults.
