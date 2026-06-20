@@ -7,12 +7,23 @@ public struct HUDLayout: Sendable, Codable, Identifiable, Equatable, Hashable {
     public let id: String
     public let name: String
     public let slots: [MetricKind?]
+    /// The grid *shape* (line count + items-per-line). Optional + additive:
+    /// `nil` ⇒ the legacy `HUDGridConfig.standard` (`[2, 1, 1]`) so v0.6.4
+    /// layouts encoded without this key decode and render unchanged. The
+    /// pixel geometry for a shape lives in `HUDGridDefinition`, never here.
+    public let grid: HUDGridConfig?
 
-    public init(id: String, name: String, slots: [MetricKind?]) {
+    public init(id: String, name: String, slots: [MetricKind?], grid: HUDGridConfig? = nil) {
         self.id = id
         self.name = name
         self.slots = slots
+        self.grid = grid
     }
+
+    /// The resolved grid shape — the explicit `grid` when present, otherwise
+    /// the legacy `standard` shape. Use this (never `grid` directly) so the
+    /// `nil`-means-standard contract is honoured everywhere.
+    public var resolvedGrid: HUDGridConfig { grid ?? .standard }
 
     public static func minimalRun() -> HUDLayout {
         HUDLayout(

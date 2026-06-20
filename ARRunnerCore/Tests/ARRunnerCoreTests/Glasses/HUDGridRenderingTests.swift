@@ -48,8 +48,37 @@ final class HUDGridRenderingTests: XCTestCase {
         XCTAssertEqual(s[.cadence], "85 rpm")        // cycling → RPM
     }
 
-    func test_formatCadence_perActivity() {
-        XCTAssertEqual(RunningHUDFrame.formatCadence(85, activity: .cycling), "85 rpm")
+    func test_metricStrings_headingFromSnapshot() {
+        let withHeading = RunningHUDFrame.HUDMetricSnapshot(elapsedSeconds: 60, headingDegrees: 45)
+        let s = RunningHUDFrame.metricStrings(
+            snapshot: withHeading, activity: .running, unitSystem: .metric
+        )
+        XCTAssertEqual(s[.heading], "NE 045°")
+
+        // No heading value → placeholder.
+        let noHeading = RunningHUDFrame.HUDMetricSnapshot(elapsedSeconds: 60)
+        let s2 = RunningHUDFrame.metricStrings(
+            snapshot: noHeading, activity: .running, unitSystem: .metric
+        )
+        XCTAssertEqual(s2[.heading], "--")
+    }
+
+    func test_frames_headingSlotIsTextOnly() {
+        let snap = RunningHUDFrame.HUDMetricSnapshot(elapsedSeconds: 60, headingDegrees: 90)
+        let strings = RunningHUDFrame.metricStrings(
+            snapshot: snap, activity: .running, unitSystem: .metric
+        )
+        // A compass slot has no preloaded icon — text-only (icon(for:) == nil).
+        XCTAssertNil(RunningHUDFrame.icon(for: .heading))
+        let layout = HUDLayout(id: "h", name: "H", slots: [.heading, .heartRate, .distance, .duration])
+        let frames = RunningHUDFrame.frames(
+            metricStrings: strings, layout: layout, grid: .standard4
+        )
+        // holdFlush+clear + (heading text only) + 3×(icon+text) + holdFlush = 10.
+        XCTAssertEqual(frames.count, 10)
+    }
+
+    func test_formatCadence_perActivity() {        XCTAssertEqual(RunningHUDFrame.formatCadence(85, activity: .cycling), "85 rpm")
         XCTAssertEqual(RunningHUDFrame.formatCadence(170, activity: .running), "170 spm")
         XCTAssertEqual(RunningHUDFrame.formatCadence(nil, activity: .running), "--")
     }

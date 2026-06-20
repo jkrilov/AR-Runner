@@ -22,6 +22,7 @@ struct HUDLayoutEditorView: View {
     private let layoutID: String
     @State private var name: String
     @State private var slots: [MetricKind?]
+    @State private var gridConfig: HUDGridConfig
     @State private var pickerSlot: Int?
 
     init(
@@ -34,17 +35,19 @@ struct HUDLayoutEditorView: View {
         self.unitSystem = unitSystem
         self.existingNames = existingNames
         self.onSave = onSave
-        // Pad/truncate to the fixed 4-slot grid so the editor is stable even
-        // if a future/legacy layout carried a different slot count.
-        var seeded = layout.slots
-        if seeded.count < 4 { seeded.append(contentsOf: Array(repeating: nil, count: 4 - seeded.count)) }
+        let config = layout.resolvedGrid.validated()
+        _gridConfig = State(initialValue: config)
+        // Pad/truncate to the grid's slot count so the editor is stable even
+        // if a legacy layout carried a different slot count.
         _name = State(initialValue: layout.name)
-        _slots = State(initialValue: Array(seeded.prefix(4)))
+        _slots = State(initialValue: HUDLayoutsViewModel.resizedSlots(
+            layout.slots, toSlotCount: config.slotCount
+        ))
     }
 
     private var draftLayout: HUDLayout {
         HUDLayoutsViewModel.makeLayout(
-            id: layoutID, name: name, slots: slots, existingNames: existingNames
+            id: layoutID, name: name, slots: slots, grid: gridConfig, existingNames: existingNames
         )
     }
 
@@ -73,7 +76,7 @@ struct HUDLayoutEditorView: View {
             set: { pickerSlot = $0?.id }
         )) { slot in
             MetricPickerSheet(
-                current: slots[slot.id],
+                current: slots.indices.contains(slot.id) ? slots[slot.id] : nil,
                 usedElsewhere: usedMetrics(excluding: slot.id)
             ) { selected in
                 slots = HUDLayoutsViewModel.updatedSlots(slots, setting: selected, at: slot.id)
@@ -100,36 +103,60 @@ struct HUDLayoutEditorView: View {
 
     private var gridSection: some View {
         Section {
-            VStack(spacing: 10) {
-                HStack(spacing: 10) {
-                    slotCell(0, label: "Primary")
-                    slotCell(1, label: "Secondary")
-                }
-                HStack(spacing: 10) {
-                    slotCell(2, label: "Line 2")
-                    slotCell(3, label: "Line 3")
+            // Line-count selector.
+            Picker("Lines", selection: Binding(
+                get: { gridConfig.lines.count },
+                set: { setLineCount($0) }
+            )) {
+                ForEach(2...4, id: \.self) { count in
+                    Text("\(count)").tag(count)
                 }
             }
-            .padding(.vertical, 4)
+            .pickerStyle(.segmented)
+
+            // Per-line items + the editable slot cells, grouped by line.
+            ForEach(Array(gridConfig.lines.enumerated()), id: \.offset) { lineIndex, items in
+                VStack(spacing: 8) {
+                    HStack {
+                        Text("Line \(lineIndex + 1)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Picker("Items", selection: Binding(
+                            get: { items },
+                            set: { setItems($0, line: lineIndex) }
+                        )) {
+                            Text("1").tag(1)
+                            Text("2").tag(2)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 96)
+                    }
+                    HStack(spacing: 10) {
+                        ForEach(0..<items, id: \.self) { item in
+                            slotCell(flatIndex(line: lineIndex, item: item))
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
         } header: {
-            Text("Slots")
+            Text("Grid")
         } footer: {
-            Text("Tap a slot to choose a metric. A metric can appear only once.")
+            Text("Choose 2–4 lines and 1–2 metrics per line. Tap a slot to pick a metric — a metric can appear only once.")
                 .font(.caption2)
         }
     }
 
-    private func slotCell(_ index: Int, label: String) -> some View {
+    private func slotCell(_ index: Int) -> some View {
         Button {
             pickerSlot = index
         } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Text(label.uppercased())
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(slots[index].map(HUDLayoutsViewModel.displayLabel(for:)) ?? "Empty")
+                Text((slots.indices.contains(index) ? slots[index] : nil)
+                    .map(HUDLayoutsViewModel.displayLabel(for:)) ?? "Empty")
                     .font(.headline)
-                    .foregroundStyle(slots[index] == nil ? .secondary : .primary)
+                    .foregroundStyle((slots.indices.contains(index) ? slots[index] : nil) == nil ? .secondary : .primary)
                 if widthWarningSlots.contains(index) {
                     Label("May be cut off", systemImage: "exclamationmark.triangle")
                         .font(.caption2)
@@ -144,11 +171,30 @@ struct HUDLayoutEditorView: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: - Grid edits
+
+    /// Flat (row-major) slot index for the `item`-th metric on `line`.
+    private func flatIndex(line: Int, item: Int) -> Int {
+        var idx = 0
+        for l in 0..<line where gridConfig.lines.indices.contains(l) { idx += gridConfig.lines[l] }
+        return idx + item
+    }
+
+    private func setLineCount(_ count: Int) {
+        gridConfig = HUDLayoutsViewModel.updatedGrid(gridConfig, lineCount: count)
+        slots = HUDLayoutsViewModel.resizedSlots(slots, toSlotCount: gridConfig.slotCount)
+    }
+
+    private func setItems(_ items: Int, line: Int) {
+        gridConfig = HUDLayoutsViewModel.updatedGrid(gridConfig, items: items, atLine: line)
+        slots = HUDLayoutsViewModel.resizedSlots(slots, toSlotCount: gridConfig.slotCount)
+    }
+
     // MARK: - Preview
 
     private var previewSection: some View {
         Section {
-            HUDLayoutPreviewPanel(slots: slots, unitSystem: unitSystem)
+            HUDLayoutPreviewPanel(slots: slots, gridConfig: gridConfig, unitSystem: unitSystem)
                 .frame(maxWidth: .infinity)
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
@@ -215,6 +261,9 @@ private struct MetricPickerSheet: View {
                             onSelect(metric)
                         } label: {
                             HStack {
+                                Image(systemName: HUDLayoutsViewModel.iconSymbol(for: metric))
+                                    .frame(width: 22)
+                                    .foregroundStyle(disabled ? .secondary : .primary)
                                 Text(HUDLayoutsViewModel.displayLabel(for: metric))
                                     .foregroundStyle(disabled ? .secondary : .primary)
                                 Spacer()
@@ -242,27 +291,33 @@ private struct MetricPickerSheet: View {
 }
 
 /// Static amber-on-black approximation of the 304×256 Engo 2 HUD. Renders the
-/// four slots with synthetic sample values + correct unit labels for the
-/// active `UnitSystem`. Approximate by design (Killian UX) — pixel-exact
-/// lens-flip + live preview are deferred.
+/// configured grid (line count + items-per-line) with synthetic sample values,
+/// approximate adaptive font sizes, and SF-Symbol icons paired with each value
+/// — full-strength for metrics with a real glasses glyph, muted for the rest.
+/// Approximate by design (Killian UX) — pixel-exact lens-flip + live preview
+/// are deferred.
 @MainActor
 private struct HUDLayoutPreviewPanel: View {
     let slots: [MetricKind?]
+    let gridConfig: HUDGridConfig
     let unitSystem: UnitSystem
 
     private static let amber = Color(red: 1.0, green: 0.75, blue: 0.0)
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                slotText(0, font: .system(size: 26, weight: .semibold, design: .rounded))
-                Spacer(minLength: 12)
-                slotText(1, font: .system(size: 26, weight: .semibold, design: .rounded))
+            ForEach(Array(gridConfig.validated().lines.enumerated()), id: \.offset) { lineIndex, items in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    if items == 1 {
+                        slotItem(flatIndex(line: lineIndex, item: 0), fontSize: fontSize(items: 1))
+                    } else {
+                        slotItem(flatIndex(line: lineIndex, item: 0), fontSize: fontSize(items: 2))
+                        Spacer(minLength: 8)
+                        slotItem(flatIndex(line: lineIndex, item: 1), fontSize: fontSize(items: 2))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: items == 1 ? .trailing : .center)
             }
-            slotText(2, font: .system(size: 20, weight: .medium, design: .rounded))
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            slotText(3, font: .system(size: 20, weight: .medium, design: .rounded))
-                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .monospacedDigit()
         .padding(16)
@@ -276,15 +331,43 @@ private struct HUDLayoutPreviewPanel: View {
         .padding(.vertical, 4)
     }
 
+    /// Approximate point size from the adaptive font hierarchy: fewer
+    /// lines/items → taller font.
+    private func fontSize(items: Int) -> CGFloat {
+        switch gridConfig.validated().lines.count {
+        case 2: return items == 1 ? 30 : 24
+        case 4: return 16
+        default: return items == 1 ? 24 : 18   // 3-line — the standard4 hierarchy
+        }
+    }
+
+    private func flatIndex(line: Int, item: Int) -> Int {
+        let lines = gridConfig.validated().lines
+        var idx = 0
+        for l in 0..<line where lines.indices.contains(l) { idx += lines[l] }
+        return idx + item
+    }
+
     @ViewBuilder
-    private func slotText(_ index: Int, font: Font) -> some View {
-        let value: String = {
-            guard slots.indices.contains(index), let metric = slots[index] else { return "--" }
-            return HUDLayoutSamplePreview.sampleValueWithUnit(for: metric, system: unitSystem)
-        }()
-        Text(value)
-            .font(font)
-            .foregroundStyle(Self.amber)
+    private func slotItem(_ index: Int, fontSize: CGFloat) -> some View {
+        let metric: MetricKind? = slots.indices.contains(index) ? slots[index] : nil
+        let value = metric.map {
+            HUDLayoutSamplePreview.sampleValueWithUnit(for: $0, system: unitSystem)
+        } ?? "--"
+        HStack(spacing: 4) {
+            if let metric {
+                Image(systemName: HUDLayoutsViewModel.iconSymbol(for: metric))
+                    .font(.system(size: fontSize * 0.8))
+                    // Metrics without a real glasses glyph render muted so the
+                    // preview doesn't over-promise an on-glass icon.
+                    .foregroundStyle(Self.amber.opacity(
+                        HUDLayoutsViewModel.hasGlassesIcon(for: metric) ? 1.0 : 0.4
+                    ))
+            }
+            Text(value)
+                .font(.system(size: fontSize, weight: .semibold, design: .rounded))
+                .foregroundStyle(Self.amber)
+        }
     }
 }
 

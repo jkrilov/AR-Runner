@@ -19,6 +19,6 @@ extension HUDLayout {
             guard let metric = slot else { return nil }
             return metric.isValid(for: type) ? metric : nil
         }
-        return HUDLayout(id: id, name: name, slots: validatedSlots)
+        return HUDLayout(id: id, name: name, slots: validatedSlots, grid: grid)
     }
 }

@@ -103,4 +103,37 @@ final class HUDLayoutSamplePreviewTests: XCTestCase {
         let layout = HUDLayout(id: "t", name: "T", slots: [.pace, nil, .distance, .duration])
         XCTAssertTrue(HUDLayoutSamplePreview.widthWarningSlots(for: layout, system: .metric).isEmpty)
     }
+
+    // MARK: - Heading + variable-grid width warnings (v0.6.5)
+
+    func testSampleValueForHeadingIsSystemIndependent() {
+        for system in [UnitSystem.metric, .imperial] {
+            XCTAssertEqual(HUDLayoutSamplePreview.sampleValue(for: .heading, system: system), "NE 045°")
+        }
+    }
+
+    func testTwoItemRightSlotIndicesAreRowMajorRightOfEachPair() {
+        XCTAssertEqual(HUDLayoutSamplePreview.twoItemRightSlotIndices(for: .standard), [1])
+        // [2,2]: right slots at flat index 1 and 3.
+        XCTAssertEqual(
+            HUDLayoutSamplePreview.twoItemRightSlotIndices(for: HUDGridConfig(lines: [2, 2])),
+            [1, 3]
+        )
+        // [1,1,1,1]: no 2-item lines → no tight slots.
+        XCTAssertTrue(
+            HUDLayoutSamplePreview.twoItemRightSlotIndices(for: HUDGridConfig(lines: [1, 1, 1, 1])).isEmpty
+        )
+    }
+
+    func testWidthWarningScansEveryTwoItemRightSlot() {
+        // A 2-line × 2-item grid: line 2's right slot (flat index 3) holds a
+        // wide "23:18" duration that overruns the tight right budget.
+        let layout = HUDLayout(
+            id: "t", name: "T",
+            slots: [.pace, .heartRate, .distance, .duration],
+            grid: HUDGridConfig(lines: [2, 2])
+        )
+        let flagged = HUDLayoutSamplePreview.widthWarningSlots(for: layout, system: .metric)
+        XCTAssertTrue(flagged.contains(3), "the second 2-item line's right slot must be checked")
+    }
 }

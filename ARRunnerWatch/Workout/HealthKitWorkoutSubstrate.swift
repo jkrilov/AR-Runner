@@ -54,6 +54,15 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         /// zero duration. Reset to nil in `begin(...)` so a new workout
         /// starts measuring its first split from `startedAt`.
         var lastSegmentDate: Date?
+        /// v0.6.5 — whether the active HUD layout uses the compass `.heading`
+        /// slot. Set by `setNeedsHeading(_:)` before `begin(...)`; gates
+        /// `startUpdatingHeading()` so the magnetometer only spins up when a
+        /// heading is actually rendered.
+        var needsHeading = false
+        /// v0.6.5 — last yielded integer-degree heading bucket, used to
+        /// throttle `didUpdateHeading` (which can fire many Hz) down to one
+        /// sample per whole-degree change.
+        var lastHeadingBucket: Int?
     }
 
     private let healthStore: HKHealthStore
@@ -198,6 +207,13 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
 
     // MARK: - WorkoutHealthSubstrate
 
+    /// v0.6.5 — record whether the active HUD layout uses the compass
+    /// `.heading` slot. Must be called before `begin(...)`. Safe on every
+    /// platform; only the watchOS heading path acts on it.
+    public func setNeedsHeading(_ needsHeading: Bool) {
+        state.withLock { $0.needsHeading = needsHeading }
+    }
+
     public func begin(sport: WorkoutType, startedAt: Date) async throws {
         // Defensive: HK Error(7) on `beginCollection` is almost always a
         // pre-flight failure (missing entitlement / usage-string / un-granted
@@ -268,6 +284,30 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         } else {
             Self.routeLog.info("route: begin skipped — indoor workout (\(sport.rawValue, privacy: .public))")
         }
+
+        // v0.6.5 — compass heading. Unlike GPS, the magnetometer is valid
+        // indoors and needs no location fix, so this is gated on whether the
+        // active layout uses `.heading` (set via `setNeedsHeading(_:)`) rather
+        // than on `!sport.isIndoor`. `requestWhenInUseAuthorization()` above
+        // (or the prior GPS path) already covers the permission; heading works
+        // even when location auth is limited.
+        #if os(watchOS)
+        let wantsHeading = state.withLock { $0.needsHeading }
+        if wantsHeading {
+            if sport.isIndoor, locationManager.authorizationStatus == .notDetermined {
+                // Indoor workouts skip the GPS auth request above, so ask here
+                // — heading still benefits from authorization on watchOS.
+                locationManager.requestWhenInUseAuthorization()
+            }
+            if CLLocationManager.headingAvailable() {
+                state.withLock { $0.lastHeadingBucket = nil }
+                locationManager.startUpdatingHeading()
+                Self.routeLog.info("heading: begin — magnetometer updates started")
+            } else {
+                Self.routeLog.notice("heading: begin skipped — headingAvailable() == false")
+            }
+        }
+        #endif
 
         stateContinuation.yield(.preparing)
         session.startActivity(with: startedAt)
@@ -394,6 +434,9 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         // into `routeBuilder` synchronously inside `insertRouteData` from
         // the delegate callback so there's nothing to drain.
         locationManager.stopUpdatingLocation()
+        #if os(watchOS)
+        locationManager.stopUpdatingHeading()
+        #endif
 
         session.end()
         try await builder.endCollection(at: date)
@@ -458,6 +501,9 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
         }
 
         locationManager.stopUpdatingLocation()
+        #if os(watchOS)
+        locationManager.stopUpdatingHeading()
+        #endif
         session.end()
         builder.discardWorkout()
 
@@ -517,6 +563,31 @@ public final class HealthKitWorkoutSubstrate: NSObject, WorkoutHealthSubstrate, 
             routeCoordinateContinuation.yield(loc.coordinate)
         }
     }
+
+    #if os(watchOS)
+    /// v0.6.5 — bridge a `CLHeading` magnetometer update into a `.heading`
+    /// `WorkoutMetric` on the existing metric stream. Prefers `trueHeading`
+    /// (needs a location fix for the declination model) and falls back to
+    /// `magneticHeading` when the true bearing is unavailable (`< 0`).
+    /// Throttled to one yield per whole-degree change so a high-rate delegate
+    /// can't flood the stream.
+    fileprivate func ingest(heading: CLHeading) {
+        guard state.withLock({ $0.needsHeading }) else { return }
+        let degrees = heading.trueHeading >= 0 ? heading.trueHeading : heading.magneticHeading
+        guard degrees.isFinite, degrees >= 0 else { return }
+        let bucket = Int(degrees.rounded()) % 360
+        let changed = state.withLock { mutable -> Bool in
+            guard mutable.lastHeadingBucket != bucket else { return false }
+            mutable.lastHeadingBucket = bucket
+            return true
+        }
+        guard changed else { return }
+        let sample = WorkoutMetric(
+            kind: .heading, value: Double(bucket), unit: "deg", timestamp: Date()
+        )
+        metricContinuation.yield(sample)
+    }
+    #endif
     #endif
 
     // MARK: - Mapping
@@ -650,6 +721,16 @@ extension HealthKitWorkoutSubstrate {
 
         func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
             owner?.ingest(locations: locations)
+        }
+
+        func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+            owner?.ingest(heading: newHeading)
+        }
+
+        /// Never interrupt a run with the system magnetometer-calibration
+        /// overlay (v0.6.5 — heading is a glanceable nicety, not worth a modal).
+        func locationManagerShouldDisplayHeadingCalibration(_ manager: CLLocationManager) -> Bool {
+            false
         }
 
         func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

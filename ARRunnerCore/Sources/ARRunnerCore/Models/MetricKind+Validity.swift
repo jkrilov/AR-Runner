@@ -32,7 +32,9 @@ extension MetricKind {
     ///   (cadence semantics differ by unit — see `unitLabel(for:in:)`).
     public func isValid(for type: WorkoutType) -> Bool {
         switch self {
-        case .heartRate, .duration, .energy, .cadence:
+        case .heartRate, .duration, .energy, .cadence, .heading:
+            // `.heading` comes from the watch magnetometer, which yields a
+            // bearing without GPS — meaningful on indoor + stationary workouts.
             return true
         case .pace:
             return type.activity != .cycling
@@ -62,6 +64,10 @@ extension MetricKind {
         case .energy:
             return "kcal"
         case .duration:
+            return ""
+        case .heading:
+            // The cardinal/degrees suffix is baked into the formatted value
+            // (like `.duration`), so there is no separate unit label.
             return ""
         case .cadence:
             return type.activity == .cycling ? "rpm" : "spm"

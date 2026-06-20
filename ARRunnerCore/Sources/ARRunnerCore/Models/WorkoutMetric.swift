@@ -14,6 +14,12 @@ public enum MetricKind: String, Sendable, Codable, CaseIterable, Equatable, Hash
     /// Ground speed (metres per second on the wire). Cycling surfaces speed
     /// rather than pace; formatted as km/h or mph by `RunMetricFormatting`.
     case speed
+    /// Compass heading (bearing in **degrees 0–359** on the wire). Sourced on
+    /// watchOS from `CLLocationManager.startUpdatingHeading()` (the device
+    /// magnetometer), so it is meaningful indoors and without a GPS fix. Value
+    /// is unit-system independent; `RunMetricFormatting.formatHeading(degrees:)`
+    /// renders it as an 8-point cardinal + zero-padded degrees (e.g. "NE 045°").
+    case heading
 }
 
 public struct WorkoutMetric: Sendable, Codable, Equatable {

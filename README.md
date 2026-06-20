@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" />
-  <img src="https://img.shields.io/badge/status-v0.6.4%20(TestFlight%20beta)-brightgreen.svg" alt="Status" />
+  <img src="https://img.shields.io/badge/status-v0.6.5%20(TestFlight%20beta)-brightgreen.svg" alt="Status" />
 </p>
 
 A running app for **Apple Watch** that drives a live heads-up display on
@@ -24,10 +24,14 @@ The watch is the primary device. The phone is optional.
   selectable on the watch or phone with a configurable default. Cycling shows
   speed; runs and walks show pace, and each type gets a sensible default HUD
   layout.
-- **Custom glasses HUD layouts** — build your own 4-slot HUD layouts in the
-  iPhone app, choose which metrics appear where, preview them, and assign a
-  default layout per workout type. Changes sync to the watch and apply on your
-  next run.
+- **Custom glasses HUD layouts** — build your own multi-line HUD layouts in
+  the iPhone app: choose 2–4 lines with 1 or 2 metrics per line, pick which
+  metrics appear where (with live icon-aware previews), and assign a default
+  layout per workout type. Changes sync to the watch and apply on your next
+  run.
+- **Compass heading** — add a compass metric to any layout to see your
+  cardinal direction and bearing (e.g. "NE 045°") on the glasses, indoors or
+  out.
 - **Metric or imperial units** — pick your preferred units in the phone app;
   the watch UI and the glasses HUD both follow your choice.
 - **Icons for quick scanning** — every metric is paired with an icon so you

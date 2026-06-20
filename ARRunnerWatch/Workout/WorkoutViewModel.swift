@@ -57,6 +57,10 @@ final class WorkoutViewModel {
     /// v0.6.0 — live cadence. RPM for cycling. Surfaced on the HUD/metrics
     /// for cycling workouts; nil until the first sample lands.
     private(set) var cadence: Double?
+    /// v0.6.5 — live compass heading in degrees 0–359 (magnetometer).
+    /// Populated from the substrate's `.heading` metric when the active layout
+    /// uses the compass slot; nil otherwise.
+    private(set) var headingDegrees: Double?
     private(set) var elapsed: TimeInterval = 0
     private(set) var glassesConnected: Bool = false
     /// Live glasses link state — observed by the pre-run "Connect Glasses"
@@ -249,6 +253,17 @@ final class WorkoutViewModel {
         let controller = WorkoutController(substrate: substrate)
         self.controller = controller
         attachStreams(to: controller)
+        // v0.6.5 — resolve the active layout once at start so the substrate
+        // only spins up the magnetometer when a `.heading` slot is actually
+        // rendered. Layouts are picked at start (never mid-run), so a single
+        // evaluation here is sufficient.
+        let activeLayout = HUDLayoutResolver.activeLayout(
+            for: activity,
+            defaults: HUDLayoutStore.currentDefaults,
+            catalog: HUDLayoutStore.currentCatalog
+        ).validated(for: activity)
+        let needsHeading = activeLayout.slots.contains(.heading)
+        substrate.setNeedsHeading(needsHeading)
         #if canImport(CoreLocation)
         attachRouteStream(from: substrate)
         #endif
@@ -818,7 +833,7 @@ final class WorkoutViewModel {
             defaults: HUDLayoutStore.currentDefaults,
             catalog: HUDLayoutStore.currentCatalog
         ).validated(for: sport)
-        let grid = HUDGridDefinition.standard4
+        let grid = HUDGridDefinition.make(for: layout.resolvedGrid)
         let snapshot = RunningHUDFrame.HUDMetricSnapshot(
             elapsedSeconds: elapsed,
             distanceMeters: distanceMeters,
@@ -826,7 +841,8 @@ final class WorkoutViewModel {
             speedMetersPerSecond: hudSpeedMetersPerSecond,
             cadence: cadence,
             activeKilocalories: estimatedActiveKilocalories,
-            elevationMeters: nil
+            elevationMeters: nil,
+            headingDegrees: headingDegrees
         )
         let strings = RunningHUDFrame.metricStrings(
             snapshot: snapshot, activity: sport.activity, unitSystem: unitSystem
@@ -963,6 +979,7 @@ final class WorkoutViewModel {
         distanceMeters = nil
         speedMetersPerSecond = nil
         cadence = nil
+        headingDegrees = nil
         elapsed = 0
         estimatedActiveKilocalories = nil
         hasLiveHKEnergy = false
@@ -1059,6 +1076,8 @@ final class WorkoutViewModel {
             speedMetersPerSecond = metric.value
         case .cadence:
             cadence = metric.value
+        case .heading:
+            headingDegrees = metric.value
         case .energy:
             // v0.2 audit P1.3: live HK kcal now reaches the UI. Latch
             // so subsequent heart-rate ticks don't overwrite the HK

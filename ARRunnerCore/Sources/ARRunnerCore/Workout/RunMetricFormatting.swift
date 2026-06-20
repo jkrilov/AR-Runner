@@ -171,6 +171,31 @@ public enum RunMetricFormatting {
         }
     }
 
+    // MARK: - Heading (compass)
+
+    /// 8-point cardinal abbreviations, indexed clockwise from North.
+    private static let cardinalPoints = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+    /// Compass heading as an 8-point cardinal + zero-padded degrees, e.g.
+    /// `"NE 045°"`. Unit-system independent (a bearing is the same in metric
+    /// and imperial), unlike every other helper here.
+    ///
+    /// - Normalises `degrees` into `0..<360` (negative inputs wrap up; values
+    ///   ≥ 360 wrap down). Non-finite inputs (NaN / ±inf) return the `--`
+    ///   placeholder.
+    /// - Cardinal index = `Int((normalized + 22.5) / 45) % 8`, so 337.5°…22.5°
+    ///   reads `N`, 22.5°…67.5° reads `NE`, and so on.
+    /// - Degrees are zero-padded to three digits (`%03d°`) and wrapped at 360
+    ///   so `359.6` rounds to `000°` rather than `360°`.
+    public static func formatHeading(degrees: Double) -> String {
+        guard degrees.isFinite else { return "--" }
+        var normalized = degrees.truncatingRemainder(dividingBy: 360)
+        if normalized < 0 { normalized += 360 }
+        let cardinal = cardinalPoints[Int((normalized + 22.5) / 45) % 8]
+        let wholeDegrees = Int(normalized.rounded()) % 360
+        return String(format: "%@ %03d°", cardinal, wholeDegrees)
+    }
+
     // MARK: - Private
 
     /// Render `secondsPerUnit` as `M:SS` / `H:MM:SS` plus `suffix`. Returns

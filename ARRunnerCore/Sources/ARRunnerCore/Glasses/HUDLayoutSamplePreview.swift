@@ -42,6 +42,10 @@ public enum HUDLayoutSamplePreview {
             return system == .metric ? "27.4" : "17.0"
         case .elevation:
             return system == .metric ? "152" : "499"
+        case .heading:
+            // System-independent bearing sample (cardinal + degrees), matching
+            // `RunMetricFormatting.formatHeading` output shape.
+            return "NE 045°"
         }
     }
 
@@ -62,39 +66,60 @@ public enum HUDLayoutSamplePreview {
         return unit.hasPrefix("/") ? value + unit : value + " " + unit
     }
 
-    /// The framebuffer width budget (px) for the tight line-1-right slot of a
-    /// grid: the right slot's text is right-anchored at `textX` and grows
-    /// toward x = 0, so `textX` is the usable width before it runs off-panel.
+    /// The framebuffer width budget (px) for a right-anchored slot: its text
+    /// is right-anchored at `textX` and grows toward x = 0, so `textX` is the
+    /// usable width before it runs off-panel.
     ///
-    /// - TODO(bench): calibrate line-1 width threshold against real glyph
-    ///   advances on hardware — this reuses the anchor as a conservative proxy.
-    public static func line1RightBudget(grid: HUDGridDefinition = .standard4) -> Int {
-        guard grid.slots.indices.contains(line1RightIndex) else { return 0 }
-        return Int(grid.slots[line1RightIndex].textX)
+    /// - TODO(bench): calibrate the width threshold against real glyph advances
+    ///   on hardware — this reuses the anchor as a conservative proxy.
+    public static func budget(forSlotAt index: Int, grid: HUDGridDefinition) -> Int {
+        guard grid.slots.indices.contains(index) else { return 0 }
+        return Int(grid.slots[index].textX)
     }
 
-    /// Layout-slot index of the line-1-right slot — the horizontally tightest
-    /// slot in `standard4` (it shares line 1 with the larger primary metric).
+    /// Flat (row-major) slot indices that are the *right* item of a 2-item
+    /// line — the horizontally tightest slots, where two metrics share the
+    /// line. These are the only slots the width hint checks; 1-item lines and
+    /// left slots have ample room.
+    public static func twoItemRightSlotIndices(for config: HUDGridConfig) -> [Int] {
+        var result: [Int] = []
+        var flat = 0
+        for items in config.validated().lines {
+            if items == 2 { result.append(flat + 1) }
+            flat += items
+        }
+        return result
+    }
+
+    /// Layout-slot index of the line-1-right slot in the legacy `standard4`
+    /// shape — retained for callers/tests pinned to the fixed 4-slot grid.
     public static let line1RightIndex = 1
 
+    /// Legacy convenience: the line-1-right budget for the standard4 grid.
+    public static func line1RightBudget(grid: HUDGridDefinition = .standard4) -> Int {
+        budget(forSlotAt: line1RightIndex, grid: grid)
+    }
+
     /// Slot indices whose sample value may be cut off on the glasses, as a
-    /// best-effort, non-blocking hint. Only the line-1-right slot is checked:
-    /// per the rendering plan it is the one tight horizontal budget, while the
-    /// other slots have ample room. Returns an empty array when nothing is at
-    /// risk (including when the slot is empty or out of range).
+    /// best-effort, non-blocking hint. Every 2-item line's right slot is
+    /// checked (the tight horizontal budgets); 1-item lines and left slots have
+    /// room to spare. Returns an empty array when nothing is at risk (including
+    /// empty or out-of-range slots).
     public static func widthWarningSlots(
         for layout: HUDLayout,
-        grid: HUDGridDefinition = .standard4,
         system: UnitSystem
     ) -> [Int] {
-        let index = line1RightIndex
-        guard layout.slots.indices.contains(index),
-              grid.slots.indices.contains(index),
-              let metric = layout.slots[index] else {
-            return []
+        let config = layout.resolvedGrid
+        let grid = HUDGridDefinition.make(for: config)
+        var flagged: [Int] = []
+        for index in twoItemRightSlotIndices(for: config) {
+            guard layout.slots.indices.contains(index),
+                  grid.slots.indices.contains(index),
+                  let metric = layout.slots[index] else { continue }
+            let value = sampleValue(for: metric, system: system)
+            let width = ALookFontMetrics.width(of: value, fontSize: grid.slots[index].font)
+            if width > budget(forSlotAt: index, grid: grid) { flagged.append(index) }
         }
-        let value = sampleValue(for: metric, system: system)
-        let width = ALookFontMetrics.width(of: value, fontSize: grid.slots[index].font)
-        return width > line1RightBudget(grid: grid) ? [index] : []
+        return flagged
     }
 }

@@ -20,6 +20,35 @@ final class RunMetricFormattingTests: XCTestCase {
         XCTAssertEqual(RunMetricFormatting.miles(fromMeters: 5_000), 3.10685596, accuracy: 1e-6)
     }
 
+    // MARK: - formatHeading(degrees:)
+
+    func testFormatHeadingEightPointBoundaries() {
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 0),   "N 000°")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 45),  "NE 045°")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 90),  "E 090°")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 135), "SE 135°")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 180), "S 180°")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 225), "SW 225°")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 270), "W 270°")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 315), "NW 315°")
+    }
+
+    func testFormatHeadingWrapsAndRounds() {
+        // 337.5 rounds up into the N sector and to 338°.
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 337.5), "N 338°")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 359),   "N 359°")
+        // 360 normalises back to 0 → N 000°.
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: 360),   "N 000°")
+        // Negative inputs wrap up.
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: -90),   "W 270°")
+    }
+
+    func testFormatHeadingNonFiniteIsPlaceholder() {
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: .nan), "--")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: .infinity), "--")
+        XCTAssertEqual(RunMetricFormatting.formatHeading(degrees: -.infinity), "--")
+    }
+
     // MARK: - formatMiles(meters:)
 
     func testFormatMilesProducesTwoDecimalsWithSuffix() {

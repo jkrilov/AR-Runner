@@ -655,7 +655,7 @@ public enum RunningHUDFrame {
         case .heartRate: return HUDIcon(id: Layout.heartIconID,    width: 28, height: 28)
         case .distance:  return HUDIcon(id: Layout.distanceIconID, width: 28, height: 28)
         case .pace:      return HUDIcon(id: Layout.paceIconID,     width: 28, height: 28)
-        case .speed, .cadence, .energy, .elevation:
+        case .speed, .cadence, .energy, .elevation, .heading:
             return nil
         }
     }
@@ -673,6 +673,9 @@ public enum RunningHUDFrame {
         public let cadence: Double?
         public let activeKilocalories: Double?
         public let elevationMeters: Double?
+        /// Compass heading in degrees 0–359 (magnetometer). `nil` renders the
+        /// `--` placeholder.
+        public let headingDegrees: Double?
 
         public init(
             elapsedSeconds: TimeInterval,
@@ -681,7 +684,8 @@ public enum RunningHUDFrame {
             speedMetersPerSecond: Double? = nil,
             cadence: Double? = nil,
             activeKilocalories: Double? = nil,
-            elevationMeters: Double? = nil
+            elevationMeters: Double? = nil,
+            headingDegrees: Double? = nil
         ) {
             self.elapsedSeconds = elapsedSeconds
             self.distanceMeters = distanceMeters
@@ -690,6 +694,7 @@ public enum RunningHUDFrame {
             self.cadence = cadence
             self.activeKilocalories = activeKilocalories
             self.elevationMeters = elevationMeters
+            self.headingDegrees = headingDegrees
         }
     }
 
@@ -722,6 +727,9 @@ public enum RunningHUDFrame {
             .energy: snapshot.activeKilocalories.map { String(format: "%.0f kcal", $0) } ?? "--",
             .elevation: snapshot.elevationMeters.map {
                 RunMetricFormatting.formatElevation(meters: $0, unitSystem: unitSystem)
+            } ?? "--",
+            .heading: snapshot.headingDegrees.map {
+                RunMetricFormatting.formatHeading(degrees: $0)
             } ?? "--",
         ]
     }
