@@ -616,3 +616,14 @@ Why raw `txt` works: `RunningHUDFrame.frames(for:)` already renders any string a
 - Reviewer rejections lock out original author — different agent must revise.
 - Coordinator dispatches, never implements domain code.
 
+
+
+### 2026-06-19 — Laughlin: Custom HUD Layout Phase A (Persistence + Sync + Resolver, INERT)
+
+
+
+---
+
+### 2026-06-19 — Laughlin: Custom HUD Layout Phase B (Phone Editor + Per-Type Defaults, v0.6.4 ship)
+
+
