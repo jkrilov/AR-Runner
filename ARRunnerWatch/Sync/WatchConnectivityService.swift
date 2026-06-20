@@ -89,6 +89,13 @@ final class WatchConnectivityService: NSObject, WorkoutMirrorPublisher, @uncheck
 
     static let actionButtonModeContextKey = "actionButtonMode"
 
+    /// Distinct `applicationContext` keys for the custom-HUD cold-reconcile
+    /// path (phone → watch). Each holds a `WCMessage`-encoded payload. Kept
+    /// separate from the `"wcMessage"` slot so a queued catalog/defaults push
+    /// doesn't clobber the latest workout snapshot, and vice versa.
+    static let layoutCatalogContextKey = "hudLayoutCatalog"
+    static let layoutDefaultsContextKey = "hudLayoutDefaults"
+
     // MARK: - Settings sync (v0.6.0)
 
     /// Push the user's default `WorkoutType` selection to the iPhone so its
@@ -115,6 +122,10 @@ final class WatchConnectivityService: NSObject, WorkoutMirrorPublisher, @uncheck
             WorkoutTypePreference.store(type)
         case .unitPreference(let system):
             UnitPreference.store(system)
+        case .layoutCatalog(let catalog):
+            HUDLayoutStore.store(catalog: catalog)
+        case .layoutDefaults(let defaults):
+            HUDLayoutStore.store(defaults: defaults)
         default:
             break
         }
@@ -186,6 +197,15 @@ extension WatchConnectivityService: WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         if let payload = applicationContext["wcMessage"] as? Data {
+            persist(inbound: payload)
+        }
+        // Custom-HUD cold-reconcile: the phone reconciles the latest catalog
+        // and per-type assignments under distinct keys so the watch picks
+        // them up on next launch even if it was unreachable at send time.
+        if let payload = applicationContext[Self.layoutCatalogContextKey] as? Data {
+            persist(inbound: payload)
+        }
+        if let payload = applicationContext[Self.layoutDefaultsContextKey] as? Data {
             persist(inbound: payload)
         }
         if let raw = applicationContext[Self.actionButtonModeContextKey] as? String,

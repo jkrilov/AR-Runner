@@ -117,6 +117,29 @@ final class WatchConnectivityService: NSObject, @unchecked Sendable {
         transmitQueued(.unitPreference(system))
     }
 
+    // MARK: - Custom-HUD sync (Phase A)
+
+    /// Distinct `applicationContext` keys for the custom-HUD cold-reconcile
+    /// path. Each holds a `WCMessage`-encoded payload. Kept separate from the
+    /// `"wcMessage"` slot (used by the live snapshot / settings sync) so a
+    /// queued catalog/defaults push doesn't clobber the latest snapshot, and
+    /// vice versa, per the sync architecture.
+    static let layoutCatalogContextKey = "hudLayoutCatalog"
+    static let layoutDefaultsContextKey = "hudLayoutDefaults"
+
+    /// Push the user's full custom-layout catalog to the paired watch.
+    /// Full-catalog replace, latest-only. Phone-authoritative in 0.6.x.
+    /// Not wired to any caller until the Phase B editor lands.
+    func sendLayoutCatalog(_ catalog: HUDLayoutCatalog) {
+        transmitLayout(.layoutCatalog(catalog), contextKey: Self.layoutCatalogContextKey)
+    }
+
+    /// Push the user's per-workout-type custom-layout assignments to the
+    /// paired watch. Full replace, latest-only.
+    func sendLayoutDefaults(_ defaults: WorkoutLayoutDefaults) {
+        transmitLayout(.layoutDefaults(defaults), contextKey: Self.layoutDefaultsContextKey)
+    }
+
     private func transmitQueued(_ message: WCMessage) {
         #if canImport(WatchConnectivity)
         guard let session else { return }
@@ -136,6 +159,40 @@ final class WatchConnectivityService: NSObject, @unchecked Sendable {
         }
         #else
         _ = message
+        #endif
+    }
+
+    /// Custom-HUD send: reachable → immediate `sendMessageData` (the watch
+    /// persists it in `didReceiveMessageData`), and *always* reconcile the
+    /// latest value into `applicationContext` under a DISTINCT key so a watch
+    /// that was unreachable picks it up on next launch — without clobbering
+    /// the `"wcMessage"` snapshot/settings slot.
+    private func transmitLayout(_ message: WCMessage, contextKey: String) {
+        #if canImport(WatchConnectivity)
+        guard let session else { return }
+        let payload: Data
+        do {
+            payload = try JSONEncoder().encode(message)
+        } catch {
+            logger.error("encode failed: \(String(describing: error), privacy: .public)")
+            return
+        }
+        if session.isReachable {
+            session.sendMessageData(payload, replyHandler: nil) { [logger] error in
+                logger.debug("layout sync fallthrough: \(String(describing: error), privacy: .public)")
+            }
+        }
+        guard session.activationState == .activated else { return }
+        var context = session.applicationContext
+        context[contextKey] = payload
+        do {
+            try session.updateApplicationContext(context)
+        } catch {
+            logger.debug("layout context reconcile failed: \(String(describing: error), privacy: .public)")
+        }
+        #else
+        _ = message
+        _ = contextKey
         #endif
     }
 

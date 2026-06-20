@@ -34,6 +34,46 @@ final class WCMessageV6Tests: XCTestCase {
         }
     }
 
+    // MARK: - Custom-HUD Phase A: additive-within-v6 cases
+
+    func testLayoutCatalogRoundTripStaysV6() throws {
+        let catalog = HUDLayoutCatalog(layouts: [
+            HUDLayout(id: "c1", name: "Sprint", slots: [.pace, .heartRate, nil, .duration]),
+        ])
+        let original = WCMessage.layoutCatalog(catalog)
+        let data = try JSONEncoder().encode(original)
+        // The envelope must still stamp v6 — no bump to v7.
+        let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertEqual(envelope?["schemaVersion"] as? Int, 6)
+        let decoded = try JSONDecoder().decode(WCMessage.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
+
+    func testLayoutDefaultsRoundTripStaysV6() throws {
+        let defaults = WorkoutLayoutDefaults(assignments: [
+            WorkoutType.outdoorRun.rawValue: "c1",
+            WorkoutType.indoorBike.rawValue: "c2",
+        ])
+        let original = WCMessage.layoutDefaults(defaults)
+        let data = try JSONEncoder().encode(original)
+        let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertEqual(envelope?["schemaVersion"] as? Int, 6)
+        let decoded = try JSONDecoder().decode(WCMessage.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
+
+    /// The lenient unknown-`kind` fallback must still hold now that two new
+    /// kinds exist: a kind neither peer knows decodes to `.unknown`, not a
+    /// throw. (Round-trip of the new kinds is covered above; the byte-for-byte
+    /// `.unknown` contract by `testUnknownKindDecodesToUnknownNotFatal`.)
+    func testGenuinelyUnknownKindStillFallsBackAlongsideNewLayoutKinds() throws {
+        let json = """
+        { "schemaVersion": 6, "kind": "layoutThemeColor", "payload": 7 }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(WCMessage.self, from: json)
+        XCTAssertEqual(decoded, .unknown)
+    }
+
     // MARK: - Backward compat: a v5 (v0.5.20) peer's payloads still decode
 
     func testV5SnapshotWithLegacySportStringDecodesOnV6() throws {

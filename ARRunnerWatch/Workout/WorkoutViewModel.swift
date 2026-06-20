@@ -799,14 +799,25 @@ final class WorkoutViewModel {
     /// (re)connect, and on workout end.
     fileprivate func pushHUDFrameIfConnected(transport overrideTransport: (any GlassesFrameTransport)? = nil) async {
         guard let transport = overrideTransport ?? self.transport else { return }
-        // v0.6.0 — the live HUD follows the active workout type's default
-        // layout (`HUDLayout.default(for:)`) and the user's unit system, so
-        // an outdoor-bike HUD shows km/h speed where a run HUD shows pace.
-        // Slot→metric ordering and formatting are the same source of truth
-        // the watch UI uses; the fixed-slot grid keeps the rc16
-        // bench-validated geometry.
+        // v0.6.0 — the live HUD follows the active workout type's layout and
+        // the user's unit system, so an outdoor-bike HUD shows km/h speed
+        // where a run HUD shows pace. Slot→metric ordering and formatting are
+        // the same source of truth the watch UI uses; the fixed-slot grid
+        // keeps the rc16 bench-validated geometry.
+        //
+        // Custom-HUD Phase A — the layout is resolved through the user's
+        // per-type assignment + custom catalog (App Group store). For a user
+        // with no customs the resolver falls through to
+        // `HUDLayout.default(for:)`, so behaviour is byte-identical. The
+        // resolved layout is `.validated(for:)` so any slot whose metric is
+        // invalid for the active type blanks to `--` without reflowing the
+        // grid.
         let unitSystem = UnitPreference.current
-        let layout = HUDLayout.default(for: sport)
+        let layout = HUDLayoutResolver.activeLayout(
+            for: sport,
+            defaults: HUDLayoutStore.currentDefaults,
+            catalog: HUDLayoutStore.currentCatalog
+        ).validated(for: sport)
         let grid = HUDGridDefinition.standard4
         let snapshot = RunningHUDFrame.HUDMetricSnapshot(
             elapsedSeconds: elapsed,

@@ -37,7 +37,15 @@ public enum WCMessage: Sendable, Codable, Equatable {
     ///         `unitPreference` (phone ↔ watch).
     ///      3. Unrecognized message `kind`s decode to `.unknown` instead of
     ///         throwing, so a future peer's new case can't strand the link.
-    ///      Layout catalog/defaults payloads are deferred to v6.1.
+    ///      4. Custom-HUD sync (Phase A): new `layoutCatalog` /
+    ///         `layoutDefaults` cases carry the user's custom layouts and
+    ///         per-type assignments (phone → watch, latest-only). ADDITIVE
+    ///         within v6 — the envelope structure is unchanged, only new
+    ///         optional `kind`s are populated, so an older v6 peer that
+    ///         doesn't know these kinds decodes them to `.unknown` and
+    ///         silently ignores them rather than rejecting the whole link.
+    ///         (A v7 bump would make the envelope reject higher-versioned
+    ///         peers wholesale and break the live mirror — hence additive.)
     public static let currentSchemaVersion = 6
 
     case layoutConfig(HUDLayout)
@@ -52,6 +60,12 @@ public enum WCMessage: Sendable, Codable, Equatable {
     case defaultWorkoutType(WorkoutType)
     /// v6 — phone ↔ watch sync of the user's metric/imperial preference.
     case unitPreference(UnitSystem)
+    /// v6 (custom-HUD Phase A) — phone → watch sync of the user's catalog of
+    /// custom layouts. Full-catalog replace, latest-only.
+    case layoutCatalog(HUDLayoutCatalog)
+    /// v6 (custom-HUD Phase A) — phone → watch sync of the per-workout-type
+    /// custom-layout assignments. Full replace, latest-only.
+    case layoutDefaults(WorkoutLayoutDefaults)
     /// Decode-only fallback for an unrecognized message `kind` from a
     /// newer/older peer on the same major schema. Never produced by an
     /// encoder under normal operation; receivers treat it as "ignore".
@@ -71,6 +85,8 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case batteryLevel
         case workoutType
         case unitSystem
+        case layoutCatalog
+        case layoutDefaults
     }
 
     private enum Kind: String, Codable {
@@ -81,6 +97,8 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case glassesBattery
         case defaultWorkoutType
         case unitPreference
+        case layoutCatalog
+        case layoutDefaults
     }
 
     public init(from decoder: Decoder) throws {
@@ -118,6 +136,10 @@ public enum WCMessage: Sendable, Codable, Equatable {
             self = .defaultWorkoutType(try container.decode(WorkoutType.self, forKey: .workoutType))
         case .unitPreference:
             self = .unitPreference(try container.decode(UnitSystem.self, forKey: .unitSystem))
+        case .layoutCatalog:
+            self = .layoutCatalog(try container.decode(HUDLayoutCatalog.self, forKey: .layoutCatalog))
+        case .layoutDefaults:
+            self = .layoutDefaults(try container.decode(WorkoutLayoutDefaults.self, forKey: .layoutDefaults))
         }
     }
 
@@ -147,6 +169,12 @@ public enum WCMessage: Sendable, Codable, Equatable {
         case .unitPreference(let system):
             try container.encode(Kind.unitPreference, forKey: .kind)
             try container.encode(system, forKey: .unitSystem)
+        case .layoutCatalog(let catalog):
+            try container.encode(Kind.layoutCatalog, forKey: .kind)
+            try container.encode(catalog, forKey: .layoutCatalog)
+        case .layoutDefaults(let defaults):
+            try container.encode(Kind.layoutDefaults, forKey: .kind)
+            try container.encode(defaults, forKey: .layoutDefaults)
         case .unknown:
             // A decode-only sentinel. Encode a stable, self-describing marker
             // so a round-trip of `.unknown` stays `.unknown` rather than

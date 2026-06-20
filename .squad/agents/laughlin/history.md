@@ -52,7 +52,31 @@ Post-release stale-task sweep. v0.6.1 stable; no blockers. v0.6.1+ custom-layout
 
 ## Learnings
 
-### 2026-06-18 — Strava Upload Reliability (v0.6.1)
+### 2026-06-19 — Custom HUD Layout Phase A (persistence + sync + resolver, INERT)
+
+**Scope (feat/custom-hud-phase-a):** Backend plumbing for user-defined HUD layouts. No UI, no version bump — byte-identical for users with no customs. Followed Richards' architecture (additive-within-WCMessage-v6, NOT a v7 bump — the envelope rejects higher-versioned peers wholesale and would break the live mirror).
+
+**New Core types (`ARRunnerCore/Sources/ARRunnerCore/Models/`):**
+- `HUDLayoutCatalog{ schemaVersion, layouts: [HUDLayout] }` — custom layouts only; built-ins stay code-defined. `static let currentVersion = 1`; `layout(id:)` helper.
+- `WorkoutLayoutDefaults{ schemaVersion, assignments: [String:String] }` — keyed by `WorkoutType.rawValue` → custom `HUDLayout.id`. `layoutID(for:)` helper.
+- `HUDLayout.validated(for:)` — blanks slots whose metric `!isValid(for:)` to `nil`, **preserving slot indices/count** (never compact/reorder).
+- `enum HUDLayoutResolver.activeLayout(for:defaults:catalog:)` — PURE: assigned custom in catalog → return it; else `HUDLayout.default(for:)`. Dangling/unknown id falls through to built-in. Does NOT apply `.validated` (callers do at render time, per Weiss).
+
+**Messaging:** Added `case layoutCatalog(HUDLayoutCatalog)` + `case layoutDefaults(WorkoutLayoutDefaults)` to `WCMessage` — additive in v6 (`currentSchemaVersion` stays 6). Mirrored `defaultWorkoutType`/`unitPreference` exactly: Kind enum, CodingKeys (`layoutCatalog`/`layoutDefaults` value keys), encode/decode switches. `.unknown` lenient fallback preserved — a pre-layout v6 peer decodes the new kinds to `.unknown`, never throws.
+
+**Persistence:** `Shared/Settings/HUDLayoutStore.swift` — App Group (`group.com.arrunner.shared`) JSON store, keys `"hudLayoutCatalog"`/`"hudLayoutDefaults"`. Mirrors `WorkoutTypePreference`: `currentCatalog`/`currentDefaults` get/set + change-detecting `store(catalog:)`/`store(defaults:)`. `Shared/` is globbed into watch+phone targets (`- path: Shared`) so NO project.yml change needed (unlike widgets, which list `WorkoutTypePreference.swift` explicitly).
+
+**Watch:** `WatchConnectivityService.persist(inbound:)` now persists `.layoutCatalog`/`.layoutDefaults` → `HUDLayoutStore`; added distinct applicationContext keys `hudLayoutCatalog`/`hudLayoutDefaults` to `didReceiveApplicationContext`. `WorkoutViewModel.pushHUDFrameIfConnected` (~line 809) swapped hardcoded `HUDLayout.default(for: sport)` → `HUDLayoutResolver.activeLayout(for: sport, defaults: HUDLayoutStore.currentDefaults, catalog: HUDLayoutStore.currentCatalog).validated(for: sport)`. Downstream (metricStrings/orderedSlotStrings/frames) unchanged.
+
+**Phone:** Added `sendLayoutCatalog(_:)`/`sendLayoutDefaults(_:)` + `transmitLayout` — reachable → `sendMessageData`, always reconcile latest into `applicationContext` under DISTINCT keys (not the `"wcMessage"` slot) so a catalog push doesn't clobber the live snapshot (Richards' note). Not wired to any caller until Phase B editor.
+
+**Gotchas:**
+- Docker swift test: the Windows bind-mount `.build` dir copies a stale ModuleCache → `PCH was compiled with module cache path '/work/...'` + `missing required module 'SwiftShims'`. Fix: `cp -a /work /src && rm -rf /src/.build && cd /src && swift test`. Always nuke `.build` after copying off the bind mount.
+- Field names from task spec override Richards' sketch: catalog field is `layouts` (not `custom`), defaults key file is `hudLayoutDefaults` (not `workoutLayoutDefaults`).
+
+**Tests:** +18 Core tests (15 `CustomHUDLayoutTests` + 3 in `WCMessageV6Tests`). `swift test` GREEN: **328 executed, 0 failures, 1 skipped** (was 310). App-target compile is CI-gated (no Xcode on Windows bench).
+
+
 
 **The bug:** Long runs stuck in `.uploading`. `StravaUploadQueue.uploadOne` persisted `.uploading` BEFORE awaiting URLSession upload. iOS suspension mid-upload orphaned the entry; `pickNext()` only selected `.pending` → stuck forever.
 
