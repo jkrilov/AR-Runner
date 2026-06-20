@@ -46,6 +46,7 @@ public actor WorkoutController {
     private var lastCadenceStepsPerMinute: Double?
     private var lastElevationGainMeters: Double?
     private var lastSpeedMetersPerSecond: Double?
+    private var lastHeadingDegrees: Double?
 
     private let stateContinuation: AsyncStream<WorkoutState>.Continuation
     private let metricContinuation: AsyncStream<WorkoutMetric>.Continuation
@@ -291,6 +292,8 @@ public actor WorkoutController {
             lastElevationGainMeters = metric.value
         case .speed:
             lastSpeedMetersPerSecond = metric.value
+        case .heading:
+            lastHeadingDegrees = metric.value
         case .pace, .duration, .energy:
             break
         }

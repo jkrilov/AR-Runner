@@ -83,4 +83,105 @@ public struct HUDGridDefinition: Sendable, Equatable {
         // Line 3 — font 3.
         Slot(textX: 243, textY: 77,  font: 3, iconWearerLeft: 27,  iconWearerCenterY: 210),
     ])
+
+    // MARK: - Variable grid factory (v0.6.5)
+
+    /// Build the flat, code-only `[Slot]` geometry for a `HUDGridConfig`
+    /// *shape* (line count + items-per-line). The slot order is row-major and
+    /// matches the flattened `HUDLayout.slots`, so the existing renderer
+    /// consumes the result with zero changes.
+    ///
+    /// **Provenance.** The `[2, 1, 1]` default returns the bench-validated
+    /// `standard4` byte-for-byte (zero regression for the shipped outdoor-run
+    /// HUD). Every other shape is derived by the same lens-flip budgeting
+    /// method documented in Weiss's variable-grid plan but is **EXTRAP** — not
+    /// yet validated on glass. Those coordinates carry `// TODO(bench)`
+    /// markers and must be calibrated on an Engo 2 before being trusted.
+    public static func make(for config: HUDGridConfig) -> HUDGridDefinition {
+        let valid = config.validated()
+
+        // Byte-identical fast path for the shipped default shape.
+        if valid.lines == HUDGridConfig.standard.lines {
+            return standard4
+        }
+
+        let lineCount = valid.lines.count
+        // TODO(bench): calibrate band-top skeletons on Engo 2 — only the
+        // 3-line `[2,1,1]` path (handled above) is bench-proven today.
+        let bandTops = bandTops(forLineCount: lineCount)
+        let font1 = oneItemFont(forLineCount: lineCount)
+        let font2 = twoItemFont(forLineCount: lineCount)
+
+        var slots: [Slot] = []
+        for (rowIndex, items) in valid.lines.enumerated() {
+            let baseTop = bandTops[rowIndex]
+            if items == 1 {
+                // Proven left-aligned icon+value form (standard4 lines 2/3).
+                let centerY = baseTop + Int16(ALookFontMetrics.height(font1) / 2)
+                slots.append(Slot(
+                    textX: 243, textY: 255 - baseTop, font: font1,
+                    iconWearerLeft: 27, iconWearerCenterY: centerY
+                ))
+            } else {
+                // Two metrics share the line. Drop the band top so the smaller
+                // 2-item glyphs sit centred against the line's 1-item height.
+                let offset = twoItemDropOffset(forLineCount: lineCount, rowIndex: rowIndex)
+                let top = baseTop + offset
+                let textY = 255 - top
+                let centerY = top + Int16(ALookFontMetrics.height(font2) / 2)
+                // Left slot — anchored at the line's right margin, grows left.
+                slots.append(Slot(
+                    textX: 243, textY: textY, font: font2,
+                    iconWearerLeft: 15, iconWearerCenterY: centerY
+                ))
+                // Right slot — the historically tight horizontal budget.
+                slots.append(Slot(
+                    textX: 83, textY: textY, font: font2,
+                    iconWearerLeft: 187, iconWearerCenterY: centerY
+                ))
+            }
+        }
+        return HUDGridDefinition(slots: slots)
+    }
+
+    /// Band-top `T` (wearer-space top-of-glyph) per row for a given line count.
+    /// `textY_fb = 255 − T`. Values copied from Weiss's variable-grid plan.
+    /// TODO(bench): all non-`[2,1,1]` skeletons are EXTRAP — calibrate on glass.
+    private static func bandTops(forLineCount lineCount: Int) -> [Int16] {
+        switch lineCount {
+        case 2: return [28, 153]              // TODO(bench): 2-line big-font, never benched
+        case 4: return [13, 77, 141, 205]     // TODO(bench): 4-line font-2 skeleton
+        default: return [15, 85, 178]         // 3-line — anchored to standard4
+        }
+    }
+
+    /// 1-item-line font for a given line count (fewer lines → taller font).
+    private static func oneItemFont(forLineCount lineCount: Int) -> UInt8 {
+        switch lineCount {
+        case 2: return 4   // TODO(bench): font 4 (75px) — EXTRAP
+        case 4: return 2
+        default: return 3
+        }
+    }
+
+    /// 2-item-line font for a given line count. A 2-item line never exceeds
+    /// font 3 (two wide metrics collide horizontally — the rc15 lesson).
+    private static func twoItemFont(forLineCount lineCount: Int) -> UInt8 {
+        switch lineCount {
+        case 2: return 3   // TODO(bench): 2-item @ font 3 — EXTRAP
+        default: return 2
+        }
+    }
+
+    /// Vertical offset added to a 2-item line's band top so the smaller glyphs
+    /// centre against the line's 1-item height. Per-(lineCount,row) lookup —
+    /// the shipped 3-line L1 is proven at offset 0; the rest are EXTRAP.
+    /// TODO(bench): calibrate the drop offsets on glass.
+    private static func twoItemDropOffset(forLineCount lineCount: Int, rowIndex: Int) -> Int16 {
+        switch lineCount {
+        case 2: return 6                       // TODO(bench): 2-line drop, EXTRAP
+        case 3: return rowIndex == 0 ? 0 : 13  // L1 proven (0); L2/L3 EXTRAP (+13)
+        default: return 0                      // 4-line: 2-item font == 1-item font
+        }
+    }
 }

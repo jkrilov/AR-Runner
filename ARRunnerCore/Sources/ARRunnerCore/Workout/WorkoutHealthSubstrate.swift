@@ -69,6 +69,13 @@ public protocol WorkoutHealthSubstrate: Sendable {
     /// Implementations MAY throw if the workout isn't running; the
     /// controller treats failures as best-effort.
     func markSegment(at date: Date, title: String?) async throws
+
+    /// v0.6.5 — tell the substrate whether the active HUD layout uses the
+    /// compass `.heading` slot, so it can start the magnetometer
+    /// (`CLLocationManager.startUpdatingHeading()`) only when a heading is
+    /// actually rendered. Called once before `begin(...)`. Default no-op so
+    /// non-CoreLocation substrates (Linux tests, mocks) ignore it.
+    func setNeedsHeading(_ needsHeading: Bool)
 }
 
 extension WorkoutHealthSubstrate {
@@ -77,6 +84,12 @@ extension WorkoutHealthSubstrate {
     /// break.
     public func markSegment(at date: Date, title: String?) async throws {
         // No-op by default — see protocol doc.
+    }
+
+    /// Default no-op — only the watchOS `HealthKitWorkoutSubstrate` acts on
+    /// the heading hint. See protocol doc.
+    public func setNeedsHeading(_ needsHeading: Bool) {
+        // No-op by default.
     }
 }
 

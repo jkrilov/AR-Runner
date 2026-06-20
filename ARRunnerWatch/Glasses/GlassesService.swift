@@ -159,6 +159,9 @@ actor GlassesService {
             )
         case .energy:
             return String(format: "%.0f kcal", metric.value)
+        case .heading:
+            // heading metric value is degrees 0–359 (magnetometer).
+            return RunMetricFormatting.formatHeading(degrees: metric.value)
         }
     }
 }

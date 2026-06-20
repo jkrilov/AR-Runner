@@ -103,6 +103,8 @@ private func formatMetricImpl(_ metric: WorkoutMetric) -> String {
         return "\(total / 60):\(String(format: "%02d", total % 60))"
     case .energy:
         return String(Int(metric.value.rounded()))
+    case .heading:
+        return RunMetricFormatting.formatHeading(degrees: metric.value)
     }
 }
 

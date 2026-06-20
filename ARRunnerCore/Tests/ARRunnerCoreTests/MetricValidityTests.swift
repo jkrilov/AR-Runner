@@ -69,12 +69,20 @@ final class MetricValidityTests: XCTestCase {
     // MARK: - Universally valid metrics
 
     func testUniversalMetricsValidForEveryType() {
-        for kind in [MetricKind.heartRate, .duration, .energy, .cadence] {
+        for kind in [MetricKind.heartRate, .duration, .energy, .cadence, .heading] {
             for type in WorkoutType.allCases {
                 XCTAssertTrue(
                     kind.isValid(for: type),
                     "\(kind.rawValue) should be valid for \(type.rawValue)"
                 )
+            }
+        }
+    }
+
+    func testHeadingUnitLabelIsEmptyForBothSystems() {
+        for system in UnitSystem.allCases {
+            for type in WorkoutType.allCases {
+                XCTAssertEqual(MetricKind.heading.unitLabel(for: type, in: system), "")
             }
         }
     }

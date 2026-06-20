@@ -193,4 +193,81 @@ final class HUDLayoutsViewModelTests: XCTestCase {
             XCTAssertFalse(HUDLayoutsViewModel.shortLabel(for: metric).isEmpty)
         }
     }
+
+    func test_iconSymbol_coversAllMetricsAndIconFlag() {
+        for metric in MetricKind.allCases {
+            XCTAssertFalse(HUDLayoutsViewModel.iconSymbol(for: metric).isEmpty)
+        }
+        // The four metrics with real preloaded glasses glyphs render full
+        // strength; the rest are muted in the preview.
+        for metric in [MetricKind.duration, .heartRate, .distance, .pace] {
+            XCTAssertTrue(HUDLayoutsViewModel.hasGlassesIcon(for: metric))
+        }
+        for metric in [MetricKind.speed, .cadence, .energy, .elevation, .heading] {
+            XCTAssertFalse(HUDLayoutsViewModel.hasGlassesIcon(for: metric))
+        }
+    }
+
+    func test_headingLabels() {
+        XCTAssertEqual(HUDLayoutsViewModel.displayLabel(for: .heading), "Compass")
+        XCTAssertEqual(HUDLayoutsViewModel.shortLabel(for: .heading), "Dir")
+    }
+
+    // MARK: - Variable grid configuration (v0.6.5)
+
+    func test_resizedSlots_padsTruncatesPreservingOrder() {
+        let slots: [MetricKind?] = [.pace, .heartRate, .distance, .duration]
+        XCTAssertEqual(
+            HUDLayoutsViewModel.resizedSlots(slots, toSlotCount: 6),
+            [.pace, .heartRate, .distance, .duration, nil, nil]
+        )
+        XCTAssertEqual(
+            HUDLayoutsViewModel.resizedSlots(slots, toSlotCount: 2),
+            [.pace, .heartRate]
+        )
+        XCTAssertEqual(HUDLayoutsViewModel.resizedSlots(slots, toSlotCount: 4), slots)
+    }
+
+    func test_updatedGrid_lineCountClampsAndPreservesItems() {
+        let config = HUDGridConfig(lines: [2, 1, 1])
+        // Grow to 4 lines — added line defaults to 1 item.
+        XCTAssertEqual(HUDLayoutsViewModel.updatedGrid(config, lineCount: 4).lines, [2, 1, 1, 1])
+        // Shrink to 2 lines — keeps the first two.
+        XCTAssertEqual(HUDLayoutsViewModel.updatedGrid(config, lineCount: 2).lines, [2, 1])
+        // Out-of-range is clamped into 2…4.
+        XCTAssertEqual(HUDLayoutsViewModel.updatedGrid(config, lineCount: 9).lines.count, 4)
+        XCTAssertEqual(HUDLayoutsViewModel.updatedGrid(config, lineCount: 1).lines.count, 2)
+    }
+
+    func test_updatedGrid_itemsPerLine() {
+        let config = HUDGridConfig(lines: [2, 1, 1])
+        XCTAssertEqual(HUDLayoutsViewModel.updatedGrid(config, items: 2, atLine: 1).lines, [2, 2, 1])
+        XCTAssertEqual(HUDLayoutsViewModel.updatedGrid(config, items: 1, atLine: 0).lines, [1, 1, 1])
+        // Out-of-bounds line index is a no-op.
+        XCTAssertEqual(HUDLayoutsViewModel.updatedGrid(config, items: 2, atLine: 9).lines, [2, 1, 1])
+    }
+
+    func test_makeLayout_storesGridAndNormalizesSlots() {
+        // A non-standard shape is stored as an explicit grid; slots are
+        // normalised to the grid's slot count.
+        let made = HUDLayoutsViewModel.makeLayout(
+            id: "g", name: "Six", slots: [.pace, .heartRate],
+            grid: HUDGridConfig(lines: [2, 2, 2])
+        )
+        XCTAssertEqual(made.grid?.lines, [2, 2, 2])
+        XCTAssertEqual(made.slots.count, 6)
+        XCTAssertEqual(made.slots[0], .pace)
+        XCTAssertEqual(made.slots[1], .heartRate)
+    }
+
+    func test_makeLayout_standardShapeStoresNilGrid() {
+        // The legacy [2,1,1] shape stores `nil` so v0.6.4 layouts stay
+        // byte-identical and the wire blob stays small.
+        let made = HUDLayoutsViewModel.makeLayout(
+            id: "s", name: "Std", slots: [.pace, .heartRate, .distance, .duration],
+            grid: HUDGridConfig(lines: [2, 1, 1])
+        )
+        XCTAssertNil(made.grid)
+        XCTAssertEqual(made.resolvedGrid, .standard)
+    }
 }

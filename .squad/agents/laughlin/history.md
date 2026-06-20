@@ -153,3 +153,41 @@ unique-name, cap, dedup slot-build, assignment updates, validity warning).
 5. **Prune dangling assignments on delete.** Deleting a custom layout strips
    any per-type assignment referencing it (resolver would fall back anyway,
    but it keeps the synced blob tidy) and syncs both catalog + defaults.
+
+## Learnings — v0.6.5 (configurable grid + compass + preview icons), 2026-06-19
+
+1. **Optional Codable field = free backward compat.** Adding
+   `HUDLayout.grid: HUDGridConfig?` lets Swift's synthesized decoder map a
+   missing `grid` key to `nil` with no custom `init(from:)`. `nil` ⇒
+   `resolvedGrid == .standard`, so every v0.6.4 layout (and `default(for:)`)
+   decodes byte-identical. Proven by a legacy-JSON decode test. No WCMessage
+   schema bump needed — the field rides inside the existing `HUDLayout` in
+   `.layoutCatalog`.
+2. **Keep pixels in code, shape in the model.** Only the grid *shape*
+   (`lines: [Int]`, 2–4 lines × 1–2 items) is Codable/synced; all
+   coordinates/fonts stay in `HUDGridDefinition.make(for:)` (Core code).
+   Geometry can be recalibrated by shipping an app update without migrating
+   any stored/synced layout.
+3. **standard4 isn't formula-clean.** Its slot0 `iconWearerCenterY=35` was
+   hand-bumped from the computed 34, so `make(for:)` early-returns the
+   literal `standard4` for the `[2,1,1]` case and only runs the general
+   factory for other shapes. All non-`[2,1,1]` coordinates are EXTRAP and
+   marked `// TODO(bench): calibrate on Engo 2`.
+4. **Recurring CI-only exhaustive-switch failures bite test helpers too.**
+   Adding `MetricKind.heading` broke two *test* `switch metric.kind` helpers
+   (`WorkoutControllerIntegrationTests`, `DisconnectResilienceTests`) that
+   the source-only grep missed. Always `swift test` (Docker) — the Linux
+   build catches every switch, app code AND tests.
+5. **Thread workout-start flags without touching the Core protocol.** Rather
+   than change `begin(sport:startedAt:)` (touches all mocks + controller
+   tests), added a separate `setNeedsHeading(_:)` substrate method with a
+   default no-op. The watch VM computes `needsHeading` from the resolved
+   active layout and calls it before `controller.start()`. Magnetometer only
+   spins up when a `.heading` slot is actually on screen; works indoors (NOT
+   gated on `!isIndoor`).
+6. **Compass formatting is pure + testable in Core.** `formatHeading` lives
+   in `RunMetricFormatting` (no CoreLocation); the watch shell sources
+   `CLHeading` behind the substrate and yields `WorkoutMetric(.heading,…)`.
+   8-point cardinal via `Int((d+22.5)/45)%8`, normalized 0–359, non-finite →
+   `--`. trueHeading preferred, magneticHeading fallback, bucketed to integer
+   degrees to throttle BLE.
