@@ -626,4 +626,45 @@ Why raw `txt` works: `RunningHUDFrame.frames(for:)` already renders any string a
 
 ### 2026-06-19 — Laughlin: Custom HUD Layout Phase B (Phone Editor + Per-Type Defaults, v0.6.4 ship)
 
+---
+
+### 2026-06-19 — v0.6.5 Ship: Compass Metric + Variable HUD Grid + Editor Icons (SHIPPED)
+
+**Status:** Shipped in PR #132, merged to main (commit 6c779ee), tagged v0.6.5-1 → TestFlight run 27856318322.
+
+**Three features shipped together:**
+
+#### 1. Compass/Heading Metric
+- `MetricKind.heading` added; valid for ALL workout types (magnetometer works indoors, no GPS).
+- `RunMetricFormatting.formatHeading(degrees:)` pure Core: 8-point cardinal `[N,NE,E,SE,S,SW,W,NW]` via `Int((d+22.5)/45)%8`, zero-padded `%03d°`, normalized 0–359, non-finite → `"--"`.
+- Watch shell sources `CLHeading` behind the substrate: magnetometer started only when `headingAvailable()` AND the active layout uses `.heading` (threaded via `setNeedsHeading(_:)`). Works indoors. True heading preferred, magnetic fallback. Bucketed to integer degrees; calibration prompt suppressed; stopped on teardown.
+
+#### 2. Configurable Variable Grid (Adaptive Fonts)
+- New `HUDGridConfig { lines: [Int] }` (2–4 lines, each 1 or 2 items) — Codable, Sendable, Equatable, **Hashable**. `static let standard = [2,1,1]`.
+- `HUDLayout.grid: HUDGridConfig?` is **optional + additive**. `nil` ⇒ `.standard` (legacy, byte-identical to v0.6.4). Synthesized Codable decodes missing `grid` as `nil`. **No WCMessage schema bump** — field rides inside existing `HUDLayout` Codable.
+- `HUDGridDefinition.make(for:)` keeps all pixel geometry in Core code. Non-`[2,1,1]` coordinates/fonts marked `// TODO(bench)` for Engo 2 calibration:
+  - 2-line: band tops `[28,153]`, fonts (1-item=4/2-item=3), drop offset 6 (ALL EXTRAP).
+  - 3-line: band tops `[15,85,178]`, fonts (1-item=3/2-item=2), drop offsets (row0=0/else=13).
+  - 4-line: band tops `[13,77,141,205]`, font 2 both, drop offset 0.
+- Rendering unchanged; only the factory produces different Slot arrays per config.
+
+#### 3. Phone Editor: Icons + Variable Grid Controls
+- Editor preview pairs SF Symbols with values: full-strength for metrics with real glasses glyphs (`duration/heartRate/distance/pace`), **muted** for text-only (`speed/cadence/energy/elevation/heading`).
+- Editor adds **line-count (2/3/4) + per-line items (1/2) controls**; slot cells adapt; existing selections preserved (truncate/extend).
+- `.heading` displays as "Compass"/"Dir" with `location.north.line`.
+- Grid-config + slot-build logic in pure static methods on `HUDLayoutsViewModel` (testable).
+
+**Verification:**
+- `cd ARRunnerCore && swift test`: **359 tests green, 1 skipped, 0 failures**.
+- App-target compiles (ARRunnerPhone/ARRunnerWatch) CI-gated. All `MetricKind` switches exhaustive; `HUDGridConfig` Hashable.
+
+**Version:**
+- MARKETING 0.6.4→0.6.5, CURRENT_PROJECT_VERSION 56→57; VERSION 0.6.5; README + `docs/architecture.md` + copilot instructions bumped per convention #9.
+
+**Outstanding bench-calibration items:**
+- Non-`[2,1,1]` grid coordinates in `HUDGridDefinition.make(for:)` are EXTRAP and marked `// TODO(bench)`.
+- Highest-risk: 2-line font-4/5 (ALL unbenched), 2-item wide-font collisions, 4-line crowding (26 px gaps).
+- Lowest-risk: shipped 3-line `[2,1,1]` (= standard4) and 4-line L1 (≈ standard4 L1).
+- Before releasing multi-line layouts to general users, run on-glass validation for each new (lineCount × per-line items) combo: check for blank-screen clip, vertical overlap (especially 4-line descenders), and horizontal long-value clipping (e.g. `"1:23:45"`, `"5.00 km"`, `"045°"`).
+
 
